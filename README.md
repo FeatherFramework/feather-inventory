@@ -52,7 +52,87 @@ Developers can utilize the API provided by the script to register custom invento
 
 ## API Documentation
 
-Refer to the API documentation provided in the repository for details on how to use and integrate custom inventories for different entities.
+#### Accessing the API
+
+There is a client side and server side API for inventory. To obtain access to the API follow the instructions below:
+
+```lua
+FeatherInventory = exports['feather-inventory'].initiate()
+```
+
+#### Server Side API
+
+##### Register Foreign Key
+
+Registers a Inventory Foreign Key for your script to utilize custom inventories.
+
+| Parameter      | Description                                                                                 |
+| -------------- | ------------------------------------------------------------------------------------------- |
+| tableName      | This must be the exact name of your table where the inventory owner will be. (e.g. stables) |
+| foreignKeyType | The data type used in your tables primary key. (e.g. BIGINT UNSIGNED, VARCHAR(255), INT)    |
+| primaryKeyName | The name of your primary key. (e.g. id)                                                     |
+
+###### Example Usage
+
+```lua
+FeatherInventory.RegisterForeignKey('stables', 'BIGINT UNSIGNED', 'id')
+```
+
+##### Register Inventory
+
+Registers a custom inventory for an entity.
+
+| Parameter | Description                                                                                 |
+| --------- | ------------------------------------------------------------------------------------------- |
+| tableName | This must be the exact name of your table where the inventory owner will be. (e.g. stables) |
+| id        | The Owners ID from the databse (e.g. the database ID of the horse)                          |
+
+###### Example Usage
+
+```lua
+FeatherInventory.RegisterInventory('stables', 6)
+```
+
+#### Client Side API
+
+##### Player Has Item
+
+Checks to see if a player has a specific item or items.
+
+| Parameter | Description                                                                                          |
+| --------- | ---------------------------------------------------------------------------------------------------- |
+| items     | A table of items you wish to check for. See below for an example of a properly formatted item table. |
+
+###### Example Usage
+
+```lua
+local itemsToCheckFor = {
+  {
+    name = 'apple',
+    quantity = 5
+  },
+  {
+    name = 'jars',
+    quantity = 2
+  }
+}
+
+FeatherInventory.PlayerHasItems(itemsToCheckFor)
+```
+
+##### GetItemCount
+
+Retrieves the amount of a specific item a player has. Returns the quantity.
+
+| Parameter | Description                               |
+| --------- | ----------------------------------------- |
+| itemName  | The name of the item you are looking for. |
+
+###### Example Usage
+
+```lua
+FeatherInventory.GetItemCount('item_train_ticket')
+```
 
 ## Troubleshooting
 

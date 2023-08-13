@@ -4,7 +4,7 @@ function StartAPI()
   -- Checks if a player has a specific item or items.
   -- @params items table<string, number>
   -- @return boolean success Retruns true if the player has the item
-  InventoryClientApi.playerHasItems = function(items)
+  InventoryClientApi.PlayerHasItems = function(items)
     local numberOfItems = #items
     local count = 0
     local playerItems = GetPlayerItems()
@@ -40,14 +40,13 @@ function StartAPI()
     return true
   end
 
+  InventoryClientApi.GetItemCount = function(itemName)
+    -- Get item from DB by name
+    -- Check if exists in inventory items
+    -- return quantity
+  end
+
   exports('initiate', function()
     return InventoryClientApi
   end)
 end
-
-local table = {
-  {
-    name = "test",
-    quantity = 5
-  }
-}
