@@ -9,7 +9,7 @@ function StartAPI()
     end
 
     local foreignKey = string.lower(tableName) .. '_id'
-    local constraint = 'FK_Inventory' .. firstToUpper(string.lower(tableName))
+    local constraint = 'FK_Inventory' .. FirstToUpper(string.lower(tableName))
     local column = MySQL.query.await("SHOW COLUMNS FROM `inventory` LIKE ?;", { foreignKey })
     Feather.Print(column)
     if #(column) < 1 then
@@ -57,6 +57,32 @@ function StartAPI()
     end
 
     return inventory[1].uuid
+  end
+
+  InventoryServerApi.AddItem = function(itemName, quantity, inventoryId)
+    if quantity < 1 then
+      error('Invalid quantity. Must be creater than 0.')
+      return false
+    end
+
+    local itemId = GetItemByName(itemName)
+    if not itemId then
+      error('Invalid itemName. Please make sure it is in the items table in your database.')
+      return false
+    end
+
+    local inventory = GetInventory(inventoryId)
+    if not inventory then
+      error('Invalid inventory ID.')
+      return false
+    end
+
+    for count = 1, quantity do
+      MySQL.query.await('INSERT INTO `inventory_items` (`inventory_id`, `item_id`) VALUES (?, ?);', { inventory, itemId })
+
+      count = count + 1
+    end
+    return true
   end
 
   exports('initiate', function()
