@@ -14,6 +14,7 @@ Feather.RPC.Register('Inventory:GetPlayerItems', function(params, res, player)
   res(items)
 end)
 
+-- Called when player uses item from their inventory. Close Inventory after use.
 Feather.RPC.Register('Inventory:UseItem', function(params, res, player)
   local itemSlot = params['itemSlot']
   local itemName = params['itemName']
@@ -38,14 +39,5 @@ Feather.RPC.Register('Inventory:UpdateInventory', function(params, res, player)
   local quantity = params['quantity']
 
   -- Update Database
-  res(true)
-end)
-
-Feather.RPC.Register('Inventory:GiveItem', function(params, res, player)
-  local playerServerId = params['playerServerId']
-  local itemName = params['itemName']
-  local quantity = params['quantity']
-  local itemSlot = params['itemSlot']
-
   res(true)
 end)

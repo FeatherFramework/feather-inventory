@@ -97,17 +97,21 @@ FeatherInventory.RegisterInventory('stables', 6)
 
 Add an item to a given inventory.
 
-| Parameter   | Description                                           |
-| ----------- | ----------------------------------------------------- |
-| itemName    | The name of the item from the database.               |
-| quantity    | The quantity of the item you'd like to add.           |
-| inventoryId | The UUID of the inventory you are adding the item to. |
+| Parameter   | Description                                            |
+| ----------- | ------------------------------------------------------ |
+| itemName    | The name of the item from the database.                |
+| quantity    | The quantity of the item you'd like to add.            |
+| metadata    | Any metadata you'd like to add to the item. Can be nil |
+| inventoryId | The UUID of the inventory you are adding the item to.  |
 
 ###### Example Usage
 
 ```lua
 -- Add 6 apples to my inventory
-FeatherInventory.AddItem('item_apple', 6, 'c770bc77-3a77-11ee-b67f-18c04d04db03')
+FeatherInventory.AddItem('item_apple', 6, nil, 'c770bc77-3a77-11ee-b67f-18c04d04db03')
+
+local metadata = { quality = 'poor', durability = 50, maxDurability = 100 }
+FeatherInventory.AddItem('item_apple', 6, metadata, 'c770bc77-3a77-11ee-b67f-18c04d04db03')
 ```
 
 #### Client Side API
