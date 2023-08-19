@@ -155,30 +155,7 @@ FeatherInventory.InventoryCanHold(items, 'c770bc77-3a77-11ee-b67f-18c04d04db03')
 
 #### Client Side API
 
-##### Player Has Item
-
-Checks to see if a player has a specific item or items.
-
-| Parameter | Description                                                                                          |
-| --------- | ---------------------------------------------------------------------------------------------------- |
-| items     | A table of items you wish to check for. See below for an example of a properly formatted item table. |
-
-###### Example Usage
-
-```lua
-local itemsToCheckFor = {
-  {
-    name = 'apple',
-    quantity = 5
-  },
-  {
-    name = 'jars',
-    quantity = 2
-  }
-}
-
-FeatherInventory.PlayerHasItems(itemsToCheckFor)
-```
+- None at the moment
 
 #### Server Side Items API
 
@@ -290,6 +267,46 @@ Checks if an item exists in the DB.
 
 ```lua
 FeatherInventory.ItemExists('item_train_ticket')
+```
+
+##### Inventory Has Items
+
+Checks if
+
+| Parameter | Description                               |
+| --------- | ----------------------------------------- |
+| itemName  | The name of the item you are looking for. |
+
+###### Example Usage
+
+```lua
+FeatherInventory.ItemExists('item_train_ticket')
+```
+
+##### Inventory Has Item
+
+Checks to see if a player has a specific item or items.
+
+| Parameter | Description                                                                                          |
+| --------- | ---------------------------------------------------------------------------------------------------- |
+| items     | A table of items you wish to check for. See below for an example of a properly formatted item table. |
+| inventory | The inventory ID you're checking to see if it has items against.                                     |
+
+###### Example Usage
+
+```lua
+local itemsToCheckFor = {
+  {
+    name = 'apple',
+    quantity = 5
+  },
+  {
+    name = 'jars',
+    quantity = 2
+  }
+}
+
+FeatherInventory.PlayerHasItems(itemsToCheckFor, 'c770bc77-3a77-11ee-b67f-18c04d04db03')
 ```
 
 ## Troubleshooting

@@ -40,6 +40,12 @@ function GetInventoryItems(inventory)
     { inventory })
 end
 
+function GetInventoryItemCounts(inventory)
+  return MySQL.query.await(
+    'SELECT `items`.`name`, COUNT(`items`.`name`) FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id`=`items`.`id` WHERE `inventory_items`.`inventory_id`=?;',
+    { inventory })
+end
+
 function CreateInventoryItem(inventory, itemId)
   return MySQL.query.await('INSERT INTO `inventory_items` (`inventory_id`, `item_id`) VALUES (?, ?) RETURNING *;',
     { inventory, itemId })

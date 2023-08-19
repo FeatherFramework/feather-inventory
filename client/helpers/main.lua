@@ -30,10 +30,6 @@ function CanOpenInventory()
   return true
 end
 
-function GetPlayerItems()
-  return {}
-end
-
 function IsTable(var)
   return type(var) == 'table'
 end

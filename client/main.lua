@@ -3,7 +3,6 @@ ClientReady = false
 
 local function makeReady()
   StartAPI()
-
   ClientReady = true
 end
 

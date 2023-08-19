@@ -126,3 +126,37 @@ ItemsAPI.ItemExists = function(itemName)
   end
   return true
 end
+
+ItemsAPI.InventoryHasItems = function(items, inventory)
+  local numberOfItems = #items
+  local count = 0
+  local playerItems = GetInventoryItemCounts(inventory)
+
+  -- Error Checks
+  if not IsTable(items) then
+    error('items must be a table! e.g. {{name = "apple", quantity = 2}, {name = "lemon", quantity = 1}}')
+    return false
+  end
+
+  for _, v in pairs(items) do
+    if not IsTable(v) then
+      error('items must be a table! e.g. {{name = "apple", quantity = 2}, {name = "lemon", quantity = 1}}')
+      return false
+    end
+
+    if v.name == nil or tonumber(v.quantity) == nil then
+      error('items must be a table! e.g. {{name = "apple", quantity = 2}, {name = "lemon", quantity = 1}}')
+      return false
+    end
+  end
+
+  for _, playerItem in pairs(playerItems) do
+    for _, requestedItem in pairs(items) do
+      if playerItem and requestedItem.name == playerItem.name and tonumber(playerItem['COUNT[`items`.`name`]']) >= tonumber(requestedItem.quantity) then
+        count = count + 1
+      end
+    end
+  end
+
+  return count < numberOfItems
+end
