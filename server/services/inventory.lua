@@ -25,7 +25,7 @@ InventoryAPI.RegisterForeignKey = function(tableName, foreignKeyType, primaryKey
   end
 end
 
-InventoryAPI.RegisterInventory = function(tableName, id)
+InventoryAPI.RegisterInventory = function(tableName, id, maxWeight, restrictedItems, ignoreItemLimits)
   if not tableName or not id then
     error(
       'All parameters are required!')
@@ -41,9 +41,21 @@ InventoryAPI.RegisterInventory = function(tableName, id)
   end
 
   -- Check if inventory already exists
-  local query = 'SELECT uuid FROM `inventory` WHERE `' .. foreignKey .. '`=?'
+  local query = 'SELECT `id`, `uuid`, `max_weight`, `ignore_item_limit` FROM `inventory` WHERE `' .. foreignKey .. '`=?'
   local inventory = MySQL.query.await(query, { id })
+
+  -- Inventory exists. Check Max Weight and Ignore Item Limits. Return Inventory UUID
   if inventory ~= nil and inventory[1] then
+    -- Max Weight and ignore items Update Check
+    if (tonumber(inventory[1].max_weight) and tonumber(inventory[1].max_weight) ~= maxWeight) or Boolean[inventory[1].ignore_item_limit] ~= ignoreItemLimits then
+      query = 'UPDATE `inventory` SET `max_weight`=?, `ignore_item_limit`=? WHERE `' .. foreignKey .. '`=?'
+      MySQL.query.await(query, { tonumber(inventory[1].max_weight), ignoreItemLimits, id })
+    end
+
+    if restrictedItems then
+      UpdateRestrictedItems(inventory[1].id, restrictedItems)
+    end
+
     return inventory[1].uuid
   end
 
@@ -58,31 +70,50 @@ InventoryAPI.RegisterInventory = function(tableName, id)
   return inventory[1].uuid
 end
 
-ItemsAPI.SpaceAvailable = function(items, inventoryId)
+ItemsAPI.InventoryCanHold = function(items, inventoryId)
   if type(items) ~= 'table' then
     error(
       'Invalid items format. Must be a table of items and their quantity. { {item="apple", quantity=5}, {item="matches", quantity=10} }')
-    return false
+    return nil
   end
 
   for _, v in pairs(items) do
-    if not v.item or not tonumber(v.quantity) or not tonumber(v.quantity) > 0 then
+    if not v.item or tonumber(v.quantity) == nil or tonumber(v.quantity) < 0 then
       error(
         'Invalid items format. Must be a table of items and their quantity. { {item="apple", quantity=5}, {item="matches", quantity=10} }')
-      return false
+      return nil
     end
   end
 
-  local inventory = GetInventory(inventoryId)
+  local inventory, maxWeight, ignore_item_limit = GetInventory(inventoryId)
   if not inventory then
     error('Invalid inventory ID.')
-    return false
+    return nil
   end
 
   local weight = 0
   for _, v in pairs(items) do
+    local itemId, maxQuantity, itemWeight = GetItemByName(v)
+    -- Check if item is restricted
+    if IsItemRestrcited(inventory, itemId) then
+      return { status = false, reason = 'Item is restricted.' }
+    end
 
+    -- Check if inv can carry more
+    if not Boolean(ignore_item_limit) then
+      if (InventoryItemCount(inventory, itemId) + v.quantity) > maxQuantity then
+        return { status = false, reason = 'Max Quantity Exceeded.' }
+      end
+    end
+
+    weight = weight + itemWeight
   end
+
+  -- Check if player has enough weight left
+  if (weight + GetInventoryTotalWeight(inventory)) > (maxWeight or Config.maxWeight) then
+    return { status = false, reason = 'Max Weight Exceeded.' }
+  end
+  return { status = true, reason = '' }
 end
 
 -- TODO

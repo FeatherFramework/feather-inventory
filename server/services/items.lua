@@ -6,13 +6,13 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
     return false
   end
 
-  local itemId = GetItemByName(itemName)
+  local itemId, _, _ = GetItemByName(itemName)
   if not itemId then
     error('Invalid itemName. Please make sure it is in the items table in your database.')
     return false
   end
 
-  local inventory = GetInventory(inventoryId)
+  local inventory, _, _ = GetInventory(inventoryId)
   if not inventory then
     error('Invalid inventory ID.')
     return false
@@ -25,13 +25,11 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   end
 
   for count = 1, quantity do
-    local item = MySQL.query.await(
-      'INSERT INTO `inventory_items` (`inventory_id`, `item_id`) VALUES (?, ?) RETURNING *;', { inventory, itemId })
+    local item = CreateInventoryItem(inventory, itemId)
 
     if metadata ~= nil then
       for k, v in ipairs(metadata) do
-        MySQL.query.await('INSERT INTO `item_metadata` (`inventory_items_id`, `key`, `value`) VALUES (?, ?, ?);',
-          { item[1].id, k, v })
+        SetMetadata(item[1].id, k, v)
       end
     end
 
@@ -47,13 +45,13 @@ ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
     return false
   end
 
-  local itemId = GetItemByName(itemName)
+  local itemId, _, _ = GetItemByName(itemName)
   if not itemId then
     error('Invalid itemName. Please make sure it is in the items table in your database.')
     return false
   end
 
-  local inventory = GetInventory(inventoryId)
+  local inventory, _, _ = GetInventory(inventoryId)
   if not inventory then
     error('Invalid inventory ID.')
     return false
@@ -63,9 +61,7 @@ ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
   if itemCount < quantity then
     return false
   end
-
-  local query = 'DELETE FROM `inventory_items` WHERE `inventory_id`=? AND `item_id`=? LIMIT ' .. quantity .. ';'
-  MySQL.query.await(query, { inventory, itemId })
+  DeleteInventoryItems(inventory.id, itemId, quantity)
   return true
 end
 
@@ -75,8 +71,24 @@ ItemsAPI.RemoveItemById = function(id)
   if not item then
     return false
   end
+  DeleteInventoryItem(item.id)
+  return true
+end
 
-  MySQL.query.await('DELETE FROM `inventory_items` WHERE `id`=? LIMIT;', { item.id })
+ItemsAPI.SetMetadata = function(item, metadata)
+  if item == nil or type(item) ~= 'number' then
+    error('Item ID is required.')
+    return false
+  end
+  if metadata == nil or type(metadata) ~= 'table' then
+    error(
+      "Invalid format for meta data. Meta data must be a table of key value pairs. Example: { quality = 'poor', durability = 50, maxDurability = 100 }")
+    return false
+  end
+
+  for k, v in pairs(metadata) do
+    SetMetadata(item, k, v)
+  end
   return true
 end
 
@@ -90,14 +102,14 @@ ItemsAPI.GetItem = function(id)
 end
 
 ItemsAPI.GetItemCount = function(itemName, inventoryId)
-  local itemId = GetItemByName(itemName)
+  local itemId, _, _ = GetItemByName(itemName)
   if not itemId then
     error('Invalid itemName. Please make sure it is in the items table in your database.')
     return -1
   end
 
-  local inventory = GetInventory(inventoryId)
-  if not inventory then
+  local inventory, _, _ = GetInventory(inventoryId)
+  if not inventory == nil then
     error('Invalid inventory ID.')
     return -1
   end
@@ -108,7 +120,8 @@ ItemsAPI.GetItemCount = function(itemName, inventoryId)
 end
 
 ItemsAPI.ItemExists = function(itemName)
-  if GetItemByName(itemName) then
+  local itemId, _, _ = GetItemByName(itemName)
+  if itemId then
     return false
   end
   return true

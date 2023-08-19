@@ -60,7 +60,7 @@ There is a client side and server side API for inventory. To obtain access to th
 FeatherInventory = exports['feather-inventory'].initiate()
 ```
 
-#### Server Side API
+#### Server Side Inventory API
 
 ##### Register Foreign Key
 
@@ -82,36 +82,75 @@ FeatherInventory.RegisterForeignKey('stables', 'BIGINT UNSIGNED', 'id')
 
 Registers a custom inventory for an entity.
 
-| Parameter | Description                                                                                 |
-| --------- | ------------------------------------------------------------------------------------------- |
-| tableName | This must be the exact name of your table where the inventory owner will be. (e.g. stables) |
-| id        | The Owners ID from the databse (e.g. the database ID of the horse)                          |
+| Parameter        | Description                                                                                 |
+| ---------------- | ------------------------------------------------------------------------------------------- |
+| tableName        | This must be the exact name of your table where the inventory owner will be. (e.g. stables) |
+| id               | The Owners ID from the database (e.g. the database ID of the horse)                         |
+| maxWeight        | Override the max weight for the inventory. (Pass nil to use config value)                   |
+| restrictedItems  | Table of item names from the DB that you'd like to be restricted (Pass nil to no restrict)  |
+| ignoreItemLimits | true to ignore the max quantity of the item or false to adhear                              |
 
 ###### Example Usage
 
 ```lua
+-- Accept all defaults
 FeatherInventory.RegisterInventory('stables', 6)
+
+-- Override defaults
+FeatherInventory.RegisterInventory('stables', 6, 2500, {'apple', 'haycube'}, true)
+
+-- No Restrictions
+FeatherInventory.RegisterInventory('stables', 6, 2500, nil, true)
+
+-- Adhear to item limits. And don't restrict items
+FeatherInventory.RegisterInventory('stables', 6, 2500, nil, false)
 ```
 
-##### Add Item
+##### Inventory Can Hold
 
-Add an item to a given inventory.
+Verifies that the inventory you're attempting to put items in to can hold the specified items and quantity.
 
-| Parameter   | Description                                            |
-| ----------- | ------------------------------------------------------ |
-| itemName    | The name of the item from the database.                |
-| quantity    | The quantity of the item you'd like to add.            |
-| metadata    | Any metadata you'd like to add to the item. Can be nil |
-| inventoryId | The UUID of the inventory you are adding the item to.  |
+| Parameter   | Description                                          |
+| ----------- | ---------------------------------------------------- |
+| items       | Table of item names and quanity you're trying to add |
+| inventoryId | UUID of the inventory you are trying to add to       |
+
+###### Return Value
+
+This will return a table with the response from the API letting you know why it didn't work.
+
+```lua
+-- Failed Example
+local returnValue = {
+  status = false,
+  -- One of the following messages.
+  reason = 'Item is restricted.' -- First check
+  reason = 'Max quantity exceeded.' -- Second check
+  reason = 'Max weight exceeded.' -- Third check
+}
+
+-- Successful Example
+local returnValue = {
+  status = true,
+  reason = ''
+}
+```
 
 ###### Example Usage
 
 ```lua
--- Add 6 apples to my inventory
-FeatherInventory.AddItem('item_apple', 6, nil, 'c770bc77-3a77-11ee-b67f-18c04d04db03')
+local items = {
+  {
+    item = "fangs",
+    quantity = 5
+  },
+  {
+    item = "meat",
+    quantity = 10
+  }
+}
 
-local metadata = { quality = 'poor', durability = 50, maxDurability = 100 }
-FeatherInventory.AddItem('item_apple', 6, metadata, 'c770bc77-3a77-11ee-b67f-18c04d04db03')
+FeatherInventory.InventoryCanHold(items, 'c770bc77-3a77-11ee-b67f-18c04d04db03')
 ```
 
 #### Client Side API
@@ -141,9 +180,107 @@ local itemsToCheckFor = {
 FeatherInventory.PlayerHasItems(itemsToCheckFor)
 ```
 
+#### Server Side Items API
+
+##### Add Item
+
+Add an item to a given inventory.
+
+| Parameter   | Description                                            |
+| ----------- | ------------------------------------------------------ |
+| itemName    | The name of the item from the database.                |
+| quantity    | The quantity of the item you'd like to add.            |
+| metadata    | Any metadata you'd like to add to the item. Can be nil |
+| inventoryId | The UUID of the inventory you are adding the item to.  |
+
+###### Example Usage
+
+```lua
+-- Add 6 apples to my inventory
+FeatherInventory.AddItem('item_apple', 6, nil, 'c770bc77-3a77-11ee-b67f-18c04d04db03')
+
+local metadata = { quality = 'poor', durability = 50, maxDurability = 100 }
+FeatherInventory.AddItem('item_apple', 6, metadata, 'c770bc77-3a77-11ee-b67f-18c04d04db03')
+```
+
+##### Remove Item By Name
+
+Remove an item from a given inventory by name.
+
+| Parameter   | Description                                             |
+| ----------- | ------------------------------------------------------- |
+| itemName    | The name of the item from the database.                 |
+| quantity    | The quantity of the item you'd like to remove.          |
+| inventoryId | The UUID of the inventory you are removing the item to. |
+
+###### Example Usage
+
+```lua
+FeatherInventory.RemoveItemByName('item_apple', 6)
+```
+
+##### Remove Item By ID
+
+Remove an item by its inventory ID. Only supports a single item as its targeting the primary key of the table. If you need to remove multiple items use RemoveItemByName.
+
+| Parameter | Description                                        |
+| --------- | -------------------------------------------------- |
+| id        | The ID of the item from the inventory_items table. |
+
+###### Example Usage
+
+```lua
+FeatherInventory.RemoveItemById(6)
+```
+
+##### Set Metadata
+
+Sets the metadata for a given item.
+
+| Parameter | Description                                        |
+| --------- | -------------------------------------------------- |
+| id        | The ID of the item from the inventory_items table. |
+| metadata  | Table of key/value pairs to set                    |
+
+###### Example Usage
+
+```lua
+local metadata = { quality = 'poor', durability = 50, maxDurability = 100 }
+FeatherInventory.SetMetadata(6, metadata)
+```
+
+##### Get Item
+
+Gets an item from the Inventory Items Table
+
+| Parameter | Description                                        |
+| --------- | -------------------------------------------------- |
+| id        | The ID of the item from the inventory_items table. |
+
+###### Example Usage
+
+```lua
+FeatherInventory.GetItem(6)
+```
+
 ##### GetItemCount
 
 Retrieves the amount of a specific item a player has. Returns the quantity.
+
+| Parameter   | Description                               |
+| ----------- | ----------------------------------------- |
+| itemName    | The name of the item you are looking for. |
+| inventoryId | ID of the inventory                       |
+
+###### Example Usage
+
+```lua
+FeatherInventory.GetItemCount('item_train_ticket', 'c770bc77-3a77-11ee-b67f-18c04d04db03')
+```
+
+##### Item Exists
+
+Checks if an item exists in the DB.
 
 | Parameter | Description                               |
 | --------- | ----------------------------------------- |
@@ -152,7 +289,7 @@ Retrieves the amount of a specific item a player has. Returns the quantity.
 ###### Example Usage
 
 ```lua
-FeatherInventory.GetItemCount('item_train_ticket')
+FeatherInventory.ItemExists('item_train_ticket')
 ```
 
 ## Troubleshooting
@@ -169,4 +306,4 @@ This inventory script is licensed under GPL3 License. Refer to the LICENSE file 
 
 ## Credits
 
-Huge inspiration from the RSG Core's inventory system.
+Huge inspiration to RDO's inventory system with many QOL improvements.
