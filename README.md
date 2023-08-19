@@ -309,6 +309,24 @@ local itemsToCheckFor = {
 FeatherInventory.PlayerHasItems(itemsToCheckFor, 'c770bc77-3a77-11ee-b67f-18c04d04db03')
 ```
 
+##### Register Usable Item
+
+Registers a usable item with Feather Inventory.
+
+| Parameter | Description                                                     |
+| --------- | --------------------------------------------------------------- |
+| itemName  | The name of the item you are registering a call back for.       |
+| callback  | A closure with the logic you will be using upon use of the item |
+
+###### Example Usage
+
+```lua
+
+FeatherInventory.RegisterUsableItem('item_apple', function ($item)
+  print('You ate an apple!')
+end)
+```
+
 ## Troubleshooting
 
 If you encounter any issues or have questions, post in our discords bugs and support channel. You may also open an issue on the issue tracker tab of GitHub.

@@ -3,39 +3,40 @@ function CloseUI()
     type = "toggleInventory",
     visible = false,
   })
+  SetNuiFocus(true, true)
 end
 
 function OpenUI()
   SendNUIMessage({
     type = "toggleInventory",
-    visible = true
+    visible = true,
+    items = GetInventoryItems() -- ServerSide
   })
+  SetNuiFocus(false, false)
 end
 
--- Toggles the hotbar of the inventory
--- @param showHotbar boolean If true show hotbar
-function ToggleHotbarDisplay(showHotbar)
-  local playerItems = GetPlayerItems() -- Doesn't currently exist
-  local hotbarItems = {}
+-- function ToggleHotbarDisplay(showHotbar)
+--   local playerItems = GetPlayerItems() -- Doesn't currently exist
+--   local hotbarItems = {}
 
-  for i = 1, Config.hotbarLimit do
-    table.insert(hotbarItems, playerItems[i])
-  end
+--   for i = 1, Config.hotbarLimit do
+--     table.insert(hotbarItems, playerItems[i])
+--   end
 
-  local data = {}
+--   local data = {}
 
-  if showHotbar then
-    data = {
-      type = "toggleHotbar",
-      visible = showHotbar,
-      items = hotbarItems
-    }
-  else
-    data = {
-      type = "toggleHotbar",
-      visible = showHotbar
-    }
-  end
+--   if showHotbar then
+--     data = {
+--       type = "toggleHotbar",
+--       visible = showHotbar,
+--       items = hotbarItems
+--     }
+--   else
+--     data = {
+--       type = "toggleHotbar",
+--       visible = showHotbar
+--     }
+--   end
 
-  SendNUIMessage(data)
-end
+--   SendNUIMessage(data)
+-- end

@@ -1,4 +1,5 @@
 ItemsAPI = {}
+UsableItemCallbacks = {}
 
 ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   if quantity < 1 then
@@ -159,4 +160,42 @@ ItemsAPI.InventoryHasItems = function(items, inventory)
   end
 
   return count < numberOfItems
+end
+
+ItemsAPI.RegisterUsableItem = function(itemName, callback)
+  local src = source
+  if UsableItemCallbacks[itemName] then
+    error('An Item by that name has laready been registered. Item: ' .. itemName)
+    return
+  end
+
+  UsableItemCallbacks[itemName] = callback
+end
+
+ItemsAPI.UseItem = function(itemName, inventoryItemId, inventoryId)
+  local src = source
+  if not itemName or type(itemName) ~= 'string' then
+    error('itemName is required and must be a string.')
+    return nil
+  end
+
+  local item = GetItemByName(itemName)
+  if not item then
+    error('Item not found in the database!')
+  end
+
+  local inventory = GetInventory(inventoryId)
+  if not inventory then
+    error('Inventory ID is required.')
+    return nil
+  end
+
+  if UsableItemCallbacks[itemName] then
+    UsableItemCallbacks[itemName](itemName)
+  else
+    if src then
+      TriggerClientEvent('Feather:Inventory:UsedItem', src, itemName)
+      DeleteInventoryItem(inventoryItemId)
+    end
+  end
 end
