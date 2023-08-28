@@ -1,4 +1,4 @@
-Feather.RPC.Register('Inventory:GetPlayerItems', function(params, res, player)
+Feather.RPC.Register('Inventory:GetPlayerItems', function(params, res, src)
   local inventoryId = params.inventoryId
   local inventory, maxWeight, ignore_item_limit = GetInventory(inventoryId)
 
@@ -17,7 +17,7 @@ Feather.RPC.Register('Inventory:GetPlayerItems', function(params, res, player)
 end)
 
 -- Called when player uses item from their inventory. Close Inventory after use.
-Feather.RPC.Register('Inventory:UseItem', function(params, res, player)
+Feather.RPC.Register('Inventory:UseItem', function(params, res, src)
   local itemId = params['itemId']
   local itemName = params['itemName']
   local itemQuanity = params['itemQuanity']
@@ -31,7 +31,7 @@ Feather.RPC.Register('Inventory:UseItem', function(params, res, player)
   res(true)
 end)
 
-Feather.RPC.Register('Inventory:UpdateInventory', function(params, res, player)
+Feather.RPC.Register('Inventory:UpdateInventory', function(params, res, src)
   local sourceInventory = params['sourceInventory']
   local destinationInventory = params['destinationInventory']
   local sourceSlot = params['sourceSlot']

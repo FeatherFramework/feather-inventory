@@ -1,4 +1,6 @@
 InventoryAPI = {}
+local RegisteredForeignKeys = {}
+local OpenInventories = {}
 
 InventoryAPI.RegisterForeignKey = function(tableName, foreignKeyType, primaryKeyName)
   if not tableName or not foreignKeyType or not primaryKeyName then
@@ -7,10 +9,14 @@ InventoryAPI.RegisterForeignKey = function(tableName, foreignKeyType, primaryKey
     return
   end
 
+  if RegisteredForeignKeys[tableName] then
+    error('This foreign key has already been registered by a different resource.')
+    return
+  end
+
   local foreignKey = string.lower(tableName) .. '_id'
   local constraint = 'FK_Inventory' .. FirstToUpper(string.lower(tableName))
   local column = MySQL.query.await("SHOW COLUMNS FROM `inventory` LIKE ?;", { foreignKey })
-  Feather.Print(column)
   if #(column) < 1 then
     local query = 'ALTER TABLE `inventory` ADD COLUMN IF NOT EXISTS (`' ..
         foreignKey ..
@@ -23,6 +29,8 @@ InventoryAPI.RegisterForeignKey = function(tableName, foreignKeyType, primaryKey
         '`) REFERENCES `' .. tableName .. '` (`' .. primaryKeyName .. '`) ON DELETE CASCADE ON UPDATE CASCADE'
     MySQL.query.await(query)
   end
+
+  table.insert(RegisteredForeignKeys, 'tableName')
 end
 
 InventoryAPI.RegisterInventory = function(tableName, id, maxWeight, restrictedItems, ignoreItemLimits)
@@ -70,7 +78,7 @@ InventoryAPI.RegisterInventory = function(tableName, id, maxWeight, restrictedIt
   return inventory[1].uuid
 end
 
-ItemsAPI.InventoryCanHold = function(items, inventoryId)
+InventoryAPI.InventoryCanHold = function(items, inventoryId)
   if type(items) ~= 'table' then
     error(
       'Invalid items format. Must be a table of items and their quantity. { {item="apple", quantity=5}, {item="matches", quantity=10} }')
@@ -116,8 +124,17 @@ ItemsAPI.InventoryCanHold = function(items, inventoryId)
   return { status = true, reason = '' }
 end
 
+InventoryAPI.OpenInventory = function(inventoryId, userId)
+  -- Take source of user
+  -- Get Character Data
+  -- Get Inventory by Character ID
+  -- Open Player Inventory with Custom Inventory
+  OpenInventories[inventoryId] = userId
+end
+
+InventoryAPI.CloseInventory = function(inventoryId)
+  OpenInventories[inventoryId] = nil
+end
+
 -- TODO
--- Add MAX WEIGHT to custom inventory registration
--- Update MAX WEIGHT if it changes on registration
 -- Continue testing indexes
--- Add call to get current weight of inventory

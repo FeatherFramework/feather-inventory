@@ -12,11 +12,11 @@ github_type ''
 
 shared_scripts {
   "shared/*.lua",
-  "/config.lua",
 }
 
 server_scripts {
   "@oxmysql/lib/MySQL.lua",
+  "/server/coreapi.lua",
   "/server/helpers/*.lua",
   "/server/controllers/*.lua",
   "/server/services/*.lua",
@@ -29,6 +29,18 @@ client_scripts {
   "/client/main.lua",
 }
 
+ui_page {
+  "ui/index.html"
+}
+
+files {
+  "ui/index.html",
+  "ui/js/*.*",
+  "ui/css/*.*"
+}
+
 dependencies {
   'oxmysql',
 }
+
+version '1.0.0'

@@ -194,7 +194,7 @@ ItemsAPI.UseItem = function(itemName, inventoryItemId, inventoryId)
     UsableItemCallbacks[itemName](itemName)
   else
     if src then
-      TriggerClientEvent('Feather:Inventory:UsedItem', src, itemName)
+      TriggerEvent('Feather:Inventory:UsedItem', src, itemName)
       DeleteInventoryItem(inventoryItemId)
     end
   end
