@@ -1,43 +1,47 @@
-Feather.RPC.Register('Inventory:GetPlayerItems', function(params, res, src)
-  local inventoryId = params.inventoryId
-  local inventory, maxWeight, ignore_item_limit = GetInventory(inventoryId)
+Feather.RPC.Register('Feather:Inventory:GetInventoryItems', function(params, res, src)
+  local otherInventoryId = params['otherInventoryId']
 
-  if not inventory then
-    error('Invalid Inventory ID')
-  end
+  res(InventoryAPI.OpenInventory(src, otherInventoryId))
+end)
 
-  local items = GetInventoryItems(inventory)
+Feather.RPC.Register('Feather:Inventory:OpenInventory', function(params, res, src)
+  local otherInventoryId = params['otherInventoryId']
+  TriggerClientEvent('Feather:Inventory:OpenInventory', src, otherInventoryId)
+end)
 
-  for index, item in pairs(items) do
-    local metadata = GetMetadata(item.id)
-    items[index].metadata = metadata
-  end
-
-  res(items)
+Feather.RPC.Register('Feather:Inventory:CloseInventory', function(params, res, src)
+  TriggerClientEvent('Feather:Inventory:CloseInventory', src)
+  res(InventoryAPI.Close(src))
 end)
 
 -- Called when player uses item from their inventory. Close Inventory after use.
-Feather.RPC.Register('Inventory:UseItem', function(params, res, src)
+Feather.RPC.Register('Feather:Inventory:UseItem', function(params, res, src)
   local itemId = params['itemId']
   local itemName = params['itemName']
-  local itemQuanity = params['itemQuanity']
 
-  if itemQuanity == nil then itemQuanity = 1 end
-
-  local item = GetInventoryItemById(itemId)
-
-  -- Execute code for item use
-
-  res(true)
+  res(ItemsAPI.UseItem(itemName, itemId, src))
 end)
 
-Feather.RPC.Register('Inventory:UpdateInventory', function(params, res, src)
+Feather.RPC.Register('Feather:Inventory:UpdateInventory', function(params, res, src)
   local sourceInventory = params['sourceInventory']
-  local destinationInventory = params['destinationInventory']
-  local sourceSlot = params['sourceSlot']
-  local destinationSlot = params['destinationSlot']
-  local quantity = params['quantity']
+  local targetInventory = params['targetInventory']
+  local items = params['items']
 
-  -- Update Database
-  res(true)
+  res(MoveInventoryItems(sourceInventory, targetInventory, items))
+end)
+
+Feather.RPC.Register('Feather:Inventory:GiveItem', function(params, res, src)
+  local target = params['target']
+  local item = params['item']
+
+  local player = Feather.Character.getCharacterBySrc(src)
+  local sourceInventory = GetInventoryByCharacter(player.id)
+  local targetPlayer = Feather.Character.getCharacterBySrc(tonumber(target))
+  local destinationInventory = GetInventoryByCharacter(targetPlayer.id)
+
+  if sourceInventory ~= nil and destinationInventory ~= nil then
+    res(ItemsAPI.MoveInventoryItems(sourceInventory.id, destinationInventory.id, { item }))
+  end
+
+  res(false)
 end)

@@ -2,6 +2,16 @@ InventoryAPI = {}
 local RegisteredForeignKeys = {}
 local OpenInventories = {}
 
+---
+-- Register Script with Inventory
+--
+-- Creates a foreign key in the inventory table to link to your script's table.
+--
+-- @param tableName Name of your Database Table
+-- @param foreignKeyType Type of the foreign key (e.g. BIGINT UNSIGNED, VARCHAR(255), etc.)
+-- @param primaryKeyName Name of the primary key in your table (e.g. id)
+-- @return None
+--
 InventoryAPI.RegisterForeignKey = function(tableName, foreignKeyType, primaryKeyName)
   if not tableName or not foreignKeyType or not primaryKeyName then
     error(
@@ -33,6 +43,18 @@ InventoryAPI.RegisterForeignKey = function(tableName, foreignKeyType, primaryKey
   table.insert(RegisteredForeignKeys, 'tableName')
 end
 
+---
+-- Register Inventory
+--
+-- Register a custom inventory for an  entity.
+--
+-- @param tableName Name of your Database Table
+-- @param id Foreign Key ID of the entity
+-- @param maxWeight Override the maximum weight of the inventory (nill to use default)
+-- @param restrictedItems Table of items that are restricted from being added to the inventory. e.g. { "apple", "matches" }
+-- @param ignoreItemLimits Ignore the max quantity of items that can be added to the inventory
+-- @return Inventory UUID for accessing the inventory later (can be saved in your database table)
+--
 InventoryAPI.RegisterInventory = function(tableName, id, maxWeight, restrictedItems, ignoreItemLimits)
   if not tableName or not id then
     error(
@@ -78,6 +100,14 @@ InventoryAPI.RegisterInventory = function(tableName, id, maxWeight, restrictedIt
   return inventory[1].uuid
 end
 
+---
+-- Can Inventory Hold items
+--
+--
+-- @param items Table of items and their quantity. e.g. { {item="apple", quantity=5}, {item="matches", quantity=10} }
+-- @param inventoryId Player Source or Inventory UUID
+-- @return True if inventory can hold items, false if not
+--
 InventoryAPI.InventoryCanHold = function(items, inventoryId)
   if type(items) ~= 'table' then
     error(
@@ -93,7 +123,13 @@ InventoryAPI.InventoryCanHold = function(items, inventoryId)
     end
   end
 
-  local inventory, maxWeight, ignore_item_limit = GetInventory(inventoryId)
+  local inventory, maxWeight, ignore_item_limit = nil, nil, nil
+  if tonumber(inventoryId) then
+    local character = Feather.Character.GetCharacterBySrc(inventoryId)
+    inventory, maxWeight, ignore_item_limit = GetInventoryByCharacter(character.id)
+  else
+    inventory, maxWeight, ignore_item_limit = GetInventoryById(inventoryId)
+  end
   if not inventory then
     error('Invalid inventory ID.')
     return nil
@@ -104,13 +140,13 @@ InventoryAPI.InventoryCanHold = function(items, inventoryId)
     local itemId, maxQuantity, itemWeight = GetItemByName(v)
     -- Check if item is restricted
     if IsItemRestrcited(inventory, itemId) then
-      return { status = false, reason = 'Item is restricted.' }
+      return { status = false, message = 'Item is restricted.' }
     end
 
     -- Check if inv can carry more
     if not Boolean(ignore_item_limit) then
       if (InventoryItemCount(inventory, itemId) + v.quantity) > maxQuantity then
-        return { status = false, reason = 'Max Quantity Exceeded.' }
+        return { status = false, message = 'Max Quantity Exceeded.' }
       end
     end
 
@@ -119,22 +155,64 @@ InventoryAPI.InventoryCanHold = function(items, inventoryId)
 
   -- Check if player has enough weight left
   if (weight + GetInventoryTotalWeight(inventory)) > (maxWeight or Config.maxWeight) then
-    return { status = false, reason = 'Max Weight Exceeded.' }
+    return { status = false, message = 'Max Weight Exceeded.' }
   end
-  return { status = true, reason = '' }
+  return { status = true, message = '' }
 end
 
-InventoryAPI.OpenInventory = function(inventoryId, userId)
-  -- Take source of user
-  -- Get Character Data
-  -- Get Inventory by Character ID
-  -- Open Player Inventory with Custom Inventory
-  OpenInventories[inventoryId] = userId
+---
+-- Open Inventory
+--
+-- Returns items in the specified inventories
+--
+-- @param src Player Source
+-- @param otherInventoryId Player Source or Inventory UUID of a different inventory
+-- @return Table of items in the inventory and other inventory if specified
+--
+InventoryAPI.OpenInventory = function(src, otherInventoryId)
+  local inventory, otherInventory = nil, nil
+
+  -- Check to make sure inventoryId is a player source and not a string
+  if tonumber(src) then
+    local character = Feather.Character.GetCharacterBySrc(src)
+    inventory, _, _ = GetInventoryByCharacter(character.id)
+  else
+    error('Invalid Character Source!')
+  end
+
+  local inventoryItems, otherInventoryItems = GetInventoryItems(inventory), nil
+  if otherInventory ~= nil then
+    if tonumber(otherInventoryId) then
+      local character = Feather.Character.GetCharacterBySrc(otherInventoryId)
+      otherInventory, _, _ = GetInventoryByCharacter(character.id)
+    else
+      otherInventory, _, _ = GetInventoryById(otherInventoryId)
+    end
+    otherInventoryItems = GetInventoryItems(otherInventory)
+    OpenInventories[tostring(otherInventory)] = tostring(src)
+  end
+
+  OpenInventories[tostring(inventory)] = tostring(src)
+  return {
+    inventory = inventory,
+    inventoryItems = inventoryItems,
+    otherInventory = otherInventory,
+    otherInventoryItems = otherInventoryItems
+  }
 end
 
-InventoryAPI.CloseInventory = function(inventoryId)
-  OpenInventories[inventoryId] = nil
+---
+-- Close Inventory
+--
+-- Unlocks any inventory locked by the user provided so it can be accessed by another player
+--
+-- @param src Player Source
+-- @return None
+--
+InventoryAPI.CloseInventory = function(src)
+  for k, v in pairs(OpenInventories) do
+    if v == src then
+      OpenInventories[k] = nil
+    end
+  end
 end
-
--- TODO
--- Continue testing indexes

@@ -1,10 +1,21 @@
-function GetInventory(inventoryId)
+function GetInventoryById(inventoryId)
   local result = MySQL.query.await(
-    'SELECT `id`, `max_weight`, `ignore_item_limit` FROM `inventory` WHERE `uuid` = ? LIMIT 1;', { inventoryId })
-  if not result[1] then
+    'SELECT `id`, `max_weight`, `ignore_item_limit` FROM `inventory` WHERE `uuid` = ? LIMIT 1;', { inventoryId })[1]
+  if not result then
     return false, false, false
   end
-  return result[1].id, result[1].max_weight, result[1].ignore_item_limit
+  return result.id, result.max_weight, result.ignore_item_limit
+end
+
+function GetInventoryByCharacter(character)
+  local result = MySQL.query.await(
+        'SELECT `id`, `max_weight`, `ignore_item_limit` FROM `inventory` WHERE `character_id` = ? LIMIT 1;',
+        { character })
+      [1]
+  if not result then
+    return false, false, false
+  end
+  return result.id, result.max_weight, result.ignore_item_limit
 end
 
 function InventoryItemCount(inventory, itemId)
@@ -15,12 +26,12 @@ function InventoryItemCount(inventory, itemId)
 end
 
 function GetInventoryItemById(id)
-  local result = MySQL.query.await('SELECT * FROM `inventory_items` WHERE `id`=? LIMIT 1;', { id })
-  if not result[1] or not result[1] then
+  local result = MySQL.query.await('SELECT * FROM `inventory_items` WHERE `id`=? LIMIT 1;', { id })[1]
+  if result == nil then
     return false
   end
 
-  return result[1]
+  return result
 end
 
 function GetInventoryTotalWeight(inventory)
@@ -36,7 +47,7 @@ end
 
 function GetInventoryItems(inventory)
   return MySQL.query.await(
-    'SELECT `inventory_items`.`id`, `items`.`name` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id`=`items`.`id` WHERE `inventory_items`.`inventory_id`=?;',
+    'SELECT `inventory_items`.`id`, `items`.`name`, `items`.`usable`, `items`.`weight`, `inventory_items`.`category_id`, `items`.`max_quantity` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id`=`items`.`id` WHERE `inventory_items`.`inventory_id`=?;',
     { inventory })
 end
 
@@ -100,4 +111,15 @@ function UpdateRestrictedItems(inventory, items)
       end
     end
   end
+end
+
+function MoveInventoryItems(sourceInventory, targetInventory, itemIds)
+  for _, id in pairs(itemIds) do
+    MySQL.query.await('UPDATE `inventory_items` SET `inventory_id`=? WHERE `id`=?;', { targetInventory, id })
+  end
+
+  return {
+    playerItems = GetInventoryItems(sourceInventory),
+    otherItems = GetInventoryItems(targetInventory)
+  }
 end
