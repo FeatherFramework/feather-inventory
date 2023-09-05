@@ -1,12 +1,9 @@
 RegisterCommand('open_inventory', function()
-  if not IsInventoryOpen() and CanOpenInventory() then
-    PlayOpenAnimation()
-    OpenInventory()
-  end
+  TriggerEvent('Feather:Inventory:OpenInventory', nil)
 end, false)
 
 RegisterCommand('close_inventory', function()
-  CloseInventory()
+  TriggerEvent('Feather:Inventory:CloseInventory')
 end, false)
 
 -- RegisterCommand('toggle_hotbar', function()

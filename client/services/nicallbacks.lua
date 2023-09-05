@@ -1,40 +1,40 @@
-RegisterNUICallback('CloseUI', function(data, cb)
-  -- Check if other invetory was ground
-  -- Clear Ped Tasks
-  -- Remove NUI Focus
-  -- Toggle isInvOpen
-
-  -- Check if near stash
-  -- Save Stash
-  -- Else
-  -- Save Dropped Item Stash
+RegisterNUICallback('Feather:Inventory:CloseInventory', function(args, cb)
+  TriggerEvent('Feather:Inventory:CloseInventory')
 end)
 
-RegisterNUICallback('UseItem', function(data, cb)
-  CreateThread(function()
-    local res = Feather.RPC.CallAsync('Inventory:UseItem', data)
+RegisterNUICallback('Feather:Inventory:UseItem', function(args, cb)
+  local res = Feather.RPC.CallAsync('Feather:Inventory:UseItem', args)
 
-    cb(res)
-  end)
+  cb(res)
 end)
 
-RegisterNUICallback('UpdateInventory', function(data, cb)
-  CreateThread(function()
-    local res = Feather.RPC.CallAsync('Inventory:UpdateInventory', data)
+RegisterNUICallback('Feather:Inventory:UpdateInventory', function(args, cb)
+  local data = {
+    sourceInventory = args.sourceInventory,
+    targetInventory = args.targetInventory,
+    items = args.items
+  }
 
-    cb(res)
-  end)
+  local result = Feather.RPC.CallAsync('Feather:Inventory:UpdateInventory', data)
+
+  cb({
+    playerItems = result.playerItems,
+    otherItems = result.otherItems
+  })
 end)
 
-RegisterNUICallback('GiveItem', function(data, cb)
-  -- Find closest player. Needs to be added to Core
-  if data.sourceInventoryType ~= 'player' then
-    -- Notify Error
-    cb(false)
+RegisterNUICallback('Feather:Inventory:GiveItem', function(args, cb)
+  local ped = GetPedInFront()
+
+  if ped == 0 then
+    cb({ status = 'error', message = 'Unable to find player' })
+    return
   end
 
-  CreateThread(function()
-    local res = Feather.RPC.CallAsync('Inventory:GiveItem', data)
-    cb(res)
-  end)
+  local data = {
+    target = GetPlayerFromPed(ped),
+    item = args.item
+  }
+
+  Feather.RPC.CallAsync('Inventory:GiveItem', data)
 end)

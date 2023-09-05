@@ -13,7 +13,14 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
     return false
   end
 
-  local inventory, _, _ = GetInventory(inventoryId)
+  local inventory, _, _ = nil, nil, nil
+  if tonumber(inventoryId) then
+    local character = Feather.Character.GetCharacterBySrc(inventoryId)
+    inventory, _, _ = GetInventoryByCharacter(character.id)
+  else
+    inventory, _, _ = GetInventoryById(inventoryId)
+  end
+
   if not inventory then
     error('Invalid inventory ID.')
     return false
@@ -52,7 +59,13 @@ ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
     return false
   end
 
-  local inventory, _, _ = GetInventory(inventoryId)
+  local inventory, _, _ = nil, nil, nil
+  if tonumber(inventoryId) then
+    local character = Feather.Character.GetCharacterBySrc(inventoryId)
+    inventory, _, _ = GetInventoryByCharacter(character.id)
+  else
+    inventory, _, _ = GetInventoryById(inventoryId)
+  end
   if not inventory then
     error('Invalid inventory ID.')
     return false
@@ -109,7 +122,13 @@ ItemsAPI.GetItemCount = function(itemName, inventoryId)
     return -1
   end
 
-  local inventory, _, _ = GetInventory(inventoryId)
+  local inventory, _, _ = nil, nil, nil
+  if tonumber(inventoryId) then
+    local character = Feather.Character.GetCharacterBySrc(inventoryId)
+    inventory, _, _ = GetInventoryByCharacter(character.id)
+  else
+    inventory, _, _ = GetInventoryById(inventoryId)
+  end
   if not inventory == nil then
     error('Invalid inventory ID.')
     return -1
@@ -128,9 +147,17 @@ ItemsAPI.ItemExists = function(itemName)
   return true
 end
 
-ItemsAPI.InventoryHasItems = function(items, inventory)
+ItemsAPI.InventoryHasItems = function(items, inventoryId)
   local numberOfItems = #items
   local count = 0
+
+  local inventory, _, _ = nil, nil, nil
+  if tonumber(inventoryId) then
+    local character = Feather.Character.GetCharacterBySrc(inventoryId)
+    inventory, _, _ = GetInventoryByCharacter(character.id)
+  else
+    inventory, _, _ = GetInventoryById(inventoryId)
+  end
   local playerItems = GetInventoryItemCounts(inventory)
 
   -- Error Checks
@@ -172,8 +199,7 @@ ItemsAPI.RegisterUsableItem = function(itemName, callback)
   UsableItemCallbacks[itemName] = callback
 end
 
-ItemsAPI.UseItem = function(itemName, inventoryItemId, inventoryId)
-  local src = source
+ItemsAPI.UseItem = function(itemName, inventoryItemId, src)
   if not itemName or type(itemName) ~= 'string' then
     error('itemName is required and must be a string.')
     return nil
@@ -183,9 +209,13 @@ ItemsAPI.UseItem = function(itemName, inventoryItemId, inventoryId)
   if not item then
     error('Item not found in the database!')
   end
+  if tonumber(src) == nil then
+    error('Invalid Player Source')
+  end
 
-  local inventory = GetInventory(inventoryId)
-  if not inventory then
+  local character = Feather.Character.GetCharacterBySrc(src)
+  local inventory, _, _ = GetInventoryByCharacter(character.id)
+  if tonumber(inventory) == nil then
     error('Inventory ID is required.')
     return nil
   end
@@ -198,4 +228,5 @@ ItemsAPI.UseItem = function(itemName, inventoryItemId, inventoryId)
       DeleteInventoryItem(inventoryItemId)
     end
   end
+  return true
 end
