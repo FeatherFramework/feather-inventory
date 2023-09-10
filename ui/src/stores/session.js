@@ -6,20 +6,12 @@ export const useSessionStore = defineStore("session", {
     otherInventoryId: null,
     maxWeight: null,
     maxItemSlots: null,
+    categories: null,
   }),
   getters: {},
   actions: {
-    storeInventoryId(inventoryId) {
-      this.inventoryId = inventoryId;
-    },
-    storeOtherInventoryId(otherInventoryId) {
-      this.otherInventoryId = otherInventoryId;
-    },
-    storeMaxWeight(maxWeight) {
-      this.maxWeight = maxWeight;
-    },
-    storeMaxItemSlots(maxItemSlots) {
-      this.maxItemSlots = maxItemSlots;
+    store(key, value) {
+      this[key] = value;
     },
   },
 });

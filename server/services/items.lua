@@ -220,12 +220,18 @@ ItemsAPI.UseItem = function(itemName, inventoryItemId, src)
     return nil
   end
 
-  if UsableItemCallbacks[itemName] then
-    UsableItemCallbacks[itemName](itemName)
+  if item.type == 'item_weapon' then
+    TriggerEvent('Feather:Inventory:UsedItem', src, itemName)
+  elseif item.type == 'item_ammo' then
+    TriggerEvent('Feather:Inventory:UsedItem', src, itemName)
   else
-    if src then
-      TriggerEvent('Feather:Inventory:UsedItem', src, itemName)
-      DeleteInventoryItem(inventoryItemId)
+    if UsableItemCallbacks[itemName] then
+      UsableItemCallbacks[itemName](itemName)
+    else
+      if src then
+        TriggerEvent('Feather:Inventory:UsedItem', src, itemName)
+        DeleteInventoryItem(inventoryItemId)
+      end
     end
   end
   return true

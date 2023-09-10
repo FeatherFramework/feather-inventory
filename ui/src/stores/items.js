@@ -2,23 +2,28 @@ import { defineStore } from "pinia";
 
 export const useItemsStore = defineStore("items", {
   state: () => ({
-    playerItems: null,
-    otherItems: null,
+    playerItems: [],
+    otherItems: [],
+    metadata: {},
   }),
   getters: {
-    getPlayerItems(state) {
-      return state.playerItems;
-    },
-    getOtherItems(state) {
-      return state.otherItems;
+    // Return all metadata for given item id.
+    getMetadata(state) {
+      return (itemId) => state.metadata[itemId];
     },
   },
   actions: {
-    storePlayerItems(playerItems) {
-      this.playerItems = playerItems;
+    store(key, value) {
+      this[key] = value;
     },
-    storeOtherItems(otherItems) {
-      this.otherItems = otherItems;
+    addItem(key, value) {
+      this[key].push(value);
+    },
+    addMetadata(id, key, value) {
+      if (typeof this.metadata[id] === "undefined" || this.metadata[id] === null) {
+        this.metadata[id] = {};
+      }
+      this.metadata[id][key] = value;
     },
   },
 });
