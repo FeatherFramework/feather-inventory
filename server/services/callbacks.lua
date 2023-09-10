@@ -45,3 +45,7 @@ Feather.RPC.Register('Feather:Inventory:GiveItem', function(params, res, src)
 
   res(false)
 end)
+
+Feather.RPC.Register('Feather:Inventory:GetCategories', function(params, res, src)
+  res(GetCategories())
+end)

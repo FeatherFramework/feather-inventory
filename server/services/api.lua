@@ -2,7 +2,7 @@ function StartAPI()
   local InventoryServerAPI = {}
   InventoryServerAPI.Inventory = InventoryAPI
   InventoryServerAPI.Items = ItemsAPI
-  InventoryServerAPI.Weapons = WeaponsAPI
+  InventoryServerAPI.Categories = CategoriesAPI
 
   exports('initiate', function()
     return InventoryServerAPI

@@ -18,6 +18,7 @@ RegisterNetEvent('Feather:Inventory:OpenInventory', function(otherInventoryId)
       otherItems = results.otherInventoryItems,
       maxWeight = Config.maxWeight,
       maxSlots = Config.maxItemSlots,
+      categories = Feather.RPC.CallAsync('Feather:Inventory:GetCategories', {})
     })
     SetNuiFocus(true, true)
   end
@@ -25,10 +26,6 @@ end)
 
 RegisterNetEvent('Feather:Inventory:CloseInventory', function()
   if isInvOpen then
-    SendNUIMessage({
-      type = "toggleInventory",
-      visible = false,
-    })
     SetNuiFocus(false, false)
     isInvOpen = false
   end
