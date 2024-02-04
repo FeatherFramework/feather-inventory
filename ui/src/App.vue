@@ -1,118 +1,132 @@
 <template>
   <div id="content" class="relative bg-gray-900 left-0 right-0 mx-auto px-10" v-if="visible || devmode">
     <div class="absolute right-2 top-0 text-2xl text-white" @click="closeApp">&times;</div>
-    <nav class="w-full text-center text-white"><router-link to="/">Home</router-link> |</nav>
-    <router-view />
+    <MenuUI :player-inventory="playerInventory" :other-iventory="otherInventory" :global-options="globalOptions"></MenuUI>
   </div>
 </template>
 
 <script setup>
-  import api from "./api";
-  import { ref, onMounted, onUnmounted } from "vue";
-  import { useSessionStore } from "@/stores/session";
-  import { useItemsStore } from "@/stores/items";
-  import "@/assets/styles/main.scss";
+import api from "./api";
+import { ref, onMounted, onUnmounted, reactive } from "vue";
+import "@/assets/styles/main.scss";
+import _ from "lodash"
 
-  const devmode = ref(false);
-  const visible = ref(false);
+import MenuUI from "./views/MenuUI.vue";
 
-  const sessionStore = useSessionStore();
-  const itemsStore = useItemsStore();
+const devmode = ref(false);
+const visible = ref(false);
+const playerInventory = reactive({
+  displayName: '',
+  id: null,
+  items: []
+});
+const otherInventory = reactive({
+  displayName: '',
+  id: null,
+  items: []
+});
 
-  onMounted(() => {
-    window.addEventListener("message", onMessage);
-  });
+const globalOptions = reactive({
+  maxWeight: 0,
+  maxItemSlots: 0,
+  categories: []
+});
 
-  onUnmounted(() => {
-    window.removeEventListener("message", onMessage);
-  });
 
-  const onMessage = (event) => {
-    switch (event.data.type) {
-      case "toggleInventory":
-        visible.value = event.data.visible;
+onMounted(() => {
+  window.addEventListener("message", onMessage);
+});
 
-        sessionStore.store("maxWeight", event.data.maxWeight);
-        sessionStore.store("maxItemSlots", event.data.maxSlots);
-        sessionStore.store("inventoryId", event.data.playerInventory);
-        sessionStore.store("otherInventoryId", event.data.otherInventory);
-        sessionStore.store("categories", event.data.categories);
+onUnmounted(() => {
+  window.removeEventListener("message", onMessage);
+});
 
-        // Clear data if its present
-        itemsStore.store("playerItems", []);
-        itemsStore.store("otherItems", []);
-        itemsStore.store("metadata", {});
+const onMessage = (event) => {
+  switch (event.data.type) {
+    case "toggleInventory":
+      visible.value = event.data.visible;
 
-        // Set data
-        let items = [];
-        if (typeof event.data.playerItems !== "undefined" && event.data.playerItems !== null) {
-          const playerItemsLength = Object.keys(event.data.playerItems).length;
-          if (playerItemsLength > 0) {
-            for (let i = 0; i < playerItemsLength; i++) {
-              if (!items.includes(event.data.playerItems[i]["id"])) {
-                let item = {
-                  id: event.data.playerItems[i]["id"],
-                  name: event.data.playerItems[i]["name"],
-                  description: event.data.playerItems[i]["description"],
-                  usable: event.data.playerItems[i]["usable"],
-                  weight: event.data.playerItems[i]["weight"],
-                  category: event.data.playerItems[i]["category_id"],
-                  max_quantity: event.data.playerItems[i]["max_quantity"],
-                  max_stack_size: event.data.playerItems[i]["max_stack_size"],
-                };
-                items.push(event.data.playerItems[i]["id"]);
-                itemsStore.addItem("playerItems", item);
-                // console.log(`Added item: ${item.name}`);
-              }
-              if (event.data.playerItems[i]["key"] != null) {
-                itemsStore.addMetadata(event.data.playerItems[i]["id"], event.data.playerItems[i]["key"], event.data.playerItems[i]["value"]);
-              }
-            }
+      globalOptions.maxWeight = event.data.maxWeight;
+      globalOptions.maxItemSlots = event.data.maxSlots;
+      globalOptions.categories = event.data.categories;
+
+      playerInventory.items = {}
+      otherInventory.items = {}
+
+      // Set data
+      if (typeof event.data.playerItems !== "undefined" && event.data.playerItems !== null) {
+        playerInventory.name = "Inventory"
+        playerInventory.id = event.data.playerInventory
+        let tempPlayerItems = _.map(event.data.playerItems, (item) => {
+          return {
+            id: item.id,
+            name: item.name,
+            displayName: item.display_name,
+            description: item.description,
+            usable: item.usable,
+            weight: item.weight,
+            category: item.category_id,
+            maxQuantity: item.max_quantity,
+            maxStackSize: item.max_stack_size
           }
-        }
+        });
 
-        if (typeof event.data.otherItems !== "undefined" && event.data.otherItems !== null) {
-          const otherItemsLength = Object.keys(event.data.otherItems).length;
-          for (let i = 0; i < otherItemsLength; i++) {
-            if (!items.includes(event.data.otherItems[i]["id"])) {
-              let item = {
-                id: event.data.otherItems[i]["id"],
-                name: event.data.otherItems[i]["name"],
-                usable: event.data.otherItems[i]["usable"],
-                weight: event.data.otherItems[i]["weight"],
-                category: event.data.otherItems[i]["category_id"],
-                max_quantity: event.data.otherItems[i]["max_quantity"],
-                max_stack_size: event.data.otherItems[i]["max_stack_size"],
-              };
-              items.push(event.data.otherItems[i]["id"]);
-              itemsStore.addItem("playerItems", item);
-            }
-            if (event.data.otherItems[i]["key"] != null) {
-              itemsStore.addMetadata(event.data.otherItems[i]["id"], event.data.playerItems[i]["key"], event.data.playerItems[i]["value"]);
-            }
+
+
+        let groupedPlayerItems = _.groupBy(tempPlayerItems, (item) => item.name)
+        let outputPlayerItems = []
+
+        playerInventory.items = _.forEach(groupedPlayerItems, (itemGroup, key) => {
+          let chunked = _.chunk(itemGroup, itemGroup[0].maxStackSize)
+
+
+          outputPlayerItems.push({
+            key: key,
+            items: chunked
+          })
+        });
+
+        playerInventory.items = outputPlayerItems
+      }
+
+      if (typeof event.data.otherItems !== "undefined" && event.data.otherItems !== null) {
+        otherInventory.name = "Other"
+        otherInventory.id = event.data.otherInventory
+        otherInventory.items = _.map(event.data.otherItems, (item) => {
+          return {
+            id: item.id,
+            name: item.name,
+            displayName: item.display_name,
+            description: item.description,
+            usable: item.usable,
+            weight: item.weight,
+            category: item.category_id,
+            maxQuantity: item.max_quantity,
+            maxStackSize: item.max_stack_size
           }
-        }
-        break;
-      default:
-        break;
-    }
-  };
+        });
+      }
+      break;
+    default:
+      break;
+  }
+};
 
-  const closeApp = () => {
-    visible.value = false;
-    api
-      .post("Feather:Inventory:CloseInventory", {
-        state: visible.value,
-      })
-      .catch((e) => {
-        console.log(e.message);
-      });
-  };
+const closeApp = () => {
+  visible.value = false;
+  api
+    .post("Feather:Inventory:CloseInventory", {
+      state: visible.value,
+    })
+    .catch((e) => {
+      console.log(e.message);
+    });
+};
 </script>
 
 <style>
-  #content {
-    width: 60vw;
-    height: 70vh;
-  }
+#content {
+  width: 60vw;
+  height: 70vh;
+}
 </style>

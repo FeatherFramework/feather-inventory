@@ -1,24 +1,35 @@
+--TODO: Replace errors with the core notifies
+--TODO: Add a required src of who is calling the addItem(allows for notifications)
+
 ItemsAPI = {}
 UsableItemCallbacks = {}
 
-ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
+ItemsAPI.AddItem = function(src, itemName, quantity, metadata, inventoryId)
   if quantity < 1 then
     error('Invalid quantity. Must be creater than 0.')
     return false
   end
 
-  local itemId, _, _ = GetItemByName(itemName)
+  local itemId, max_quantity, _ = GetItemByName(itemName)
   if not itemId then
     error('Invalid itemName. Please make sure it is in the items table in your database.')
     return false
   end
 
+  --TODO: Add a check for weight
+
+  local ItemCount = ItemsAPI.GetItemCount(itemName, inventoryId or src)
+  if ItemCount + quantity >= max_quantity then
+    Feather.Notify.RightNotify(src, "Too Many Items in Inventory", 3000)
+    return false
+  end
+
   local inventory, _, _ = nil, nil, nil
-  if tonumber(inventoryId) then
-    local character = Feather.Character.GetCharacterBySrc(inventoryId)
-    inventory, _, _ = GetInventoryByCharacter(character.id)
-  else
+  if inventoryId ~= nil then
     inventory, _, _ = GetInventoryById(inventoryId)
+  else
+    local character = Feather.Character.GetCharacterBySrc(src)
+    inventory, _, _ = GetInventoryByCharacter(character.id)
   end
 
   if not inventory then

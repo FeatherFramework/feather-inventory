@@ -1,6 +1,6 @@
 function GetItemByName(itemName)
   local result = MySQL.query.await(
-    'SELECT `id`, `max_quantity`, `weight`, `type`, `usable` FROM `items` WHERE `name` = ? LIMIT 1;',
+    'SELECT `id`, `display_name`, `max_quantity`, `weight`, `type`, `usable` FROM `items` WHERE `name` = ? LIMIT 1;',
     { itemName })
   if not result[1] then
     return false, false
