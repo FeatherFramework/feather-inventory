@@ -41,6 +41,37 @@ onUnmounted(() => {
   window.removeEventListener("message", onMessage);
 });
 
+const translateItems = (items) => {
+  let tempItems = _.map(items, (item) => {
+    return {
+      id: item.id,
+      name: item.name,
+      displayName: item.display_name,
+      description: item.description,
+      usable: item.usable,
+      weight: item.weight,
+      category: item.category_id,
+      maxQuantity: item.max_quantity,
+      maxStackSize: item.max_stack_size
+    }
+  });
+
+  let groupedItems = _.groupBy(tempItems, (item) => item.name)
+  let outputItems = []
+
+  _.forEach(groupedItems, (itemGroup, key) => {
+    let chunked = _.chunk(itemGroup, itemGroup[0].maxStackSize)
+
+
+    outputItems.push({
+      key: key,
+      items: chunked
+    })
+  });
+
+  return outputItems
+}
+
 const onMessage = (event) => {
   switch (event.data.type) {
     case "toggleInventory":
@@ -57,54 +88,13 @@ const onMessage = (event) => {
       if (typeof event.data.playerItems !== "undefined" && event.data.playerItems !== null) {
         playerInventory.name = "Inventory"
         playerInventory.id = event.data.playerInventory
-        let tempPlayerItems = _.map(event.data.playerItems, (item) => {
-          return {
-            id: item.id,
-            name: item.name,
-            displayName: item.display_name,
-            description: item.description,
-            usable: item.usable,
-            weight: item.weight,
-            category: item.category_id,
-            maxQuantity: item.max_quantity,
-            maxStackSize: item.max_stack_size
-          }
-        });
-
-
-
-        let groupedPlayerItems = _.groupBy(tempPlayerItems, (item) => item.name)
-        let outputPlayerItems = []
-
-        playerInventory.items = _.forEach(groupedPlayerItems, (itemGroup, key) => {
-          let chunked = _.chunk(itemGroup, itemGroup[0].maxStackSize)
-
-
-          outputPlayerItems.push({
-            key: key,
-            items: chunked
-          })
-        });
-
-        playerInventory.items = outputPlayerItems
+        playerInventory.items = translateItems(event.data.playerItems)
       }
 
       if (typeof event.data.otherItems !== "undefined" && event.data.otherItems !== null) {
         otherInventory.name = "Other"
         otherInventory.id = event.data.otherInventory
-        otherInventory.items = _.map(event.data.otherItems, (item) => {
-          return {
-            id: item.id,
-            name: item.name,
-            displayName: item.display_name,
-            description: item.description,
-            usable: item.usable,
-            weight: item.weight,
-            category: item.category_id,
-            maxQuantity: item.max_quantity,
-            maxStackSize: item.max_stack_size
-          }
-        });
+        otherInventory.items = translateItems(event.data.otherItems)
       }
       break;
     default:

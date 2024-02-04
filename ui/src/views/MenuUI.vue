@@ -28,8 +28,6 @@
                             {{ item.length }}
                         </li>
                     </ul>
-
-
                 </li>
             </ul>
         </div>

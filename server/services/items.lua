@@ -1,27 +1,45 @@
 --TODO: Replace errors with the core notifies
---TODO: Add a required src of who is calling the addItem(allows for notifications)
 
 ItemsAPI = {}
 UsableItemCallbacks = {}
 
-ItemsAPI.AddItem = function(src, itemName, quantity, metadata, inventoryId)
+ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   if quantity < 1 then
     error('Invalid quantity. Must be creater than 0.')
-    return false
+    return {
+      error = true,
+      message = "Invalid quantity. Must be creater than 0."
+    }
   end
 
-  local itemId, max_quantity, _ = GetItemByName(itemName)
+  local itemId, max_quantity, _, max_stack_size = GetItemByName(itemName)
   if not itemId then
     error('Invalid itemName. Please make sure it is in the items table in your database.')
-    return false
+    return {
+      error = true,
+      message = "Invalid itemName. Please make sure it is in the items table in your database."
+    }
   end
 
-  --TODO: Add a check for weight
+  --TODO: Add a check for weight (this will be supported at another date. V1 will only support slots and stack sizes)
 
-  local ItemCount = ItemsAPI.GetItemCount(itemName, inventoryId or src)
+  local ItemCount = ItemsAPI.GetItemCount(itemName, inventoryId)
+
+  -- Check to make sure this doesnt exceed the amount of slots available.
+  if (ItemCount + quantity) / max_stack_size > max_stack_size then
+    return {
+      error = true,
+      message = "Max slots reached"
+    }
+  end
+
+
+  -- Check to make sure this doesnt exceed the max quantity for this item.
   if ItemCount + quantity >= max_quantity then
-    Feather.Notify.RightNotify(src, "Too Many Items in Inventory", 3000)
-    return false
+    return {
+      error = true,
+      message = "Too Many Items in Inventory"
+    }
   end
 
   local inventory, _, _ = nil, nil, nil
@@ -34,13 +52,19 @@ ItemsAPI.AddItem = function(src, itemName, quantity, metadata, inventoryId)
 
   if not inventory then
     error('Invalid inventory ID.')
-    return false
+    return {
+      error = true,
+      message = "Invalid inventory ID."
+    }
   end
 
   if metadata ~= nil and type(metadata) ~= 'table' then
     error(
       "Invalid format for meta data. Meta data must be a table of key value pairs. Example: { quality = 'poor', durability = 50, maxDurability = 100 }")
-    return false
+    return {
+      error = true,
+      message = "Invalid format for meta data. Meta data must be a table of key value pairs. Example: { quality = 'poor', durability = 50, maxDurability = 100 }"
+    }
   end
 
   for count = 1, quantity do
@@ -56,20 +80,28 @@ ItemsAPI.AddItem = function(src, itemName, quantity, metadata, inventoryId)
   end
 
   print("Item added!")
-  return true
+  return {
+    error = false
+  }
 end
 
 -- Removes n number of items by name. (No specific order)
 ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
   if quantity < 1 then
     error('Invalid quantity. Must be creater than 0.')
-    return false
+    return {
+      error = true,
+      message = "Invalid quantity. Must be creater than 0."
+    }
   end
 
   local itemId, _, _ = GetItemByName(itemName)
   if not itemId then
     error('Invalid itemName. Please make sure it is in the items table in your database.')
-    return false
+    return {
+      error = true,
+      message = "Invalid itemName. Please make sure it is in the items table in your database."
+    }
   end
 
   local inventory, _, _ = nil, nil, nil
@@ -81,42 +113,63 @@ ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
   end
   if not inventory then
     error('Invalid inventory ID.')
-    return false
+    return {
+      error = true,
+      message = "Invalid inventory ID."
+    }
   end
 
   local itemCount = InventoryItemCount(inventory, itemId)
   if itemCount < quantity then
-    return false
+    return {
+      error = true,
+      message = "Withdrawing more items than available."
+    }
   end
   DeleteInventoryItems(inventory.id, itemId, quantity)
-  return true
+  return {
+    error = false
+  }
 end
 
 -- Removes a specific item from the players inventory. (true if removed, false if not)
 ItemsAPI.RemoveItemById = function(id)
   local item = GetInventoryItemById(id)
   if not item then
-    return false
+    return {
+      error = true,
+      message = "Item not available."
+    }
   end
   DeleteInventoryItem(item.id)
-  return true
+  return {
+    error = false,
+  }
 end
 
 ItemsAPI.SetMetadata = function(item, metadata)
   if item == nil or type(item) ~= 'number' then
     error('Item ID is required.')
-    return false
+    return {
+      error = true,
+      message = "Item ID is required."
+    }
   end
   if metadata == nil or type(metadata) ~= 'table' then
     error(
       "Invalid format for meta data. Meta data must be a table of key value pairs. Example: { quality = 'poor', durability = 50, maxDurability = 100 }")
-    return false
+    return {
+      error = true,
+      message = "Invalid format for meta data. Meta data must be a table of key value pairs. Example: { quality = 'poor', durability = 50, maxDurability = 100 }"
+    }
   end
 
   for k, v in pairs(metadata) do
     SetMetadata(item, k, v)
   end
-  return true
+  return {
+    error = false
+  }
 end
 
 ItemsAPI.GetItem = function(id)
