@@ -43,6 +43,8 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
 
     count = count + 1
   end
+
+  print("Item added!")
   return true
 end
 

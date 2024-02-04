@@ -62,6 +62,6 @@
   const { playerItems, otherItems } = storeToRefs(itemsStore);
 
   const hasMetadata = (id) => {
-    return Object.keys(itemsStore.getMetadata(id)).length > 0;
+    return itemsStore.getMetadata(id) && Object.keys(itemsStore.getMetadata(id)).length > 0;
   };
 </script>

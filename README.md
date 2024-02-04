@@ -322,7 +322,7 @@ Registers a usable item with Feather Inventory.
 
 ```lua
 
-FeatherInventory.RegisterUsableItem('item_apple', function ($item)
+FeatherInventory.RegisterUsableItem('item_apple', function (item)
   print('You ate an apple!')
 end)
 ```
