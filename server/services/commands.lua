@@ -2,7 +2,7 @@ RegisterCommand('AddItems', function(source, args)
     
 
     -- TODO: Add check to ensure only admit can use this command.
-    local result = ItemsAPI.AddItem(source, args[1], tonumber(args[2]), args[3] or nil)
+    local result = ItemsAPI.AddItem(args[1], tonumber(args[2]), args[3] or nil, source)
 
     if result.error == true then
         Feather.Notify.RightNotify(source, result.message, 3000)

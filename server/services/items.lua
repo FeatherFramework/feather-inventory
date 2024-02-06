@@ -43,11 +43,11 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   end
 
   local inventory, _, _ = nil, nil, nil
-  if inventoryId ~= nil then
-    inventory, _, _ = GetInventoryById(inventoryId)
-  else
-    local character = Feather.Character.GetCharacterBySrc(src)
+  if tonumber(inventoryId)  then
+    local character = Feather.Character.GetCharacterBySrc(inventoryId)
     inventory, _, _ = GetInventoryByCharacter(character.id)
+  else
+    inventory, _, _ = GetInventoryById(inventoryId)
   end
 
   if not inventory then

@@ -222,7 +222,12 @@ Sets the metadata for a given item.
 ###### Example Usage
 
 ```lua
-local metadata = { quality = 'poor', durability = 50, maxDurability = 100 }
+local metadata = { 
+  display = 'Something to display under the item description',
+  quality = 'poor',
+  durability = 50,
+  maxDurability = 100
+}
 FeatherInventory.SetMetadata(6, metadata)
 ```
 
