@@ -35,6 +35,9 @@ const globalOptions = reactive({
   categories: []
 });
 
+// TODO: Add Inventory specific slot counts
+// TODO: Account for inventory specific ignore limits (ignore item caps)
+
 
 onMounted(() => {
   window.addEventListener("message", onMessage);
@@ -88,6 +91,8 @@ const onMessage = (event) => {
       playerInventory.items = {}
       otherInventory.items = {}
 
+      console.log(event.data)
+
       // Set data
       if (typeof event.data.playerItems !== "undefined" && event.data.playerItems !== null) {
         playerInventory.name = "Inventory"
@@ -109,7 +114,7 @@ const onMessage = (event) => {
 const closeApp = () => {
   visible.value = false;
   api
-    .post("Feather:Inventory:CloseInventory", {
+    .post("Feather:Inventory:NuiCloseInventory", {
       state: visible.value,
     })
     .catch((e) => {

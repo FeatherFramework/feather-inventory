@@ -53,13 +53,15 @@ import _ from 'lodash';
 const props = defineProps({
     inventory: {
         type: Object,
-        required: true,
-        default: () => { }
+        required: true
     },
     options: {
         type: Object,
-        required: true,
-        default: () => { }
+        required: true
+    },
+    side: {
+        type: String,
+        required: true
     }
 })
 
@@ -72,6 +74,12 @@ const activeName = ref('')
 const activeCategory = ref({
     name: 'loading'
 })
+
+const activeLeftClickItem = ref({})
+const activeRightClickItem = ref({})
+
+const activeLeftClickSubItem = ref({})
+const activeRightClickSubItem = ref({})
 
 onMounted(() => {
     availableCategories.value = [
