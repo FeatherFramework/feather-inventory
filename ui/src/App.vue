@@ -1,6 +1,6 @@
 <template>
   <div id="content" class="flex flex-col h-screen justify-center items-center" style="width: 100vw; height: 100vh;" v-if="visible || devmode">
-    <div class="bg-zinc-900 px-4 relative mx-auto pt-10 bg-opacity-90" style="width: 80vw; height: 80vh;">
+    <div class="bg-zinc-900 px-4 relative mx-auto pt-10 bg-opacity-90" :style="`${ otherInventory.items.length > 0 ? 'width: 80vw;' : ''} height: 80vh;`">
       <div class="absolute right-2 top-0 text-2xl text-white hover:text-red-500" @click="closeApp">&times;</div>
       <MenuUI :player-inventory="playerInventory" :other-iventory="otherInventory" :global-options="globalOptions">
       </MenuUI>

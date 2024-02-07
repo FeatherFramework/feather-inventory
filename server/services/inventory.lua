@@ -36,7 +36,9 @@ InventoryAPI.RegisterForeignKey = function(tableName, foreignKeyType, primaryKey
         constraint ..
         '` FOREIGN KEY IF NOT EXISTS (`' ..
         foreignKey ..
-        '`) REFERENCES `' .. tableName .. '` (`' .. primaryKeyName .. '`) ON DELETE CASCADE ON UPDATE CASCADE'
+        '`) REFERENCES `' .. tableName .. '` (`' .. primaryKeyName .. '`) ON DELETE CASCADE ON UPDATE CASCADE;'
+
+    print(query)
     MySQL.query.await(query)
   end
 
@@ -160,6 +162,11 @@ InventoryAPI.InventoryCanHold = function(items, inventoryId)
   return { status = true, message = '' }
 end
 
+InventoryAPI.OpenInventory = function(src, otherInventoryId)
+
+
+end
+
 ---
 -- Open Inventory
 --
@@ -169,7 +176,7 @@ end
 -- @param otherInventoryId Player Source or Inventory UUID of a different inventory
 -- @return Table of items in the inventory and other inventory if specified
 --
-InventoryAPI.OpenInventory = function(src, otherInventoryId)
+InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
   local inventory, otherInventory = nil, nil
 
   -- Check to make sure inventoryId is a player source and not a string
@@ -181,12 +188,13 @@ InventoryAPI.OpenInventory = function(src, otherInventoryId)
   end
 
   local inventoryItems, otherInventoryItems = GetInventoryItems(inventory), nil
-  if otherInventory ~= nil then
+  if otherInventoryId ~= nil then
     if tonumber(otherInventoryId) then
       local character = Feather.Character.GetCharacterBySrc(otherInventoryId)
       otherInventory, _, _ = GetInventoryByCharacter(character.id)
     else
       otherInventory, _, _ = GetInventoryById(otherInventoryId)
+      print("Getting other inventory")
     end
     otherInventoryItems = GetInventoryItems(otherInventory)
     OpenInventories[tostring(otherInventory)] = tostring(src)
@@ -201,6 +209,10 @@ InventoryAPI.OpenInventory = function(src, otherInventoryId)
   }
 end
 
+InventoryAPI.CloseInventory = function(src)
+  TriggerClientEvent('Feather:Inventory:CloseInventory', src)
+end
+
 ---
 -- Close Inventory
 --
@@ -209,7 +221,8 @@ end
 -- @param src Player Source
 -- @return None
 --
-InventoryAPI.CloseInventory = function(src)
+InventoryAPI.InternalCloseInventory = function(src, inventory)
+  print("closing inventories")
   for k, v in pairs(OpenInventories) do
     if v == src then
       OpenInventories[k] = nil

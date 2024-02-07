@@ -2,7 +2,7 @@ local isInvOpen = false
 local isHBOpen = false
 
 RegisterNetEvent('Feather:Inventory:OpenInventory', function(otherInventoryId)
-  print('Opening Inventory')
+  print('Opening Inventory', otherInventoryId)
   if not isInvOpen and CanOpenInventory() then
     print('Inventory is not open and you can open it')
     isInvOpen = true
@@ -28,6 +28,8 @@ RegisterNetEvent('Feather:Inventory:CloseInventory', function()
   if isInvOpen then
     SetNuiFocus(false, false)
     isInvOpen = false
+
+    Feather.RPC.CallAsync('Feather:Inventory:Server:CloseInventory', {})
   end
 end)
 

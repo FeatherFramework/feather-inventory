@@ -1,17 +1,11 @@
 Feather.RPC.Register('Feather:Inventory:GetInventoryItems', function(params, res, src)
   local otherInventoryId = params['otherInventoryId']
 
-  res(InventoryAPI.OpenInventory(src, otherInventoryId))
+  res(InventoryAPI.InternalOpenInventory(src, otherInventoryId))
 end)
 
-Feather.RPC.Register('Feather:Inventory:OpenInventory', function(params, res, src)
-  local otherInventoryId = params['otherInventoryId']
-  TriggerClientEvent('Feather:Inventory:OpenInventory', src, otherInventoryId)
-end)
-
-Feather.RPC.Register('Feather:Inventory:CloseInventory', function(params, res, src)
-  TriggerClientEvent('Feather:Inventory:CloseInventory', src)
-  res(InventoryAPI.Close(src))
+Feather.RPC.Register('Feather:Inventory:Server:CloseInventory', function(params, res, src)
+  InventoryAPI.InternalCloseInventory()
 end)
 
 -- Called when player uses item from their inventory. Close Inventory after use.
