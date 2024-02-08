@@ -1,4 +1,5 @@
-RegisterNUICallback('Feather:Inventory:CloseInventory', function(args, cb)
+RegisterNUICallback('Feather:Inventory:NuiCloseInventory', function(args, cb)
+  cb('ok')
   TriggerEvent('Feather:Inventory:CloseInventory')
 end)
 
@@ -37,4 +38,5 @@ RegisterNUICallback('Feather:Inventory:GiveItem', function(args, cb)
   }
 
   Feather.RPC.CallAsync('Inventory:GiveItem', data)
+  cb('ok')
 end)

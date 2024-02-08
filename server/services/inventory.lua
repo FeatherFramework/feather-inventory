@@ -177,7 +177,7 @@ end
 -- @return Table of items in the inventory and other inventory if specified
 --
 InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
-  local inventory, otherInventory = nil, nil
+  local inventory, inventoryIgnoreLimits, otherInventory, otherInventoryIgnoreLimits = nil, nil, nil, nil
 
   -- Check to make sure inventoryId is a player source and not a string
   if tonumber(src) then
@@ -191,9 +191,9 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
   if otherInventoryId ~= nil then
     if tonumber(otherInventoryId) then
       local character = Feather.Character.GetCharacterBySrc(otherInventoryId)
-      otherInventory, _, _ = GetInventoryByCharacter(character.id)
+      otherInventory, _, inventoryIgnoreLimits = GetInventoryByCharacter(character.id)
     else
-      otherInventory, _, _ = GetInventoryById(otherInventoryId)
+      otherInventory, _, otherInventoryIgnoreLimits = GetInventoryById(otherInventoryId)
       print("Getting other inventory")
     end
     otherInventoryItems = GetInventoryItems(otherInventory)
@@ -204,8 +204,10 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
   return {
     inventory = inventory,
     inventoryItems = inventoryItems,
+    inventoryIgnoreLimits = inventoryIgnoreLimits,
     otherInventory = otherInventory,
-    otherInventoryItems = otherInventoryItems
+    otherInventoryItems = otherInventoryItems,
+    otherInventoryIgnoreLimits = otherInventoryIgnoreLimits
   }
 end
 
