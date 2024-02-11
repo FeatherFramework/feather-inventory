@@ -1,7 +1,12 @@
 local isInvOpen = false
 local isHBOpen = false
 
-RegisterNetEvent('Feather:Inventory:OpenInventory', function(otherInventoryId)
+RegisterNetEvent('Feather:Inventory:OpenInventory', function(otherInventoryId, target)
+  if target == nil then
+    target = "storage"
+  end
+
+
   print('Opening Inventory', otherInventoryId or 'character')
   if not isInvOpen and CanOpenInventory() then
     print('Inventory is not open and you can open it')
@@ -11,6 +16,7 @@ RegisterNetEvent('Feather:Inventory:OpenInventory', function(otherInventoryId)
     
     SendNUIMessage({
       type = "toggleInventory",
+      target = target,
       visible = true,
       playerInventory = results.inventory,
       playerItems = results.inventoryItems,

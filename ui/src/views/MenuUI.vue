@@ -1,7 +1,7 @@
 <template>
     <div class="flow-root p-4">
-        <InventorySlate :inventory="playerInventory" v-if="playerInventory.items.length > 0" :options="globalOptions" :side="'left'" class="float-left relative"></InventorySlate>
-        <InventorySlate :inventory="otherIventory" v-if="otherIventory.items.length > 0" :options="globalOptions" :side="'right'" class="float-right relative"></InventorySlate>
+        <InventorySlate :inventory="playerInventory" :options="globalOptions" :side="'left'" class="float-left relative"></InventorySlate>
+        <InventorySlate :inventory="otherIventory" v-if="target != 'player'" :options="globalOptions" :side="'right'" class="float-right relative"></InventorySlate>
     </div>
 </template>
   
@@ -11,18 +11,19 @@ import InventorySlate from '@/components/InventorySlate.vue';
 const props = defineProps({
     playerInventory: {
         type: Object,
-        required: true,
-        default: () => { }
+        required: true
     },
     otherIventory: {
         type: Object,
-        required: true,
-        default: () => { }
+        required: true
     },
     globalOptions: {
         type: Object,
-        required: true,
-        default: () => { }
+        required: true
+    },
+    target: {
+        type: String,
+        required: true
     }
 })
 </script>

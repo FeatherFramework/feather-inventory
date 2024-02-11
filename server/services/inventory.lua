@@ -194,7 +194,6 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
       otherInventory, _, inventoryIgnoreLimits = GetInventoryByCharacter(character.id)
     else
       otherInventory, _, otherInventoryIgnoreLimits = GetInventoryById(otherInventoryId)
-      print("Getting other inventory")
     end
     otherInventoryItems = GetInventoryItems(otherInventory)
     OpenInventories[tostring(otherInventory)] = tostring(src)

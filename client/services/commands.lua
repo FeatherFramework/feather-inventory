@@ -1,5 +1,5 @@
 RegisterCommand('open_inventory', function()
-  TriggerEvent('Feather:Inventory:OpenInventory', nil)
+  TriggerEvent('Feather:Inventory:OpenInventory', nil, "player")
 end, false)
 
 RegisterCommand('open_storage', function()

@@ -71,7 +71,7 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
     local item = CreateInventoryItem(inventory, itemId)
 
     if metadata ~= nil then
-      for k, v in ipairs(metadata) do
+      for k, v in pairs(metadata) do
         SetMetadata(item[1].id, k, v)
       end
     end

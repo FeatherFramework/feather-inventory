@@ -1,8 +1,8 @@
 <template>
   <div id="content" class="flex flex-col h-screen justify-center items-center" style="width: 100vw; height: 100vh;" v-if="visible || devmode">
-    <div class="bg-zinc-900 px-4 relative mx-auto pt-10 bg-opacity-90" :style="`${ otherInventory.items.length > 0 ? 'width: 80vw;' : ''} height: 80vh;`">
+    <div class="bg-zinc-900 px-4 relative mx-auto pt-10 bg-opacity-90" :style="`${ globalOptions.target != 'player' ? 'width: 80vw;' : ''} height: 80vh;`">
       <div class="absolute right-2 top-0 text-2xl text-white hover:text-red-500" @click="closeApp">&times;</div>
-      <MenuUI :player-inventory="playerInventory" :other-iventory="otherInventory" :global-options="globalOptions">
+      <MenuUI :player-inventory="playerInventory" :other-iventory="otherInventory" :global-options="globalOptions" :target="globalOptions.target">
       </MenuUI>
     </div>
   </div>
@@ -32,7 +32,8 @@ const otherInventory = reactive({
 const globalOptions = reactive({
   maxWeight: 0,
   maxItemSlots: 0,
-  categories: []
+  categories: [],
+  target: ''
 });
 
 // TODO: Add Inventory specific slot counts
@@ -58,7 +59,8 @@ const translateItems = (items) => {
       weight: item.weight,
       category: item.category_id,
       maxQuantity: item.max_quantity,
-      maxStackSize: item.max_stack_size
+      maxStackSize: item.max_stack_size,
+      metadata: item.item_metadata
     }
   });
 
@@ -66,14 +68,12 @@ const translateItems = (items) => {
   let outputItems = []
 
   _.forEach(groupedItems, (itemGroup, key) => {
-    let chunked = _.chunk(itemGroup, itemGroup[0].maxStackSize)
-
+    let sorted = _.sortBy(itemGroup, (item) => {
+      return item.metadata !== null
+    })
+    
+    let chunked = _.chunk(sorted, itemGroup[0].maxStackSize)
     outputItems = outputItems.concat(chunked)
-
-    // outputItems.push({
-    //   key: key,
-    //   items: chunked
-    // })
   });
 
   return outputItems
@@ -87,6 +87,7 @@ const onMessage = (event) => {
       globalOptions.maxWeight = event.data.maxWeight;
       globalOptions.maxItemSlots = event.data.maxSlots;
       globalOptions.categories = event.data.categories;
+      globalOptions.target = event.data.target
 
       playerInventory.items = {}
       otherInventory.items = {}

@@ -6,7 +6,7 @@ lua54 "yes"
 description 'The Inventory API for the Feather Framework'
 author 'BCC Scripts'
 name 'feather-inventory'
-version '1.0.0'
+version '0.1.0'
 
 github_version_check 'false'
 github_version_type 'release'
@@ -47,5 +47,3 @@ files {
 dependencies {
   'oxmysql',
 }
-
-version '1.0.0'

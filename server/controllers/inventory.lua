@@ -46,9 +46,14 @@ function GetInventoryTotalWeight(inventory)
 end
 
 function GetInventoryItems(inventory)
-  return MySQL.query.await(
-    'SELECT `inventory_items`.`id`, `items`.`display_name`,`items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, `item_metadata`.`key`, `item_metadata`.`value` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id`=`items`.`id` LEFT JOIN `item_metadata` ON `item_metadata`.`inventory_items_id` = `inventory_items`.`id` WHERE `inventory_items`.`inventory_id`=?;',
-    { inventory })
+  local items = MySQL.query.await( 'SELECT `inventory_items`.`id`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, JSON_OBJECTAGG(`item_metadata`.`key`, `item_metadata`.`value`) AS `item_metadata` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` LEFT JOIN `item_metadata` ON `item_metadata`.`inventory_items_id` = `inventory_items`.`id` WHERE `inventory_items`.`inventory_id` = ? GROUP BY `inventory_items`.`id`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`;', { inventory })
+  for key, value in pairs(items) do
+    if value["item_metadata"] and value["item_metadata"] ~= nil then
+      items[key]["item_metadata"] = json.decode(value["item_metadata"])
+    end
+  end
+
+  return items
 end
 
 function GetInventoryItemCounts(inventory)
