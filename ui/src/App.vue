@@ -1,6 +1,6 @@
 <template>
   <div id="content" class="flex flex-col h-screen justify-center items-center" style="width: 100vw; height: 100vh;" v-if="visible || devmode">
-    <div class="bg-zinc-900 px-4 relative mx-auto pt-10 bg-opacity-90" :style="`${ globalOptions.target != 'player' ? 'width: 80vw;' : ''} height: 80vh;`">
+    <div class="bg-zinc-900 px-4 relative mx-auto pt-10 bg-opacity-70 rounded-md" :style="`${ globalOptions.target != 'player' ? 'width: 80vw;' : ''} height: 80vh;`">
       <div class="absolute right-2 top-0 text-2xl text-white hover:text-red-500" @click="closeApp">&times;</div>
       <MenuUI :player-inventory="playerInventory" :other-iventory="otherInventory" :global-options="globalOptions" :target="globalOptions.target">
       </MenuUI>
@@ -125,8 +125,38 @@ const closeApp = () => {
 </script>
 
 <style>
+@font-face {
+  font-family: rdrlino;
+  src: url(assets/fonts/rdrlino-regular.ttf);
+}
+
+@font-face {
+  font-family: chinarocks;
+  src: url(assets/fonts/chinese-rocks.ttf);
+}
+
 #content {
   width: 60vw;
   height: 70vh;
 }
+
+#app {
+  font-family: rdrlino;
+  touch-action: manipulation;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.rdrlino {
+  font-family: rdrlino !important;
+}
+
+.chinarocks {
+  font-family: chinarocks !important;
+}
+
+::-webkit-scrollbar {
+    display: none;
+}
+
 </style>
