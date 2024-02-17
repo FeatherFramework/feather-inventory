@@ -1,8 +1,11 @@
 <template>
-  <div id="content" class="flex flex-col h-screen justify-center items-center" style="width: 100vw; height: 100vh;" v-if="visible || devmode">
-    <div class="bg-zinc-900 px-4 relative mx-auto pt-10 bg-opacity-70 rounded-md" :style="`${ globalOptions.target != 'player' ? 'width: 80vw;' : ''} height: 80vh;`">
+  <div id="content" class="flex flex-col h-screen justify-center items-center" style="width: 100vw; height: 100vh;"
+    v-if="visible || devmode">
+    <div class="bg-zinc-900 px-4 relative mx-auto pt-10 bg-opacity-70 rounded-md"
+      :style="`${globalOptions.target != 'player' ? 'width: 80vw;' : ''} height: 80vh;`">
       <div class="absolute right-2 top-0 text-2xl text-white hover:text-red-500" @click="closeApp">&times;</div>
-      <MenuUI :player-inventory="playerInventory" :other-iventory="otherInventory" :global-options="globalOptions" :target="globalOptions.target">
+      <MenuUI :player-inventory="playerInventory" :other-iventory="otherInventory" :global-options="globalOptions"
+        :target="globalOptions.target" :player-display="playerDisplay" @transfer="transferItems">
       </MenuUI>
     </div>
   </div>
@@ -16,6 +19,10 @@ import _ from "lodash"
 
 import MenuUI from "./views/MenuUI.vue";
 
+// TODO: At a later date, MAYBE move this all to state management :/
+// TODO: Add Inventory specific slot counts
+// TODO: Account for inventory specific ignore limits (ignore item caps)
+
 const devmode = ref(false);
 const visible = ref(false);
 const playerInventory = reactive({
@@ -23,6 +30,7 @@ const playerInventory = reactive({
   id: null,
   items: []
 });
+
 const otherInventory = reactive({
   displayName: '',
   id: null,
@@ -36,8 +44,13 @@ const globalOptions = reactive({
   target: ''
 });
 
-// TODO: Add Inventory specific slot counts
-// TODO: Account for inventory specific ignore limits (ignore item caps)
+const playerDisplay = reactive({
+  dollars: '',
+  gold: '',
+  tokens: '',
+  id: 0
+})
+
 
 
 onMounted(() => {
@@ -49,7 +62,7 @@ onUnmounted(() => {
 });
 
 const translateItems = (items) => {
-  let tempItems = _.map(items, (item) => {
+  let tempItems = _.map(items, (item) => {    
     return {
       id: item.id,
       name: item.name,
@@ -60,7 +73,8 @@ const translateItems = (items) => {
       category: item.category_id,
       maxQuantity: item.max_quantity,
       maxStackSize: item.max_stack_size,
-      metadata: item.item_metadata
+      metadata: item.item_metadata,
+      updatedAt: item.updated_at
     }
   });
 
@@ -68,10 +82,8 @@ const translateItems = (items) => {
   let outputItems = []
 
   _.forEach(groupedItems, (itemGroup, key) => {
-    let sorted = _.sortBy(itemGroup, (item) => {
-      return item.metadata !== null
-    })
-    
+    let sorted = _.sortBy(itemGroup, ['updatedAt'])
+
     let chunked = _.chunk(sorted, itemGroup[0].maxStackSize)
     outputItems = outputItems.concat(chunked)
   });
@@ -82,35 +94,52 @@ const translateItems = (items) => {
 const onMessage = (event) => {
   switch (event.data.type) {
     case "toggleInventory":
-      visible.value = event.data.visible;
+      let data = event.data;
 
-      globalOptions.maxWeight = event.data.maxWeight;
-      globalOptions.maxItemSlots = event.data.maxSlots;
-      globalOptions.categories = event.data.categories;
-      globalOptions.target = event.data.target
+      visible.value = data.visible;
 
-      playerInventory.items = {}
-      otherInventory.items = {}
+      playerDisplay.id = data.player.id;
+      playerDisplay.gold = data.player.gold;
+      playerDisplay.dollars = data.player.dollars;
+      playerDisplay.tokens = data.player.tokens;
 
-      console.log(event.data)
+      globalOptions.maxWeight = data.maxWeight;
+      globalOptions.maxItemSlots = data.maxSlots;
+      globalOptions.categories = data.categories;
+      globalOptions.target = data.target;
 
-      // Set data
-      if (typeof event.data.playerItems !== "undefined" && event.data.playerItems !== null) {
+      if (typeof data.playerItems !== "undefined" && data.playerItems !== null) {
         playerInventory.name = "Inventory"
-        playerInventory.id = event.data.playerInventory
-        playerInventory.items = translateItems(event.data.playerItems)
+        playerInventory.id = data.playerInventory
+        hydrateInventoryItems('player', data);
       }
 
-      if (typeof event.data.otherItems !== "undefined" && event.data.otherItems !== null) {
+      if (typeof data.otherItems !== "undefined" && data.otherItems !== null) {
         otherInventory.name = "Other"
-        otherInventory.id = event.data.otherInventory
-        otherInventory.items = translateItems(event.data.otherItems)
+        otherInventory.id = data.otherInventory
+        hydrateInventoryItems('other', data);
       }
       break;
     default:
       break;
   }
 };
+
+const hydrateInventoryItems = (location, data) => {
+  if (location == 'player') {
+    playerInventory.items = {}
+    playerInventory.items = translateItems(data.playerItems)
+  } else if (location == 'other') {
+    otherInventory.items = {}
+    otherInventory.items = translateItems(data.otherItems)
+  } else {
+    playerInventory.items = {}
+    playerInventory.items = translateItems(data.playerItems)
+
+    otherInventory.items = {}
+    otherInventory.items = translateItems(data.otherItems)
+  }
+}
 
 const closeApp = () => {
   visible.value = false;
@@ -122,6 +151,54 @@ const closeApp = () => {
       console.log(e.message);
     });
 };
+
+const transferItems = (dropzoneid, items) => {
+  //Disable the UI while transfering
+  const shieldinv = document.querySelectorAll('.shieldinv');
+  shieldinv.forEach(shield => shield.style.display = 'block')
+
+
+  let targetid = null
+  let sourceid = null
+
+  if (dropzoneid == `dropzone-left`) {
+    sourceid = otherInventory.id
+    targetid = playerInventory.id
+  } else {
+    sourceid = playerInventory.id
+    targetid = otherInventory.id
+  }
+
+  api.post("Feather:Inventory:UpdateInventory", {
+    sourceInventory: sourceid,
+    targetInventory: targetid,
+    items: items
+  })
+    .then(({data}) => {
+      var outputItems = {}
+      if (dropzoneid == `dropzone-left`) {
+        outputItems = {
+          playerItems: data.targetItems,
+          otherItems: data.sourceItems
+        }
+      } else {
+        outputItems = {
+          playerItems: data.sourceItems,
+          otherItems: data.targetItems
+        }
+      }
+
+      hydrateInventoryItems('both', outputItems);
+      const shieldinv = document.querySelectorAll('.shieldinv');
+      shieldinv.forEach(shield => shield.style.display = 'none')
+    })
+    .catch((e) => {
+      const shieldinv = document.querySelectorAll('.shieldinv');
+      shieldinv.forEach(shield => shield.style.display = 'none')
+      console.log(e.message);
+    });
+}
+
 </script>
 
 <style>
@@ -156,7 +233,13 @@ const closeApp = () => {
 }
 
 ::-webkit-scrollbar {
-    display: none;
+  display: none;
 }
 
+.ghost {
+  pointer-events: none;
+  position: absolute;
+  opacity: 0;
+  z-index: 99999;
+}
 </style>

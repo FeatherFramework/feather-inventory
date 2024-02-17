@@ -19,8 +19,8 @@ RegisterNUICallback('Feather:Inventory:UpdateInventory', function(args, cb)
   local result = Feather.RPC.CallAsync('Feather:Inventory:UpdateInventory', data)
 
   cb({
-    playerItems = result.playerItems,
-    otherItems = result.otherItems
+    sourceItems = result.sourceItems,
+    targetItems = result.targetItems
   })
 end)
 

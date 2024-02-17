@@ -1,7 +1,7 @@
 <template>
     <div class="flow-root p-4">
-        <InventorySlate :inventory="playerInventory" :options="globalOptions" :side="'left'" class="float-left relative"></InventorySlate>
-        <InventorySlate :inventory="otherIventory" v-if="target != 'player'" :options="globalOptions" :side="'right'" class="float-right relative"></InventorySlate>
+        <InventorySlate :inventory="playerInventory" :options="globalOptions" :side="'left'" class="float-left relative" :player-display="playerDisplay" @transfer="handleTransfer"></InventorySlate>
+        <InventorySlate :inventory="otherIventory" v-if="target != 'player'" :options="globalOptions" :side="'right'" class="float-right relative" @transfer="handleTransfer"></InventorySlate>
     </div>
 </template>
   
@@ -24,7 +24,17 @@ const props = defineProps({
     target: {
         type: String,
         required: true
+    },
+    playerDisplay: {
+        type: Object,
+        required: true
     }
 })
+
+const emit = defineEmits(['transfer'])
+const handleTransfer = (id, items) => {
+    emit('transfer', id, items)
+}
+
 </script>
   

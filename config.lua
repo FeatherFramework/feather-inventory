@@ -11,9 +11,9 @@ Config.droppedItemObject = 'p_dis_strongboxsm01x'
 -- p_bag01x (right)
 -- p_dis_strongboxsm01x (front center)
 
+-- TODO:
+    -- Store in statebag for any entity creating inventory
+    -- Inventory ID (e.g. 25)
+    -- Inventory ID as Hash (e.g. b7a56873cd771f2c446d369b649430b65a756ba278ff97ec81bb6f55b2e73569)
 
--- Store in statebag for any entity creating inventory
--- Inventory ID (e.g. 25)
--- Inventory ID as Hash (e.g. b7a56873cd771f2c446d369b649430b65a756ba278ff97ec81bb6f55b2e73569)
-
--- Compare when attempting access
+    -- Compare when attempting access

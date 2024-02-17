@@ -43,3 +43,13 @@ end)
 Feather.RPC.Register('Feather:Inventory:GetCategories', function(params, res, src)
   res(GetCategories())
 end)
+
+Feather.RPC.Register('Feather:Inventory:GetCharacterInfoForDisplay', function(params, res, src)
+  local player = Feather.Character.GetCharacterBySrc(src)
+  res({
+    dollars = player.dollars,
+    gold = player.gold,
+    tokens = player.tokens,
+    id = player.id
+  })
+end)

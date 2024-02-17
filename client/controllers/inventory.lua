@@ -9,10 +9,10 @@ RegisterNetEvent('Feather:Inventory:OpenInventory', function(otherInventoryId, t
 
   print('Opening Inventory', otherInventoryId or 'character')
   if not isInvOpen and CanOpenInventory() then
-    print('Inventory is not open and you can open it')
     isInvOpen = true
 
     local results = Feather.RPC.CallAsync('Feather:Inventory:GetInventoryItems', { otherInventoryId = otherInventoryId })
+    local player_display = Feather.RPC.CallAsync('Feather:Inventory:GetCharacterInfoForDisplay')
     
     SendNUIMessage({
       type = "toggleInventory",
@@ -26,7 +26,13 @@ RegisterNetEvent('Feather:Inventory:OpenInventory', function(otherInventoryId, t
       otherIgnoreLimits = results.otherInventoryIgnoreLimits,
       maxWeight = Config.maxWeight,
       maxSlots = Config.maxItemSlots,
-      categories = Feather.RPC.CallAsync('Feather:Inventory:GetCategories', {})
+      categories = Feather.RPC.CallAsync('Feather:Inventory:GetCategories', {}),
+      player = {
+        dollars = player_display.dollars,
+        gold = player_display.gold,
+        tokens = player_display.tokens,
+        id = player_display.id
+      }
     })
     SetNuiFocus(true, true)
   end

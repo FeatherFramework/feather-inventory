@@ -46,7 +46,7 @@ function GetInventoryTotalWeight(inventory)
 end
 
 function GetInventoryItems(inventory)
-  local items = MySQL.query.await( 'SELECT `inventory_items`.`id`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, JSON_OBJECTAGG(`item_metadata`.`key`, `item_metadata`.`value`) AS `item_metadata` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` LEFT JOIN `item_metadata` ON `item_metadata`.`inventory_items_id` = `inventory_items`.`id` WHERE `inventory_items`.`inventory_id` = ? GROUP BY `inventory_items`.`id`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`;', { inventory })
+  local items = MySQL.query.await( 'SELECT `inventory_items`.`id`, `inventory_items`.`updated_at`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, JSON_OBJECTAGG(`item_metadata`.`key`, `item_metadata`.`value`) AS `item_metadata` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` LEFT JOIN `item_metadata` ON `item_metadata`.`inventory_items_id` = `inventory_items`.`id` WHERE `inventory_items`.`inventory_id` = ? GROUP BY `inventory_items`.`id`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`;', { inventory })
   for key, value in pairs(items) do
     if value["item_metadata"] and value["item_metadata"] ~= nil then
       items[key]["item_metadata"] = json.decode(value["item_metadata"])
@@ -118,13 +118,23 @@ function UpdateRestrictedItems(inventory, items)
   end
 end
 
-function MoveInventoryItems(sourceInventory, targetInventory, itemIds)
-  for _, id in pairs(itemIds) do
+function MoveInventoryItems(sourceInventory, targetInventory, items)
+  for _, item in pairs(items) do
+    local id = nil 
+    if type(item) == 'table' then
+      id = item.id
+    elseif type(item) == 'number' then
+      id = item
+    else
+      error('Invalid Item type in MoveItems')
+      return
+    end
+
     MySQL.query.await('UPDATE `inventory_items` SET `inventory_id`=? WHERE `id`=?;', { targetInventory, id })
   end
 
   return {
-    playerItems = GetInventoryItems(sourceInventory),
-    otherItems = GetInventoryItems(targetInventory)
+    sourceItems = GetInventoryItems(sourceInventory),
+    targetItems = GetInventoryItems(targetInventory)
   }
 end

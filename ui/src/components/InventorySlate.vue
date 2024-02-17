@@ -4,8 +4,11 @@
         </div>
         <UsableModal :active-item="activeLeftClickItem" @close="handleItemPopup"></UsableModal>
         <UsableModal :active-item="activeLeftClickSubItem" @close="handleItemPopup"></UsableModal>
-        <SubSlots v-if="side == 'right'" :side="side" :activeRightClickItem="activeRightClickItem"
-            @submit="handleSubItemClick"></SubSlots>
+
+        <ItemCountModal v-if="activeTransferItem?.id" button-text="TRANSFER" :active-item="activeTransferItem" @close="handleTransferClose" @submit="handleTransferQuantity"></ItemCountModal>
+
+        <SubSlots v-if="side == 'right'" :side="side" :activeRightClickItem="activeRightClickItem" :id="inventory.id"
+            @submit="handleSubItemClick" @transfer="handleTransfer"></SubSlots>
         <div class="text-gray-100 bg-zinc-800 p-6 min-h-full relative select-none rounded-md flex flex-col justify-between dropzone"
             :id="`dropzone-${side}`" style="width: 500px; height: 70vh;">
             <h1 class="font-bold text-2xl text-center">{{ inventory.name }}</h1>
@@ -36,10 +39,10 @@
                 style="height: 40%; min-height: 300px;">
                 <div v-for="(slot, key) in filteredList" :key="'playerslot' + key + side"
                     class="aspect-square bg-zinc-600 text-center relative rounded-md hover:bg-zinc-200 hover:cursor-pointer"
-                    @mousedown.left="startDrag($event, key)"
-                    @mouseover="setActiveData(true, slot[0])" @mouseleave="setActiveData(false)"
-                    @click.left="handleItemClick('left', 'playerslot' + key + side, slot)"
-                    @click.right="handleItemClick('right', 'playerslot' + key + side, slot)">
+                    @mousedown.left="startDrag($event, key)" @mouseover="setActiveData(true, slot[0])"
+                    @mouseleave="setActiveData(false)"
+                    @click.left="handleItemClick('left', 'playerslot' + key + side, slot, key)"
+                    @click.right="handleItemClick('right', 'playerslot' + key + side, slot, key)">
                     <img :src="`/images/items/${slot[0].name}.png`" />
                     <div
                         class="w-8 h-8 absolute right-1 bottom-1 font-bold bg-white text-black rounded-full flex justify-center items-center">
@@ -68,22 +71,25 @@
                         </div>
                     </div>
                     <div>
-                        ID: 2
+                        ID: {{ playerDisplay.id }}
                     </div>
                 </div>
             </div>
         </div>
-        <SubSlots v-if="side == 'left'" :side="side" :activeRightClickItem="activeRightClickItem"
-            @submit="handleSubItemClick"></SubSlots>
+        <SubSlots v-if="side == 'left'" :side="side" :activeRightClickItem="activeRightClickItem" :id="inventory.id"
+            @submit="handleSubItemClick" @transfer="handleTransfer"></SubSlots>
     </div>
 </template>
   
 <script setup>
-import { onMounted, ref, watch } from 'vue';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
 import _ from 'lodash';
 
 import UsableModal from './UsableModal.vue';
-import SubSlots from '@/components/SubSlots.vue'
+import SubSlots from './SubSlots.vue'
+import ItemCountModal from './ItemCountModal.vue';
+
+
 import MoneyIcon from '@/assets/icons/money.png'
 import GoldIcon from '@/assets/icons/gold.png'
 import TokenIcon from '@/assets/icons/token.png'
@@ -100,14 +106,20 @@ const props = defineProps({
     side: {
         type: String,
         required: true
+    },
+    playerDisplay: {
+        type: Object,
+        required: false,
+        default: null
     }
 })
 
+const emit = defineEmits(['transfer'])
+
 const availableCategories = ref([]);
 const currentCategoryIndex = ref(0);
-const filteredList = ref([])
 
-const currencies = ref({
+const currencies = reactive({
     money: {
         image: MoneyIcon,
         value: '$00.00'
@@ -128,6 +140,8 @@ const activeCategory = ref({
     name: 'loading'
 })
 
+const activeTransferItem = ref({})
+
 const activeLeftClickItem = ref({})
 const activeRightClickItem = ref({})
 
@@ -136,6 +150,16 @@ const activeLeftClickSubItem = ref({})
 const isDragging = ref(false);
 const isShielded = ref(false);
 const draggingIndex = ref(null);
+
+const filteredList = computed(() => {
+    return _.filter(props.inventory.items, (item) => {
+        if (typeof activeCategory.value.id == 'undefined' || activeCategory.value.id == null) {
+            return true
+        }
+
+        return item[0].category == activeCategory.value.id
+    });
+})
 
 onMounted(() => {
     availableCategories.value = [
@@ -146,19 +170,22 @@ onMounted(() => {
     ]
 
     activeCategory.value = availableCategories.value[0];
+
+    if (props.playerDisplay) {
+        currencies.money.value = props.playerDisplay.dollars;
+        currencies.gold.value = props.playerDisplay.gold;
+        currencies.tokens.value = props.playerDisplay.tokens;
+    }
 })
 
-watch(activeCategory, async (change) => {
-    filteredList.value = _.filter(props.inventory.items, (item) => {
-        if (typeof change.id == 'undefined' || change.id == null) {
-            return true
-        }
-
-        return item[0].category == change.id
-    });
+watch(filteredList, async (change) => {
+    if (activeRightClickItem?.value?.key) {
+        activeRightClickItem.value = {}
+    }
 })
 
-const handleItemClick = (button, key, items) => {
+
+const handleItemClick = (button, key, items, index) => {
     if (button == 'left') {
         activeLeftClickItem.value = {
             key: key,
@@ -170,7 +197,8 @@ const handleItemClick = (button, key, items) => {
         } else {
             activeRightClickItem.value = {
                 key: key,
-                items: items
+                items: items,
+                index: index
             }
         }
     }
@@ -222,8 +250,17 @@ const endDrag = () => {
                     ghostRect.top >= dropZoneRect.top &&
                     ghostRect.bottom <= dropZoneRect.bottom
                 ) {
-                    console.log('Item dropped into drop zone!', dropZone.id);
-                    console.log(filteredList.value[draggingIndex.value][0].name, filteredList.value[draggingIndex.value].length);
+
+                    if (dropZone.id != `dropzone-${props.side}`) {
+                        if (filteredList.value[draggingIndex.value].length <= 1) {
+                            handleTransfer(dropZone.id, filteredList.value[draggingIndex.value])
+                        } else {
+                            activeTransferItem.value = {
+                                id: dropZone.id,
+                                items: filteredList.value[draggingIndex.value]
+                            }
+                        }
+                    }
                 }
             });
 
@@ -240,6 +277,16 @@ const endDrag = () => {
         document.removeEventListener('mouseup', endDrag);
     }
 };
+
+const handleTransferClose = () => {
+    activeTransferItem.value = {}
+}
+
+const handleTransferQuantity = (quantity) => {
+    let transferItems = _.slice(activeTransferItem.value.items, 0, quantity)
+    handleTransfer(activeTransferItem.value.id, transferItems)
+    activeTransferItem.value = {}
+}
 
 const handleSubItemClick = (key, item) => {
     activeLeftClickSubItem.value = {
@@ -263,13 +310,19 @@ const setActiveData = (active, slot) => {
     }
 }
 
-function prevString() {
+const handleTransfer = (id, items) => {
+    if (id != `dropzone-${props.side}`) {
+        emit('transfer', id, items)
+    }
+}
+
+const prevString = () => {
     activeRightClickItem.value = {}
     currentCategoryIndex.value = (currentCategoryIndex.value - 1 + availableCategories.value.length) % availableCategories.value.length;
     activeCategory.value = availableCategories.value[currentCategoryIndex.value];
 }
 
-function nextString() {
+const nextString = () => {
     activeRightClickItem.value = {}
     currentCategoryIndex.value = (currentCategoryIndex.value + 1) % availableCategories.value.length;
     activeCategory.value = availableCategories.value[currentCategoryIndex.value];
@@ -300,13 +353,6 @@ function nextString() {
 
 .noscrollbar::-webkit-scrollbar {
     display: none !important;
-}
-
-.ghost {
-    pointer-events: none;
-    position: absolute;
-    opacity: 0;
-    z-index: 99999;
 }
 </style>
   

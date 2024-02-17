@@ -1,3 +1,7 @@
+-- RegisterEvent("Feather:Character:Spawned", function()
+--   -- TODO: Make they keybinds instead of commands
+-- end)
+
 RegisterCommand('open_inventory', function()
   TriggerEvent('Feather:Inventory:OpenInventory', nil, "player")
 end, false)
