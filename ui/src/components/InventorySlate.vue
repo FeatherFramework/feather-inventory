@@ -8,7 +8,7 @@
         <ItemCountModal v-if="activeTransferItem?.id" button-text="TRANSFER" :active-item="activeTransferItem" @close="handleTransferClose" @submit="handleTransferQuantity"></ItemCountModal>
 
         <SubSlots v-if="side == 'right'" :side="side" :activeRightClickItem="activeRightClickItem" :id="inventory.id"
-            @submit="handleSubItemClick" @transfer="handleTransfer"></SubSlots>
+            @submit="handleSubItemClick" @transfer="handleTransfer" @dragging="EmitDragging"></SubSlots>
         <div class="text-gray-100 bg-zinc-800 p-6 min-h-full relative select-none rounded-md flex flex-col justify-between dropzone"
             :id="`dropzone-${side}`" style="width: 500px; height: 70vh;">
             <h1 class="font-bold text-2xl text-center">{{ inventory.name }}</h1>
@@ -77,7 +77,7 @@
             </div>
         </div>
         <SubSlots v-if="side == 'left'" :side="side" :activeRightClickItem="activeRightClickItem" :id="inventory.id"
-            @submit="handleSubItemClick" @transfer="handleTransfer"></SubSlots>
+            @submit="handleSubItemClick" @transfer="handleTransfer" @dragging="EmitDragging"></SubSlots>
     </div>
 </template>
   
@@ -114,7 +114,7 @@ const props = defineProps({
     }
 })
 
-const emit = defineEmits(['transfer'])
+const emit = defineEmits(['transfer', 'dragging'])
 
 const availableCategories = ref([]);
 const currentCategoryIndex = ref(0);
@@ -187,6 +187,7 @@ watch(filteredList, async (change) => {
 
 const handleItemClick = (button, key, items, index) => {
     if (button == 'left') {
+        // activeRightClickItem.value = {}
         activeLeftClickItem.value = {
             key: key,
             items: items
@@ -207,6 +208,8 @@ const handleItemClick = (button, key, items, index) => {
 const startDrag = (event, index) => {
     isDragging.value = true;
     draggingIndex.value = index;
+
+    EmitDragging(true);
 
     // Clone the the dom node
     const originalBox = event.currentTarget.querySelector('img');
@@ -273,10 +276,17 @@ const endDrag = () => {
 
         isShielded.value = false;
         isDragging.value = false;
+
+        EmitDragging(false);
+
         document.removeEventListener('mousemove', onDrag);
         document.removeEventListener('mouseup', endDrag);
     }
 };
+
+const EmitDragging = (state) => {
+    if (props.side == 'left') emit('dragging', state);
+}
 
 const handleTransferClose = () => {
     activeTransferItem.value = {}

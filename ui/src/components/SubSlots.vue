@@ -1,23 +1,24 @@
 <template>
     <div class="flex items-center justify-center">
-        <div :class="`text-gray-100 bg-zinc-800 noscrollbar overflow-y-scroll select-none rounded-${side=='right' ? 'l' : 'r'}-md`"
-            v-show="activeRightClickItem?.items" style="max-height: 50vh;">
-            <div v-for="(subslot, key) in activeRightClickItem.items" :key="'playersubslot' + key + side"
-                @click.left="leftClick('subitem' + side + key, subslot)"
-                @mousedown.left="startDrag($event, key)"
-                :class="`m-2 p-2 rounded-md bg-zinc-600 hover:bg-zinc-400 items-center justify-center`" >
-                <div class="w-8 aspect-square text-center relative inline-block align-middle">
-                    <img :src="`/images/items/${subslot.name}.png`" />
-                </div>
-                <div :class="`inline-block align-middle p${side=='right' ? 'r' : 'l'}-2 text-xs`" style="max-width:160px;"
-                    v-if="subslot?.metadata?.display">
-                    <span v-if="subslot?.metadata?.display">{{ subslot.metadata.display }}</span>
+        <Transition :name="`slide-${side}`">
+            <div :class="`text-gray-100 bg-zinc-800 noscrollbar overflow-y-scroll select-none rounded-${side == 'right' ? 'l' : 'r'}-md`"
+                v-if="activeRightClickItem?.items" style="max-height: 50vh;">
+                <div v-for="(subslot, key) in activeRightClickItem.items" :key="'playersubslot' + key + side"
+                    @click.left="leftClick('subitem' + side + key, subslot)" @mousedown.left="startDrag($event, key)"
+                    :class="`m-2 p-2 rounded-md bg-zinc-600 hover:bg-zinc-400 items-center justify-center`">
+                    <div class="w-8 aspect-square text-center relative inline-block align-middle" :class="subslot?.metadata?.display ? `mr-2` : 'mr-0'">
+                        <img :src="`/images/items/${subslot.name}.png`"/>
+                    </div>
+                    <div :class="`inline-block align-middle text-xs`"
+                        style="max-width:160px;" v-if="subslot?.metadata?.display">
+                        <span v-if="subslot?.metadata?.display">{{ subslot.metadata.display }}</span>
+                    </div>
                 </div>
             </div>
-        </div>
+        </Transition>
     </div>
 </template>
-  
+
 <script setup>
 import { ref } from 'vue';
 
@@ -36,7 +37,7 @@ const props = defineProps({
     }
 })
 
-const emit = defineEmits(['submit', 'transfer'])
+const emit = defineEmits(['submit', 'transfer', 'dragging'])
 
 const isDragging = ref(false);
 const draggingIndex = ref(null);
@@ -48,6 +49,7 @@ const leftClick = (key, item) => {
 
 const startDrag = (event, index) => {
     isDragging.value = true;
+    emit('dragging', true);
     draggingIndex.value = index;
 
     // Clone the the dom node
@@ -106,6 +108,9 @@ const endDrag = () => {
 
         isShielded.value = false;
         isDragging.value = false;
+
+        emit('dragging', false);
+
         document.removeEventListener('mousemove', onDrag);
         document.removeEventListener('mouseup', endDrag);
     }
@@ -119,4 +124,3 @@ const endDrag = () => {
     display: none !important;
 }
 </style>
-  

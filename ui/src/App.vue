@@ -1,21 +1,23 @@
 <template>
-  <div id="content" class="flex flex-col h-screen justify-center items-center" style="width: 100vw; height: 100vh;"
-    v-if="visible || devmode">
-    <div class="bg-zinc-900 px-4 relative mx-auto pt-10 bg-opacity-70 rounded-md"
-      :style="`${globalOptions.target != 'player' ? 'width: 80vw;' : ''} height: 80vh;`">
-      <div class="absolute right-2 top-0 text-2xl text-white hover:text-red-500" @click="closeApp">&times;</div>
-      <MenuUI :player-inventory="playerInventory" :other-iventory="otherInventory" :global-options="globalOptions"
-        :target="globalOptions.target" :player-display="playerDisplay" @transfer="transferItems">
-      </MenuUI>
+  <Transition name="fade">
+    <div id="content" class="flex flex-col h-screen justify-center items-center" style="width: 100vw; height: 100vh;"
+      v-if="visible || devmode">
+      <div class="bg-zinc-900 px-4 relative mx-auto pt-10 bg-opacity-70 rounded-md"
+        :style="`${globalOptions.target != 'player' ? 'width: 80vw;' : ''} height: 80vh;`">
+        <div class="absolute right-2 top-0 text-2xl text-white hover:text-red-500" @click="closeApp">&times;</div>
+        <MenuUI :player-inventory="playerInventory" :other-iventory="otherInventory" :global-options="globalOptions"
+          :target="globalOptions.target" :player-display="playerDisplay" @transfer="transferItems">
+        </MenuUI>
+      </div>
     </div>
-  </div>
+  </Transition>
 </template>
 
 <script setup>
 import api from "./api";
 import { ref, onMounted, onUnmounted, reactive } from "vue";
 import "@/assets/styles/main.scss";
-import _ from "lodash"
+import _ from "lodash";
 
 import MenuUI from "./views/MenuUI.vue";
 
@@ -51,8 +53,6 @@ const playerDisplay = reactive({
   id: 0
 })
 
-
-
 onMounted(() => {
   window.addEventListener("message", onMessage);
 });
@@ -62,7 +62,7 @@ onUnmounted(() => {
 });
 
 const translateItems = (items) => {
-  let tempItems = _.map(items, (item) => {    
+  let tempItems = _.map(items, (item) => {
     return {
       id: item.id,
       name: item.name,
@@ -174,7 +174,7 @@ const transferItems = (dropzoneid, items) => {
     targetInventory: targetid,
     items: items
   })
-    .then(({data}) => {
+    .then(({ data }) => {
       var outputItems = {}
       if (dropzoneid == `dropzone-left`) {
         outputItems = {
@@ -241,5 +241,53 @@ const transferItems = (dropzoneid, items) => {
   position: absolute;
   opacity: 0;
   z-index: 99999;
+}
+
+.scale-enter-active,
+.scale-leave-active {
+  transition: transform 0.2s ease-in-out;
+}
+
+.scale-enter-from,
+.scale-leave-to {
+  transform: scale(0.0);
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.1s ease-in-out;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+.slide-left-enter-active {
+  transition: all 0.1s ease-in-out;
+}
+
+.slide-left-leave-active {
+  transition: all 0.1s ease-in-out;
+}
+
+.slide-left-enter-from,
+.slide-left-leave-to {
+  transform: translateX(-20px);
+  z-index: -999;
+}
+
+.slide-right-enter-active {
+  transition: all 0.1s ease-in-out;
+}
+
+.slide-right-leave-active {
+  transition: all 0.1s ease-in-out;
+}
+
+.slide-right-enter-from,
+.slide-right-leave-to {
+  transform: translateX(20px);
+  z-index: -999;
 }
 </style>
