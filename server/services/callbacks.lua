@@ -11,9 +11,7 @@ end)
 -- Called when player uses item from their inventory. Close Inventory after use.
 Feather.RPC.Register('Feather:Inventory:UseItem', function(params, res, src)
   local itemId = params['itemId']
-  local itemName = params['itemName']
-
-  res(ItemsAPI.UseItem(itemName, itemId, src))
+  res(ItemsAPI.UseItem(itemId, src))
 end)
 
 Feather.RPC.Register('Feather:Inventory:UpdateInventory', function(params, res, src)

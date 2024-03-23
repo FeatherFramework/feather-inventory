@@ -6,8 +6,19 @@
         :style="`${globalOptions.target != 'player' ? 'width: 80vw;' : ''} height: 80vh;`">
         <div class="absolute right-2 top-0 text-2xl text-white hover:text-red-500" @click="closeApp">&times;</div>
         <MenuUI :player-inventory="playerInventory" :other-iventory="otherInventory" :global-options="globalOptions"
-          :target="globalOptions.target" :player-display="playerDisplay" @transfer="transferItems">
+          :target="globalOptions.target" :player-display="playerDisplay" @transfer="transferItems"
+          @itemAction="handleItemAction">
         </MenuUI>
+        <div class="absolute top-4 left-1/2 transform -translate-x-1/2  z-50">
+          <Transition name="fade">
+            <div v-if="Error.active" class="max-w-xs bg-red-500 text-sm text-white rounded-md shadow-lg px-10"
+              role="alert">
+              <div class="flex p-4">
+                {{ Error.message }}
+              </div>
+            </div>
+          </Transition>
+        </div>
       </div>
     </div>
   </Transition>
@@ -27,6 +38,13 @@ import MenuUI from "./views/MenuUI.vue";
 
 const devmode = ref(false);
 const visible = ref(false);
+
+const ErrorTimeout = ref(null)
+const Error = reactive({
+  displayName: '',
+  active: false
+});
+
 const playerInventory = reactive({
   displayName: '',
   id: null,
@@ -91,10 +109,34 @@ const translateItems = (items) => {
   return outputItems
 }
 
+const resetInventory = () => {
+  visible.value = false
+  playerInventory.displayName = ''
+  playerInventory.id = null
+  playerInventory.items = []
+
+  otherInventory.displayName = ''
+  otherInventory.id = null
+  otherInventory.items = []
+
+  globalOptions.maxWeight = 0
+  globalOptions.maxItemSlots = 0
+  globalOptions.categories = []
+  globalOptions.target = ''
+
+  playerDisplay.dollars = ''
+  playerDisplay.gold = ''
+  playerDisplay.tokens = ''
+  playerDisplay.id = 0
+
+}
+
 const onMessage = (event) => {
   switch (event.data.type) {
     case "toggleInventory":
       let data = event.data;
+
+      resetInventory()
 
       visible.value = data.visible;
 
@@ -152,11 +194,59 @@ const closeApp = () => {
     });
 };
 
+const useItem = (item) => {
+  api.post("Feather:Inventory:UseItem", {
+    itemId: item.id,
+    itemName: item.name
+  })
+    .catch((e) => {
+      console.log(e.message);
+    });
+}
+
+const showError = (message) => {
+  Error.message = message
+  Error.active = true
+
+  if (ErrorTimeout.value) {
+    clearTimeout(ErrorTimeout.value);
+  }
+
+  ErrorTimeout.value = setTimeout(() => {
+    Error.message = ''
+    Error.active = false
+  }, 3000)
+}
+
+const giveItem = (item) => {
+  api.post("Feather:Inventory:GiveItem", {
+    item: item
+  })
+    .then(({ data }) => {
+      if (data?.status == 'error') {
+        showError(data.message)
+      }
+    })
+    .catch((e) => {
+      console.log(e.message);
+    });
+}
+
+const handleItemAction = (actionData) => {
+  switch (actionData.action) {
+    case 'use':
+      useItem(actionData.item);
+      break;
+    case 'give':
+      giveItem(actionData.item);
+      break;
+  }
+}
+
 const transferItems = (dropzoneid, items) => {
   //Disable the UI while transfering
   const shieldinv = document.querySelectorAll('.shieldinv');
   shieldinv.forEach(shield => shield.style.display = 'block')
-
 
   let targetid = null
   let sourceid = null

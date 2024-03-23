@@ -1,7 +1,16 @@
 local isInvOpen = false
-local isHBOpen = false
+-- local isHBOpen = false
 
-RegisterNetEvent('Feather:Inventory:OpenInventory', function(otherInventoryId, target)
+InventoryAction = {}
+
+function CanOpenInventory()
+  if IsEntityDead(PlayerPedId()) then return false end
+  if IsPauseMenuActive() then return false end
+  -- Add check for different states where inventory can't open like Handcuffed/HogTied/KnockedOut
+  return true
+end
+
+InventoryAction.Open = function(otherInventoryId, target)
   if target == nil then
     target = "storage"
   end
@@ -36,15 +45,24 @@ RegisterNetEvent('Feather:Inventory:OpenInventory', function(otherInventoryId, t
     })
     SetNuiFocus(true, true)
   end
-end)
+end
 
-RegisterNetEvent('Feather:Inventory:CloseInventory', function()
+InventoryAction.Close = function()
   if isInvOpen then
     SetNuiFocus(false, false)
     isInvOpen = false
 
     Feather.RPC.CallAsync('Feather:Inventory:Server:CloseInventory', {})
   end
+end
+
+
+RegisterNetEvent('Feather:Inventory:OpenInventory', function(otherInventoryId, target)
+  InventoryAction.Open(otherInventoryId, target)
+end)
+
+RegisterNetEvent('Feather:Inventory:CloseInventory', function()
+  InventoryAction.Close()
 end)
 
 -- function IsHotbarOpen()
@@ -55,10 +73,3 @@ end)
 --   isHBOpen = not isHBOpen
 --   ToggleHotbarDisplay(isHBOpen)
 -- end
-
-function CanOpenInventory()
-  if IsEntityDead(PlayerPedId()) then return false end
-  if IsPauseMenuActive() then return false end
-  -- Add check for different states where inventory can't open like Handcuffed/HogTied/KnockedOut
-  return true
-end

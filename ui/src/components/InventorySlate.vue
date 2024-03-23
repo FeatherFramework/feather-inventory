@@ -2,8 +2,8 @@
     <div class="flex items-center justify-center">
         <div class="shieldinv absolute z-50 w-full h-full bg-zinc-800 bg-opacity-0" style="display:none;">
         </div>
-        <UsableModal :active-item="activeLeftClickItem" @close="handleItemPopup"></UsableModal>
-        <UsableModal :active-item="activeLeftClickSubItem" @close="handleItemPopup"></UsableModal>
+        <UsableModal :active-item="activeLeftClickItem" @close="handleItemPopup" @itemAction="handleItemAction"></UsableModal>
+        <UsableModal :active-item="activeLeftClickSubItem" @close="handleItemPopup" @itemAction="handleItemAction"></UsableModal>
 
         <ItemCountModal v-if="activeTransferItem?.id" button-text="TRANSFER" :active-item="activeTransferItem" @close="handleTransferClose" @submit="handleTransferQuantity"></ItemCountModal>
 
@@ -114,7 +114,7 @@ const props = defineProps({
     }
 })
 
-const emit = defineEmits(['transfer', 'dragging'])
+const emit = defineEmits(['transfer', 'dragging', 'itemAction'])
 
 const availableCategories = ref([]);
 const currentCategoryIndex = ref(0);
@@ -186,8 +186,7 @@ watch(filteredList, async (change) => {
 
 
 const handleItemClick = (button, key, items, index) => {
-    if (button == 'left') {
-        // activeRightClickItem.value = {}
+    if (button == 'left' && props.side == 'left' && items[0]?.usable) {
         activeLeftClickItem.value = {
             key: key,
             items: items
@@ -216,6 +215,9 @@ const startDrag = (event, index) => {
     const clone = originalBox.cloneNode(true);
     clone.id = 'ghost';
     clone.classList.add('ghost');
+    clone.style.width = '90px';
+    clone.style.height = '90px';
+
     document.body.appendChild(clone);
 
     document.addEventListener('mousemove', onDrag);
@@ -242,9 +244,9 @@ const endDrag = () => {
         const clone = document.getElementById('ghost');
         if (clone) {
             const dropZones = document.querySelectorAll('.dropzone');
+
             dropZones.forEach(dropZone => {
                 const dropZoneRect = dropZone.getBoundingClientRect();
-
                 const ghostRect = clone.getBoundingClientRect();
 
                 if (
@@ -253,8 +255,9 @@ const endDrag = () => {
                     ghostRect.top >= dropZoneRect.top &&
                     ghostRect.bottom <= dropZoneRect.bottom
                 ) {
-
-                    if (dropZone.id != `dropzone-${props.side}`) {
+                    if (dropZone.id == 'dropit') {
+                        console.log('DROP IT MAINITEM');
+                    } else if (dropZone.id != `dropzone-${props.side}`) {
                         if (filteredList.value[draggingIndex.value].length <= 1) {
                             handleTransfer(dropZone.id, filteredList.value[draggingIndex.value])
                         } else {
@@ -273,7 +276,6 @@ const endDrag = () => {
         const shieldinv = document.querySelectorAll('.shieldinv');
         shieldinv.forEach(shield => shield.style.display = 'none')
 
-
         isShielded.value = false;
         isDragging.value = false;
 
@@ -286,6 +288,10 @@ const endDrag = () => {
 
 const EmitDragging = (state) => {
     if (props.side == 'left') emit('dragging', state);
+}
+
+const handleItemAction = (actionData) => {
+    emit('itemAction', actionData);
 }
 
 const handleTransferClose = () => {

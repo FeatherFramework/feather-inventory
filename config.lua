@@ -1,10 +1,14 @@
 Config = {}
 
-Config.hotbarLimit = 6
+
+Config.hotkey = "B"
+
 Config.maxItemSlots = 41          -- maximum inventory slots (last slot is your last action key)
 Config.maxWeight = 120000         -- Max weight a player can pickup. 120kg in grams
 Config.maxDropViewDistance = 12.5 -- Max distance to see a dropped item
 Config.droppedItemObject = 'p_dis_strongboxsm01x'
+
+Config.hotbarLimit = 6 -- NOT YET IMPLEMENTED
 
 -- p_cs_baganders01x (left)
 -- p_cs_bagstrauss01x (middle)

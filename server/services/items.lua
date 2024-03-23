@@ -43,7 +43,7 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   end
 
   local inventory, _, _ = nil, nil, nil
-  if tonumber(inventoryId)  then
+  if tonumber(inventoryId) then
     local character = Feather.Character.GetCharacterBySrc(inventoryId)
     inventory, _, _ = GetInventoryByCharacter(character.id)
   else
@@ -256,7 +256,6 @@ ItemsAPI.InventoryHasItems = function(items, inventoryId)
 end
 
 ItemsAPI.RegisterUsableItem = function(itemName, callback)
-  local src = source
   if UsableItemCallbacks[itemName] then
     error('An Item by that name has laready been registered. Item: ' .. itemName)
     return
@@ -265,13 +264,8 @@ ItemsAPI.RegisterUsableItem = function(itemName, callback)
   UsableItemCallbacks[itemName] = callback
 end
 
-ItemsAPI.UseItem = function(itemName, inventoryItemId, src)
-  if not itemName or type(itemName) ~= 'string' then
-    error('itemName is required and must be a string.')
-    return nil
-  end
-
-  local item = GetItemByName(itemName)
+ItemsAPI.UseItem = function(itemID, src)
+  local item = GetInventoryItemById(itemID)
   if not item then
     error('Item not found in the database!')
   end
@@ -279,26 +273,27 @@ ItemsAPI.UseItem = function(itemName, inventoryItemId, src)
     error('Invalid Player Source')
   end
 
-  local character = Feather.Character.GetCharacterBySrc(src)
-  local inventory, _, _ = GetInventoryByCharacter(character.id)
-  if tonumber(inventory) == nil then
-    error('Inventory ID is required.')
-    return nil
-  end
+  -- local character = Feather.Character.GetCharacterBySrc(src)
+  -- local inventory, _, _ = GetInventoryByCharacter(character.id)
+  -- if tonumber(inventory) == nil then
+  --   error('Inventory ID is required.')
+  --   return nil
+  -- end
 
-  if item.type == 'item_weapon' then
-    TriggerEvent('Feather:Inventory:UsedItem', src, itemName)
-  elseif item.type == 'item_ammo' then
-    TriggerEvent('Feather:Inventory:UsedItem', src, itemName)
-  else
+  -- if item.type == 'item_weapon' then
+  --   TriggerEvent('Feather:Inventory:UsedItem', src, item)
+  -- elseif item.type == 'item_ammo' then
+  --   TriggerEvent('Feather:Inventory:UsedItem', src, item)
+  -- else
     if UsableItemCallbacks[itemName] then
-      UsableItemCallbacks[itemName](itemName)
+      UsableItemCallbacks[itemName](item, function()
+        -- Refresh the inventory ui on callback
+        TriggerClientEvent('Feather:Inventory:OpenInventory', src,  nil, "player")
+      end)
     else
-      if src then
-        TriggerEvent('Feather:Inventory:UsedItem', src, itemName)
-        DeleteInventoryItem(inventoryItemId)
-      end
+      error('Not usable callback defined for item: ' .. item.name)
     end
-  end
+  -- end
+  
   return true
 end

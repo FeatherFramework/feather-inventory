@@ -26,9 +26,14 @@ function InventoryItemCount(inventory, itemId)
 end
 
 function GetInventoryItemById(id)
-  local result = MySQL.query.await('SELECT * FROM `inventory_items` WHERE `id`=? LIMIT 1;', { id })[1]
+  local result = MySQL.query.await('SELECT `inventory_items`.`id`, `inventory_items`.`updated_at`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, JSON_OBJECTAGG(`item_metadata`.`key`, `item_metadata`.`value`) AS `item_metadata` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` LEFT JOIN `item_metadata` ON `item_metadata`.`inventory_items_id` = `inventory_items`.`id` WHERE `inventory_items`.`id`=? GROUP BY `inventory_items`.`id`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size` LIMIT 1;', { id })[1]
+
   if result == nil then
     return false
+  end
+
+  if result["item_metadata"] and result["item_metadata"] ~= nil then
+    result["item_metadata"] = json.decode(result["item_metadata"])
   end
 
   return result

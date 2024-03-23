@@ -44,6 +44,7 @@ const draggingIndex = ref(null);
 const isShielded = ref(false);
 
 const leftClick = (key, item) => {
+    if (props.side == 'right' || !item?.usable) return
     emit('submit', key, item)
 }
 
@@ -57,6 +58,8 @@ const startDrag = (event, index) => {
     const clone = originalBox.cloneNode(true);
     clone.id = 'ghost';
     clone.classList.add('ghost');
+    clone.style.width = '90px';
+    clone.style.height = '90px';
     document.body.appendChild(clone);
 
     document.addEventListener('mousemove', onDrag);
@@ -94,8 +97,11 @@ const endDrag = () => {
                     ghostRect.top >= dropZoneRect.top &&
                     ghostRect.bottom <= dropZoneRect.bottom
                 ) {
-                    // TODO: Dont allow transfer to the SAME inventory!
-                    emit('transfer', dropZone.id, [props.activeRightClickItem.items[draggingIndex.value]])
+                    if (dropZone.id == 'dropit') {
+                        console.log('DROP IT SUBITEM')
+                    } else {
+                        emit('transfer', dropZone.id, [props.activeRightClickItem.items[draggingIndex.value]])
+                    }
                 }
             });
 
