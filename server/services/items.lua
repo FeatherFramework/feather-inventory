@@ -132,7 +132,7 @@ ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
   }
 end
 
--- Removes a specific item from the players inventory. (true if removed, false if not)
+-- Removes a specific item from the players inventory.
 ItemsAPI.RemoveItemById = function(id)
   local item = GetInventoryItemById(id)
   if not item then
@@ -296,4 +296,53 @@ ItemsAPI.UseItem = function(itemID, src)
   -- end
   
   return true
+end
+
+
+ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z)
+  if quantity < 1 then
+    error('Invalid quantity. Must be creater than 0.')
+    return {
+      error = true,
+      message = "Invalid quantity. Must be creater than 0."
+    }
+  end
+
+  for _, item in ipairs(items) do
+    local itemID = item.id
+
+    local item = GetInventoryItemById(itemID)
+    if not item then
+      error('Item not found in the database!')
+      return {
+        error = true,
+        message = 'Item not found in the database!'
+      }
+    end
+
+    local ItemCount = ItemsAPI.GetItemCount(item.name, inventoryId)
+    if (ItemCount - quantity) < 0 then
+      error('Attempting to drop more items than available.')
+      return {
+        error = true,
+        message = 'Attempting to drop more items than available.'
+      }
+    end
+  end
+
+  local groundID = GetClosestGroundByCoords(x, y, z, Config.groundGroupingRadius)
+  -- No nearby ground, lets create a new one
+  if groundID == nil then
+    groundID = CreateGround(x, y, z).id
+  end
+
+  local groundInventoryUID = InventoryAPI.RegisterInventory('ground', groundID)
+  MoveInventoryItems(inventoryId, groundInventoryUID, items)
+
+  UpdateClientWithGroundLocations(-1)
+
+  print("Items dropped to ground: "..groundID)
+  return {
+    error = false
+  }
 end

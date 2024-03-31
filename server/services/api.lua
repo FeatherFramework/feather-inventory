@@ -5,6 +5,7 @@ function StartAPI()
   InventoryServerAPI.Categories = CategoriesAPI
 
   RegisterCharacterStart(InventoryServerAPI)
+  RegisterGroundInventory()
 
   exports('initiate', function()
     return InventoryServerAPI

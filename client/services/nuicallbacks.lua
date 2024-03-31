@@ -10,6 +10,8 @@ RegisterNUICallback('Feather:Inventory:UseItem', function(args, cb)
 end)
 
 RegisterNUICallback('Feather:Inventory:UpdateInventory', function(args, cb)
+  -- TODO: Test what happens if two players open an inventory at the same time. (OR add system to lock the ability to open an inventory if someone else has it open)
+
   local data = {
     sourceInventory = args.sourceInventory,
     targetInventory = args.targetInventory,
@@ -38,4 +40,8 @@ RegisterNUICallback('Feather:Inventory:GiveItem', function(args, cb)
 
   Feather.RPC.CallAsync('Inventory:GiveItem', data)
   cb('ok')
+end)
+
+RegisterNUICallback('Feather:Inventory:DropItems', function(args, cb)
+  cb(DropItemsOnGround(args.item))
 end)

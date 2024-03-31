@@ -5,6 +5,9 @@ Config.hotkey = "B"
 
 Config.maxItemSlots = 41          -- maximum inventory slots (last slot is your last action key)
 Config.maxWeight = 120000         -- Max weight a player can pickup. 120kg in grams
+
+-- Ground/Dropped item settings
+Config.groundGroupingRadius = 10
 Config.maxDropViewDistance = 12.5 -- Max distance to see a dropped item
 Config.droppedItemObject = 'p_dis_strongboxsm01x'
 
