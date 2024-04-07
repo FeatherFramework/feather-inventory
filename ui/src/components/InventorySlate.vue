@@ -6,6 +6,7 @@
         <UsableModal :active-item="activeLeftClickSubItem" @close="handleItemPopup" @itemAction="handleItemAction"></UsableModal>
 
         <ItemCountModal v-if="activeTransferItem?.id" button-text="TRANSFER" :active-item="activeTransferItem" @close="handleTransferClose" @submit="handleTransferQuantity"></ItemCountModal>
+        <ItemCountModal v-if="dropping.active" button-text="DROP" :active-item="dropping.things" @close="handleDropClose" @submit="handleDropQuantity"></ItemCountModal>
 
         <SubSlots v-if="side == 'right'" :side="side" :activeRightClickItem="activeRightClickItem" :id="inventory.id"
             @submit="handleSubItemClick" @transfer="handleTransfer" @dragging="EmitDragging"></SubSlots>
@@ -77,7 +78,7 @@
             </div>
         </div>
         <SubSlots v-if="side == 'left'" :side="side" :activeRightClickItem="activeRightClickItem" :id="inventory.id"
-            @submit="handleSubItemClick" @transfer="handleTransfer" @dragging="EmitDragging"></SubSlots>
+            @submit="handleSubItemClick" @transfer="handleTransfer" @dragging="EmitDragging" @dropped="handleDrop"></SubSlots>
     </div>
 </template>
   
@@ -114,7 +115,7 @@ const props = defineProps({
     }
 })
 
-const emit = defineEmits(['transfer', 'dragging', 'itemAction'])
+const emit = defineEmits(['transfer', 'dragging', 'itemAction', 'dropped'])
 
 const availableCategories = ref([]);
 const currentCategoryIndex = ref(0);
@@ -150,6 +151,11 @@ const activeLeftClickSubItem = ref({})
 const isDragging = ref(false);
 const isShielded = ref(false);
 const draggingIndex = ref(null);
+
+const dropping = reactive({
+    active: false,
+    things: {}
+});
 
 const filteredList = computed(() => {
     return _.filter(props.inventory.items, (item) => {
@@ -256,7 +262,11 @@ const endDrag = () => {
                     ghostRect.bottom <= dropZoneRect.bottom
                 ) {
                     if (dropZone.id == 'dropit') {
-                        console.log('DROP IT MAINITEM');
+                        dropping.active = true
+                        dropping.things = {
+                            id: dropZone.id,
+                            items: filteredList.value[draggingIndex.value]
+                        }
                     } else if (dropZone.id != `dropzone-${props.side}`) {
                         if (filteredList.value[draggingIndex.value].length <= 1) {
                             handleTransfer(dropZone.id, filteredList.value[draggingIndex.value])
@@ -292,6 +302,28 @@ const EmitDragging = (state) => {
 
 const handleItemAction = (actionData) => {
     emit('itemAction', actionData);
+}
+
+const handleDropClose = () => {
+    dropping.things = {
+        active: false,
+        things: {}
+    }
+}
+
+const handleDropQuantity = (quantity) => {
+    let dropItems = _.slice(dropping.things.items, 0, quantity)
+    handleDrop(dropping.things.id, dropItems)
+    dropping.things = {
+        active: false,
+        things: {}
+    }
+}
+
+const handleDrop = (id, items) => {
+    if (id != `dropzone-${props.side}`) {
+        emit('dropped', id, items)
+    }
 }
 
 const handleTransferClose = () => {

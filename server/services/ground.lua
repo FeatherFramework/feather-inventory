@@ -1,4 +1,4 @@
-function RegisterGroundInventory(InventoryAPI)
+function RegisterGroundInventory()
     InventoryAPI.RegisterForeignKey('ground', 'BIGINT UNSIGNED', 'id')
 end
 
@@ -7,21 +7,20 @@ function UpdateClientWithGroundLocations(src)
     TriggerClientEvent("Feather:Inventory:UpdateGroundLocations", src, locations)
 end
 
-Feather.RPC.Register("Feather:Inventory:GetGroundUUID", function(params, res, src)
-    local groundID = GetClosestGroundByCoords(params.x, params.y, params.z, Config.groundGroupingRadius)
-
-    if groundID == nil then
+Feather.RPC.Register("Feather:Inventory:GetGroundUID", function(params, res, src)
+    if params.id == nil then
+        error("Missing ID for ground")
         return res(nil)
     end
-
-    local groundInventoryUID = InventoryAPI.RegisterInventory('ground', groundID)
-    return res(groundInventoryUID)
+    local _, groundInventoryID = InventoryAPI.GetCustomInventory('ground', params.id)
+    return res(groundInventoryID)
 end)
 
 -- Feather:Inventory:UpdateGroundLocations
 Feather.RPC.Register("Feather:Inventory:DropItemsOnGround", function(params, res, src)
-    ItemsAPI.DropPlayerItemsOnGround(src, params.items, params.x, params.y, params.z)
-    return res(true)
+    local character = Feather.Character.GetCharacterBySrc(src)
+    local inventoryID, _, _ = GetInventoryByCharacter(character.id)
+    return res(ItemsAPI.DropItemsOnGround(inventoryID, params.items, params.x, params.y, params.z))
 end)
 
 RegisterServerEvent("Feather:Inventory:GetGroundLocations", function()

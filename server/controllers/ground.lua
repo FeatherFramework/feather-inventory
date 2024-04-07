@@ -15,7 +15,7 @@ end
 function GetClosestGroundByCoords(x, y, z, radius)
     local result = MySQL.query.await([[
         SELECT id
-        FROM coordinates_table
+        FROM ground
         WHERE SQRT(POW(x - @x, 2) + POW(y - @y, 2) + POW(z - @z, 2)) <= @radius
         ORDER BY SQRT(POW(x - @x, 2) + POW(y - @y, 2) + POW(z - @z, 2))
         LIMIT 1;
@@ -41,5 +41,6 @@ end
 function DeleteGround(id)
     MySQL.query.await('DELETE FROM `inventory_items` WHERE `id`=? LIMIT;', { id })
 end
+
 
 -- TODO: on server start, lets clear out any empty grounds

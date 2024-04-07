@@ -1,7 +1,7 @@
 <template>
     <div class="flow-root p-4">
         <InventorySlate :inventory="playerInventory" :options="globalOptions" :side="'left'" class="float-left relative"
-            :player-display="playerDisplay" @transfer="handleTransfer" @dragging="handleDrag" @itemAction="handleItemAction"></InventorySlate>
+            :player-display="playerDisplay" @transfer="handleTransfer" @dragging="handleDrag" @itemAction="handleItemAction" @dropped="handleDropped"></InventorySlate>
         <div class="absolute bottom-14 left-1/2 -translate-x-1/2">
             <Transition name="scale">
                 <DropItem v-if="showDrop"></DropItem>
@@ -43,14 +43,18 @@ const props = defineProps({
 const showDrop = ref(false);
 const delay = ref(null);
 
-const emit = defineEmits(['transfer', 'itemAction'])
+const emit = defineEmits(['transfer', 'itemAction', 'dropped'])
 const handleTransfer = (id, items) => {
     emit('transfer', id, items)
 }
 
 const handleItemAction = (actionData) => {
     emit('itemAction', actionData);
-} 
+}
+
+const handleDropped = (id, items) => {
+    emit('dropped', id, items)
+}
 
 const handleDrag = (toggle) => {
     if (delay.value !== null) {

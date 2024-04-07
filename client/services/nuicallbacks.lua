@@ -43,5 +43,5 @@ RegisterNUICallback('Feather:Inventory:GiveItem', function(args, cb)
 end)
 
 RegisterNUICallback('Feather:Inventory:DropItems', function(args, cb)
-  cb(DropItemsOnGround(args.item))
+  cb(DropItemsOnGround(args.items))
 end)

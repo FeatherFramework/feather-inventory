@@ -7,7 +7,7 @@
         <div class="absolute right-2 top-0 text-2xl text-white hover:text-red-500" @click="closeApp">&times;</div>
         <MenuUI :player-inventory="playerInventory" :other-iventory="otherInventory" :global-options="globalOptions"
           :target="globalOptions.target" :player-display="playerDisplay" @transfer="transferItems"
-          @itemAction="handleItemAction">
+          @itemAction="handleItemAction" @dropped="handleDrop">
         </MenuUI>
         <div class="absolute top-4 left-1/2 transform -translate-x-1/2  z-50">
           <Transition name="fade">
@@ -229,6 +229,33 @@ const giveItem = (item) => {
     })
     .catch((e) => {
       console.log(e.message);
+    });
+}
+
+const handleDrop = (dropzoneid, items) => {
+  const shieldinv = document.querySelectorAll('.shieldinv');
+  shieldinv.forEach(shield => shield.style.display = 'block')
+
+  api.post("Feather:Inventory:DropItems", {
+    items: items
+  })
+    .then(({ data }) => {
+      if (data?.error == 'error') {
+        showError(data.message)
+      } else {
+
+        hydrateInventoryItems('both', {
+          playerItems: data.inv.sourceItems,
+          otherItems: data.inv.targetItems
+        });
+        const shieldinv = document.querySelectorAll('.shieldinv');
+        shieldinv.forEach(shield => shield.style.display = 'none')
+      }
+    })
+    .catch((e) => {
+      console.log(e.message);
+      const shieldinv = document.querySelectorAll('.shieldinv');
+        shieldinv.forEach(shield => shield.style.display = 'none')
     });
 }
 

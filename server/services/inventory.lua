@@ -88,7 +88,7 @@ InventoryAPI.RegisterInventory = function(tableName, id, maxWeight, restrictedIt
       UpdateRestrictedItems(inventory[1].id, restrictedItems)
     end
 
-    return inventory[1].uuid
+    return inventory[1].uuid, inventory[1].id
   end
 
   -- Create new inventory
@@ -99,7 +99,7 @@ InventoryAPI.RegisterInventory = function(tableName, id, maxWeight, restrictedIt
     return nil
   end
 
-  return inventory[1].uuid
+  return inventory[1].uuid, inventory[1].id
 end
 
 ---
@@ -162,11 +162,6 @@ InventoryAPI.InventoryCanHold = function(items, inventoryId)
   return { status = true, message = '' }
 end
 
-InventoryAPI.OpenInventory = function(src, otherInventoryId)
-
-
-end
-
 ---
 -- Open Inventory
 --
@@ -209,9 +204,22 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
     otherInventoryIgnoreLimits = otherInventoryIgnoreLimits
   }
 end
+InventoryAPI.OpenInventory = InventoryAPI.InternalOpenInventory
 
 InventoryAPI.CloseInventory = function(src)
   TriggerClientEvent('Feather:Inventory:CloseInventory', src)
+end
+
+InventoryAPI.GetInventory = function(inventoryID)
+  return GetInventoryById(inventoryID)
+end
+
+InventoryAPI.GetCustomInventory = function (key, inventoryID)
+  return GetCustomInventoryById(key, inventoryID)
+end
+
+InventoryAPI.GetInventoryItems = function(inventoryID)
+  return GetInventoryItemById(inventoryID)
 end
 
 ---

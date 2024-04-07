@@ -63,7 +63,8 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
       "Invalid format for meta data. Meta data must be a table of key value pairs. Example: { quality = 'poor', durability = 50, maxDurability = 100 }")
     return {
       error = true,
-      message = "Invalid format for meta data. Meta data must be a table of key value pairs. Example: { quality = 'poor', durability = 50, maxDurability = 100 }"
+      message =
+      "Invalid format for meta data. Meta data must be a table of key value pairs. Example: { quality = 'poor', durability = 50, maxDurability = 100 }"
     }
   end
 
@@ -160,7 +161,8 @@ ItemsAPI.SetMetadata = function(item, metadata)
       "Invalid format for meta data. Meta data must be a table of key value pairs. Example: { quality = 'poor', durability = 50, maxDurability = 100 }")
     return {
       error = true,
-      message = "Invalid format for meta data. Meta data must be a table of key value pairs. Example: { quality = 'poor', durability = 50, maxDurability = 100 }"
+      message =
+      "Invalid format for meta data. Meta data must be a table of key value pairs. Example: { quality = 'poor', durability = 50, maxDurability = 100 }"
     }
   end
 
@@ -285,64 +287,55 @@ ItemsAPI.UseItem = function(itemID, src)
   -- elseif item.type == 'item_ammo' then
   --   TriggerEvent('Feather:Inventory:UsedItem', src, item)
   -- else
-    if UsableItemCallbacks[itemName] then
-      UsableItemCallbacks[itemName](item, function()
-        -- Refresh the inventory ui on callback
-        TriggerClientEvent('Feather:Inventory:OpenInventory', src,  nil, "player")
-      end)
-    else
-      error('Not usable callback defined for item: ' .. item.name)
-    end
+  if UsableItemCallbacks[itemName] then
+    UsableItemCallbacks[itemName](item, function()
+      -- Refresh the inventory ui on callback
+      TriggerClientEvent('Feather:Inventory:OpenInventory', src, nil, "player")
+    end)
+  else
+    error('Not usable callback defined for item: ' .. item.name)
+  end
   -- end
-  
+
   return true
 end
 
 
 ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z)
-  if quantity < 1 then
-    error('Invalid quantity. Must be creater than 0.')
+  -- TODO: Add check to make sure items are all the same "item". If not then do different logic.
+  local item = GetInventoryItemById(items[1].id)
+  if not item then
+    error('Item not found in the database!')
     return {
       error = true,
-      message = "Invalid quantity. Must be creater than 0."
+      message = 'Item not found in the database!'
     }
   end
 
-  for _, item in ipairs(items) do
-    local itemID = item.id
-
-    local item = GetInventoryItemById(itemID)
-    if not item then
-      error('Item not found in the database!')
-      return {
-        error = true,
-        message = 'Item not found in the database!'
-      }
-    end
-
-    local ItemCount = ItemsAPI.GetItemCount(item.name, inventoryId)
-    if (ItemCount - quantity) < 0 then
-      error('Attempting to drop more items than available.')
-      return {
-        error = true,
-        message = 'Attempting to drop more items than available.'
-      }
-    end
+  local ItemCount = ItemsAPI.GetItemCount(item.name, inventoryId)
+  if (ItemCount - #items) < 0 then
+    error('Attempting to drop more items than available.')
+    return {
+      error = true,
+      message = 'Attempting to drop more items than available.'
+    }
   end
 
   local groundID = GetClosestGroundByCoords(x, y, z, Config.groundGroupingRadius)
+  
   -- No nearby ground, lets create a new one
-  if groundID == nil then
-    groundID = CreateGround(x, y, z).id
+  if groundID == nil or groundID == 'nil' then
+    groundID = CreateGround(x, y, z)[1].id
   end
 
-  local groundInventoryUID = InventoryAPI.RegisterInventory('ground', groundID)
-  MoveInventoryItems(inventoryId, groundInventoryUID, items)
+  local _, groundInventoryID = InventoryAPI.RegisterInventory('ground', groundID)
+  local updateinv = MoveInventoryItems(inventoryId, groundInventoryID, items)
 
   UpdateClientWithGroundLocations(-1)
 
-  print("Items dropped to ground: "..groundID)
+  print("Items dropped to ground: " .. groundID)
   return {
-    error = false
+    error = false,
+    inv = updateinv
   }
 end

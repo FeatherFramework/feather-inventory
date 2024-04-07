@@ -1,10 +1,21 @@
 function GetInventoryById(inventoryId)
   local result = MySQL.query.await(
-    'SELECT `id`, `max_weight`, `ignore_item_limit` FROM `inventory` WHERE `uuid` = ? LIMIT 1;', { inventoryId })[1]
+    'SELECT `id`, `uuid`, `max_weight`, `ignore_item_limit` FROM `inventory` WHERE `uuid` = ? LIMIT 1;', { inventoryId })[1]
   if not result then
     return false, false, false
   end
   return result.id, result.max_weight, result.ignore_item_limit
+end
+
+function GetCustomInventoryById(key, id)
+  local field = key..'_id'
+  local result = MySQL.query.await('SELECT `id`, `uuid`, `max_weight`, `ignore_item_limit` FROM `inventory` WHERE `'..field..'` = ? LIMIT 1;', { id })[1]
+
+  if result == nil then
+    return false, false, false
+  end
+  
+  return result.id, result.uuid, result.max_weight, result.ignore_item_limit
 end
 
 function GetInventoryByCharacter(character)

@@ -9,14 +9,16 @@ Config.maxWeight = 120000         -- Max weight a player can pickup. 120kg in gr
 -- Ground/Dropped item settings
 Config.groundGroupingRadius = 10
 Config.maxDropViewDistance = 12.5 -- Max distance to see a dropped item
+Config.dropPromptViewDistance = 3.0
+Config.pickupKey = "N"
 Config.droppedItemObject = 'p_dis_strongboxsm01x'
-
-Config.hotbarLimit = 6 -- NOT YET IMPLEMENTED
-
 -- p_cs_baganders01x (left)
 -- p_cs_bagstrauss01x (middle)
 -- p_bag01x (right)
 -- p_dis_strongboxsm01x (front center)
+
+Config.hotbarLimit = 6 -- NOT YET IMPLEMENTED
+
 
 -- TODO:
     -- Store in statebag for any entity creating inventory

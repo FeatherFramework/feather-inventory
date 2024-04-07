@@ -15,7 +15,6 @@ InventoryAction.Open = function(otherInventoryId, target)
     target = "storage"
   end
 
-
   print('Opening Inventory', otherInventoryId or 'character')
   if not isInvOpen and CanOpenInventory() then
     isInvOpen = true
@@ -55,7 +54,6 @@ InventoryAction.Close = function()
     Feather.RPC.CallAsync('Feather:Inventory:Server:CloseInventory', {})
   end
 end
-
 
 RegisterNetEvent('Feather:Inventory:OpenInventory', function(otherInventoryId, target)
   InventoryAction.Open(otherInventoryId, target)

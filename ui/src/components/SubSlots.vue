@@ -37,7 +37,7 @@ const props = defineProps({
     }
 })
 
-const emit = defineEmits(['submit', 'transfer', 'dragging'])
+const emit = defineEmits(['submit', 'transfer', 'dragging', 'dropped'])
 
 const isDragging = ref(false);
 const draggingIndex = ref(null);
@@ -98,7 +98,7 @@ const endDrag = () => {
                     ghostRect.bottom <= dropZoneRect.bottom
                 ) {
                     if (dropZone.id == 'dropit') {
-                        console.log('DROP IT SUBITEM')
+                        emit('dropped', dropZone.id, [props.activeRightClickItem.items[draggingIndex.value]])
                     } else {
                         emit('transfer', dropZone.id, [props.activeRightClickItem.items[draggingIndex.value]])
                     }
