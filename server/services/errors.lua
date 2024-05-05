@@ -10,14 +10,14 @@ if type(Config.maxWeight) ~= 'number' or Config.maxWeight < 1 then
   error('Your max weight must be a number greater than 1.')
 end
 
-if type(Config.groundGroupingRadius) ~= 'number' or Config.groundGroupingRadius < 1 then
+if type(Config.Dropped.GroupingRadius) ~= 'number' or Config.Dropped.GroupingRadius < 1 then
   error('groundGroupingRadius must be greater than 1')
 end
 
-if type(Config.maxDropViewDistance) ~= 'number' or Config.maxDropViewDistance < 1 then
+if type(Config.Dropped.PromptViewDistance) ~= 'number' or Config.Dropped.PromptViewDistance < 1 then
   error('Your max drop view distance must be a number greater than 1.')
 end
 
-if not Config.droppedItemObject then
-  Config.droppedItemObject = 'p_dis_strongboxsm01x'
+if not Config.Dropped.Item then
+  Config.Dropped.Item = 'p_dis_strongboxsm01x'
 end

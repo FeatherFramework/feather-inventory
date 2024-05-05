@@ -321,7 +321,7 @@ ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z)
     }
   end
 
-  local groundID = GetClosestGroundByCoords(x, y, z, Config.groundGroupingRadius)
+  local groundID = GetClosestGroundByCoords(x, y, z, Config.Dropped.GroupingRadius)
   
   -- No nearby ground, lets create a new one
   if groundID == nil or groundID == 'nil' then

@@ -1,8 +1,5 @@
-ServerReady = false
-
-local function makeReady()
+local function runInventory()
   StartAPI()
-  ServerReady = true
 end
 
-makeReady()
+runInventory()
