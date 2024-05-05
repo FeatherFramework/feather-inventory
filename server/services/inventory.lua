@@ -57,7 +57,7 @@ end
 -- @param ignoreItemLimits Ignore the max quantity of items that can be added to the inventory
 -- @return Inventory UUID for accessing the inventory later (can be saved in your database table)
 --
-InventoryAPI.RegisterInventory = function(tableName, id, maxWeight, restrictedItems, ignoreItemLimits)
+InventoryAPI.RegisterInventory = function(tableName, id, maxWeight, restrictedItems, ignoreItemLimits, displayName)
   if not tableName or not id then
     error(
       'All parameters are required!')
@@ -92,8 +92,8 @@ InventoryAPI.RegisterInventory = function(tableName, id, maxWeight, restrictedIt
   end
 
   -- Create new inventory
-  query = 'INSERT INTO `inventory` (' .. foreignKey .. ') VALUES (?) RETURNING *;'
-  inventory = MySQL.query.await(query, { id })
+  query = 'INSERT INTO `inventory` (' .. foreignKey .. ', location, name) VALUES (?, ?, ?) RETURNING *;'
+  inventory = MySQL.query.await(query, { id, tableName, displayName or '' })
 
   if not inventory or not inventory[1] then
     return nil
@@ -141,7 +141,7 @@ InventoryAPI.InventoryCanHold = function(items, inventoryId)
   for _, v in pairs(items) do
     local itemId, maxQuantity, itemWeight = GetItemByName(v)
     -- Check if item is restricted
-    if IsItemRestrcited(inventory, itemId) then
+    if IsItemRestricted(inventory, itemId) then
       return { status = false, message = 'Item is restricted.' }
     end
 
@@ -183,18 +183,27 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
   end
 
   local inventoryItems, otherInventoryItems = GetInventoryItems(inventory), nil
+  
   if otherInventoryId ~= nil then
-    if tonumber(otherInventoryId) then
-      local character = Feather.Character.GetCharacterBySrc(otherInventoryId)
-      otherInventory, _, inventoryIgnoreLimits = GetInventoryByCharacter(character.id)
-    else
-      otherInventory, _, otherInventoryIgnoreLimits = GetInventoryById(otherInventoryId)
+    if OpenInventories[tostring(otherInventory)] ~= nil then
+      otherInventoryId = nil
+      Feather.Notify.RightNotify(src, 'This inventory is already opened. Try again later.', 3000)
+    else 
+      if tonumber(otherInventoryId) then
+        local character = Feather.Character.GetCharacterBySrc(otherInventoryId)
+        otherInventory, _, inventoryIgnoreLimits = GetInventoryByCharacter(character.id)
+      else
+        otherInventory, _, otherInventoryIgnoreLimits = GetInventoryById(otherInventoryId)
+      end
+      otherInventoryItems = GetInventoryItems(otherInventory)
+      OpenInventories[tostring(otherInventory)] = {
+        src = tostring(src),
+        id = otherInventory,
+        uuid = otherInventoryId
+      }
     end
-    otherInventoryItems = GetInventoryItems(otherInventory)
-    OpenInventories[tostring(otherInventory)] = tostring(src)
   end
-
-  OpenInventories[tostring(inventory)] = tostring(src)
+  
   return {
     inventory = inventory,
     inventoryItems = inventoryItems,
@@ -204,7 +213,10 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
     otherInventoryIgnoreLimits = otherInventoryIgnoreLimits
   }
 end
-InventoryAPI.OpenInventory = InventoryAPI.InternalOpenInventory
+
+InventoryAPI.OpenInventory = function (src, InventoryId, target)
+  TriggerClientEvent('Feather:Inventory:OpenInventory', src, InventoryId, target)
+end
 
 InventoryAPI.CloseInventory = function(src)
   TriggerClientEvent('Feather:Inventory:CloseInventory', src)
@@ -230,11 +242,26 @@ end
 -- @param src Player Source
 -- @return None
 --
-InventoryAPI.InternalCloseInventory = function(src, inventory)
-  print("closing inventories")
+InventoryAPI.InternalCloseInventory = function(src)
   for k, v in pairs(OpenInventories) do
-    if v == src then
+    if v.src == tostring(src) then
+      Feather.Print(GetInventoryTotalItemCounts(v.id))
+
+      if GetInventoryTotalItemCounts(v.id)[1]["COUNT(`id`)"] <= 0 then
+        TriggerEvent('Feather:Inventory:Empty', {
+          id = v.id,
+          uuid = v.uuid
+        })
+      end
+      
       OpenInventories[k] = nil
+      -- break
     end
   end
 end
+
+AddEventHandler('playerDropped', function()
+  local src = source
+  InventoryAPI.InternalCloseInventory(src)
+end)
+

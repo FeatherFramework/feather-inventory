@@ -7,6 +7,15 @@ function GetInventoryById(inventoryId)
   return result.id, result.max_weight, result.ignore_item_limit
 end
 
+function GetInventoryLocationById(id)
+  local result = MySQL.query.await(
+    'SELECT `location` FROM `inventory` WHERE `id` = ? LIMIT 1;', { id })[1]
+  if not result then
+    return nil
+  end
+  return result.location
+end
+
 function GetCustomInventoryById(key, id)
   local field = key..'_id'
   local result = MySQL.query.await('SELECT `id`, `uuid`, `max_weight`, `ignore_item_limit` FROM `inventory` WHERE `'..field..'` = ? LIMIT 1;', { id })[1]
@@ -78,6 +87,14 @@ function GetInventoryItemCounts(inventory)
     { inventory })
 end
 
+function GetInventoryTotalItemCounts(inventory)
+  print(inventory)
+  return MySQL.query.await(
+    'SELECT COUNT(`id`) FROM `inventory_items` WHERE `inventory_id`=?;',
+    { inventory })
+end
+
+
 function CreateInventoryItem(inventory, itemId)
   return MySQL.query.await('INSERT INTO `inventory_items` (`inventory_id`, `item_id`) VALUES (?, ?) RETURNING *;',
     { inventory, itemId })
@@ -102,7 +119,7 @@ function DeleteInventoryItems(inventory, itemId, quantity)
   MySQL.query.await(query, { inventory, itemId })
 end
 
-function IsItemRestrcited(inventory, itemId)
+function IsItemRestricted(inventory, itemId)
   local result = MySQL.query.await("SELECT id FROM `inventory_blacklist` WHERE `inventory_id`=? AND `item_id`=?",
     { inventory, itemId })
   if not result[1] then
@@ -153,4 +170,8 @@ function MoveInventoryItems(sourceInventory, targetInventory, items)
     sourceItems = GetInventoryItems(sourceInventory),
     targetItems = GetInventoryItems(targetInventory)
   }
+end
+
+function DeleteInventory(uuid)
+  MySQL.query.await('DELETE FROM `inventory` WHERE `uuid` = ?;', { uuid })
 end

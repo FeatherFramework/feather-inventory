@@ -192,6 +192,7 @@ ItemsAPI.GetItemCount = function(itemName, inventoryId)
 
   local inventory, _, _ = nil, nil, nil
   if tonumber(inventoryId) then
+    print("inventoryId geting item count", inventoryId)
     local character = Feather.Character.GetCharacterBySrc(inventoryId)
     inventory, _, _ = GetInventoryByCharacter(character.id)
   else

@@ -5,7 +5,7 @@ Feather.RPC.Register('Feather:Inventory:GetInventoryItems', function(params, res
 end)
 
 Feather.RPC.Register('Feather:Inventory:Server:CloseInventory', function(params, res, src)
-  InventoryAPI.InternalCloseInventory()
+  InventoryAPI.InternalCloseInventory(src)
 end)
 
 -- Called when player uses item from their inventory. Close Inventory after use.

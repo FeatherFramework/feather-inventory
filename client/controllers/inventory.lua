@@ -6,7 +6,7 @@ InventoryAction = {}
 function CanOpenInventory()
   if IsEntityDead(PlayerPedId()) then return false end
   if IsPauseMenuActive() then return false end
-  -- Add check for different states where inventory can't open like Handcuffed/HogTied/KnockedOut
+  -- TODO: Add check for different states where inventory can't open like Handcuffed/HogTied/KnockedOut
   return true
 end
 

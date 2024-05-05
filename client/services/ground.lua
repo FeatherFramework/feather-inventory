@@ -1,5 +1,6 @@
 GroundItems = {}
 RegisterNetEvent("Feather:Inventory:UpdateGroundLocations", function(locations)
+    print("UPDATING GROUND LOCATIONS")
     ClearGroundItems()
     GroundItems = locations
     SpawnGroundItems()
@@ -62,7 +63,7 @@ end
 
 Citizen.CreateThread(function()
     local PromptGroup = Feather.Prompt:SetupPromptGroup()
-    local groundPrompt = PromptGroup:RegisterPrompt("Pickup", Feather.KeyCodes[Config.Dropped.PickupKey], 1, 1, true, 'hold')
+    local groundPrompt = PromptGroup:RegisterPrompt("Pickup", Feather.Keys[Config.Dropped.PickupKey], 1, 1, true, 'hold')
 
     while true do
         Citizen.Wait(0)
@@ -75,25 +76,23 @@ Citizen.CreateThread(function()
                     local dist = Feather.Math.GetDistanceBetween(
                         vector3(playerCoords.x, playerCoords.y, playerCoords.z),
                         vector3(tonumber(item.x), tonumber(item.y), tonumber(item.z)))
-                    if dist < Config.dropPromptViewDistance then
-                        Citizen.InvokeNative(0x69F4BE8C8CC4796C, playerped, item.entity:GetObj(), 3000, 2048, 3) -- TaskLookAtEntity
+                    if dist < Config.Dropped.PromptViewDistance then
 
                         PromptGroup:ShowGroup("Ground Items")
                         if groundPrompt:HasCompleted() then
-                            
+                            Citizen.InvokeNative(0x69F4BE8C8CC4796C, playerped, item.entity:GetObj(), 3000, 2048, 3) -- TaskLookAtEntity
+                            local animDict =
+                            "amb_rest@world_human_sketchbook_ground_pickup@male_a@react_look@exit@generic"
+                            RequestAnimDict(animDict)
 
-                            -- local animDict =
-                            -- "amb_rest@world_human_sketchbook_ground_pickup@male_a@react_look@exit@generic"
-                            -- RequestAnimDict(animDict)
+                            while not HasAnimDictLoaded(animDict) do
+                                Wait(10)
+                            end
 
-                            -- while not HasAnimDictLoaded(animDict) do
-                            --     Wait(10)
-                            -- end
-
-                            -- TaskPlayAnim(playerped, animDict, "react_look_front_exit", 1.0, 8.0, -1, 1, 0, false,
-                            --     false, false)
-                            -- Wait(2200)
-                            -- ClearPedTasks(playerped)
+                            TaskPlayAnim(playerped, animDict, "react_look_front_exit", 1.0, 8.0, -1, 1, 0, false,
+                                false, false)
+                            Wait(2200)
+                            ClearPedTasks(playerped)
 
                             OpenGroundLocation(item.id)
                         end

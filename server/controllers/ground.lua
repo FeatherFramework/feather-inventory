@@ -1,15 +1,15 @@
 function GetGroundById(id)
     local result = MySQL.query.await(
-      'SELECT `x`, `y`, `z` FROM `ground` WHERE `id` = ? LIMIT 1;', { id })[1]
+        'SELECT `x`, `y`, `z` FROM `ground` WHERE `id` = ? LIMIT 1;', { id })[1]
     if not result then
-      return 0, 0, 0
+        return 0, 0, 0
     end
     return result.x, result.y, result.z
 end
 
 function GetAllGroundLocations()
     return MySQL.query.await(
-      'SELECT `id`, `x`, `y`, `z` FROM `ground`;')
+        'SELECT `id`, `x`, `y`, `z` FROM `ground`;')
 end
 
 function GetClosestGroundByCoords(x, y, z, radius)
@@ -35,12 +35,27 @@ end
 
 function CreateGround(x, y, z)
     return MySQL.query.await('INSERT INTO `ground` (`x`, `y`, `z`) VALUES (?, ?, ?) RETURNING *;',
-    { x, y, z })
+        { x, y, z })
 end
 
 function DeleteGround(id)
-    MySQL.query.await('DELETE FROM `inventory_items` WHERE `id`=? LIMIT;', { id })
+    print("SHOULD DELETE NOW", id)
+    MySQL.query.await('DELETE FROM `ground` WHERE `id` = ?;', { id })
 end
 
+function DeleteGround(id)
+    MySQL.query.await('DELETE FROM `ground` WHERE `id` = ?;', { id })
+end
 
--- TODO: on server start, lets clear out any empty grounds
+function DeleteAllGround()
+    MySQL.query.await('DELETE FROM `ground`;')
+end
+
+function GetGroundID(id)
+    local result = MySQL.query.await(
+        'SELECT `ground_id` FROM `inventory` WHERE `id` = ? LIMIT 1;', { id })[1]
+    if not result then
+        return 0, 0, 0
+    end
+    return result.ground_id
+end
