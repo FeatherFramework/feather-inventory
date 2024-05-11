@@ -1,13 +1,13 @@
 function StartAPI()
-  local InventoryServerAPI = {}
-  InventoryServerAPI.Inventory = InventoryAPI
-  InventoryServerAPI.Items = ItemsAPI
-  InventoryServerAPI.Categories = CategoriesAPI
+  local inventoryServerAPI = {}
+  inventoryServerAPI.Inventory = InventoryAPI
+  inventoryServerAPI.Items = ItemsAPI
+  inventoryServerAPI.Categories = CategoriesAPI
 
-  RegisterCharacterStart(InventoryServerAPI)
+  RegisterCharacterStart(inventoryServerAPI)
   RegisterGroundInventory()
 
   exports('initiate', function()
-    return InventoryServerAPI
+    return inventoryServerAPI
   end)
 end

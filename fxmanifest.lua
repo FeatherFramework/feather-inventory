@@ -20,7 +20,7 @@ shared_scripts {
 
 server_scripts {
   "@oxmysql/lib/MySQL.lua",
-  "/server/coreapi.lua",
+  "/server/imports.lua",
   "/server/helpers/*.lua",
   "/server/controllers/*.lua",
   "/server/services/*.lua",
@@ -28,7 +28,7 @@ server_scripts {
 }
 
 client_scripts {
-  "/client/coreapi.lua",
+  "/client/imports.lua",
   "/client/helpers/*.lua",
   "/client/controllers/*.lua",
   "/client/services/*.lua",

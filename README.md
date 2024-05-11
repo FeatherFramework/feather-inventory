@@ -347,3 +347,10 @@ This inventory script is licensed under GPL3 License. Refer to the LICENSE file 
 ## Credits
 
 Huge inspiration to RDO's inventory system with many QOL improvements.
+
+## To-Do
+  - Add LOD to load ground items within a view distance
+  - Frontend UI
+    - Migrate frontend to use state management.
+    - Add Inventory specific slot counts
+    - Account for inventory specific ignore limits (ignore item caps)

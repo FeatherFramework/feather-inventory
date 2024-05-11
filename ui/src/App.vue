@@ -32,10 +32,6 @@ import _ from "lodash";
 
 import MenuUI from "./views/MenuUI.vue";
 
-// TODO: At a later date, MAYBE move this all to state management :/
-// TODO: Add Inventory specific slot counts
-// TODO: Account for inventory specific ignore limits (ignore item caps)
-
 const devmode = ref(false);
 const visible = ref(false);
 

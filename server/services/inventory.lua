@@ -183,7 +183,7 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
   end
 
   local inventoryItems, otherInventoryItems = GetInventoryItems(inventory), nil
-  
+
   if otherInventoryId ~= nil then
     if OpenInventories[tostring(otherInventory)] ~= nil then
       otherInventoryId = nil
@@ -203,7 +203,7 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
       }
     end
   end
-  
+
   return {
     inventory = inventory,
     inventoryItems = inventoryItems,

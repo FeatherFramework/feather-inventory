@@ -14,12 +14,10 @@ Config.Dropped = {
     PromptViewDistance = 3.0,
     PickupKey = "N",
     Item = 'p_dis_strongboxsm01x', -- options: p_package09 p_cs_baganders01x p_cs_bagstrauss01x p_bag01x p_dis_strongboxsm01x
-    SteetSweep = 0 -- Deletes ALL ground inventories every X minutes from server start. If set to 0, it will clear on server start. If nil, it will never clear.
+    StreetSweep = 0 -- Deletes ALL ground inventories every X minutes from server start. If set to 0, it will clear on server start. If nil, it will never clear.
 }
 
-Config.hotbarLimit = 6 -- NOT YET IMPLEMENTED
 
 
--- TODO:
-    -- Hotbars
-    -- Add LOD to load ground items within a view distance
+
+-- Config.hotbarLimit = 6 -- NOT YET IMPLEMENTED

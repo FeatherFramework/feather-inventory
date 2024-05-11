@@ -7,15 +7,13 @@ function UpdateClientWithGroundLocations(src)
     TriggerClientEvent("Feather:Inventory:UpdateGroundLocations", src, locations)
 end
 
---once a ground "inventory" gets to 0 items, it should be deleted.
-
-
+-- Once a ground "inventory" gets to 0 items, it should be deleted.
 Feather.RPC.Register("Feather:Inventory:GetGroundUID", function(params, res, src)
     if params.id == nil then
         error("Missing ID for ground")
         return res(nil)
     end
-    
+
     local _, groundInventoryID = InventoryAPI.GetCustomInventory('ground', params.id)
     return res(groundInventoryID)
 end)
@@ -40,16 +38,15 @@ RegisterServerEvent("Feather:Inventory:GetGroundLocations", function()
     UpdateClientWithGroundLocations(src)
 end)
 
--- Street Sweepers Logic
--- TODO: on server start, lets clear out any empty grounds
+-- Street Sweepers Logic (Essentially a garbage collector)
 CreateThread(function()
-    if Config.Dropped.SteetSweep ~= nil then
-        if (Config.Dropped.SteetSweep == 0) then
+    if Config.Dropped.StreetSweep ~= nil then
+        if (Config.Dropped.StreetSweep == 0) then
             DeleteAllGround()
             UpdateClientWithGroundLocations(-1)
         else
             while true do
-                Citizen.Wait(Config.Dropped.SteetSweep * 60000)
+                Citizen.Wait(Config.Dropped.StreetSweep * 60000)
                 DeleteAllGround()
                 UpdateClientWithGroundLocations(-1)
             end
