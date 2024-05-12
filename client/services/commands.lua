@@ -26,7 +26,6 @@ if Config.DevMode then
   end, false)
 end
 
-
 -- RegisterCommand('toggle_hotbar', function()
 --   if CanOpenInventory() then
 --     ToggleHotbar()

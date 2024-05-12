@@ -61,12 +61,12 @@ function DropItemsOnGround(items)
     return result
 end
 
-Citizen.CreateThread(function()
+CreateThread(function()
     local PromptGroup = Feather.Prompt:SetupPromptGroup()
     local groundPrompt = PromptGroup:RegisterPrompt("Pickup", Feather.Keys[Config.Dropped.PickupKey], 1, 1, true, 'hold')
 
     while true do
-        Citizen.Wait(0)
+        Wait(5)
         local isDead = IsEntityDead(playerped)
         if isDead ~= 0 then
             if GroundItems[1] ~= nil then
@@ -81,6 +81,7 @@ Citizen.CreateThread(function()
                         PromptGroup:ShowGroup("Ground Items")
                         if groundPrompt:HasCompleted() then
                             Citizen.InvokeNative(0x69F4BE8C8CC4796C, playerped, item.entity:GetObj(), 3000, 2048, 3) -- TaskLookAtEntity
+                            
                             local animDict =
                             "amb_rest@world_human_sketchbook_ground_pickup@male_a@react_look@exit@generic"
                             RequestAnimDict(animDict)

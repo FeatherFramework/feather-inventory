@@ -2,12 +2,15 @@
     <div class="flex items-center justify-center">
         <div class="shieldinv absolute z-50 w-full h-full bg-zinc-800 bg-opacity-0" style="display:none;">
         </div>
-        <UsableModal :active-item="activeLeftClickItem" @close="handleItemPopup" @itemAction="handleItemAction"></UsableModal>
-        <UsableModal :active-item="activeLeftClickSubItem" @close="handleItemPopup" @itemAction="handleItemAction"></UsableModal>
+        <UsableModal :active-item="activeLeftClickItem" @close="handleItemPopup" @itemAction="handleItemAction">
+        </UsableModal>
+        <UsableModal :active-item="activeLeftClickSubItem" @close="handleItemPopup" @itemAction="handleItemAction">
+        </UsableModal>
 
-        <ItemCountModal v-if="activeTransferItem?.id" button-text="TRANSFER" :active-item="activeTransferItem" @close="handleTransferClose" @submit="handleTransferQuantity"></ItemCountModal>
-        <ItemCountModal v-if="dropping.active" button-text="DROP" :active-item="dropping.things" @close="handleDropClose" @submit="handleDropQuantity"></ItemCountModal>
-
+        <ItemCountModal v-if="activeTransferItem?.id" button-text="TRANSFER" :active-item="activeTransferItem"
+            @close="handleTransferClose" @submit="handleTransferQuantity"></ItemCountModal>
+        <ItemCountModal v-if="dropping.active" button-text="DROP" :active-item="dropping.things"
+            @close="handleDropClose" @submit="handleDropQuantity"></ItemCountModal>
         <SubSlots v-if="side == 'right'" :side="side" :activeRightClickItem="activeRightClickItem" :id="inventory.id"
             @submit="handleSubItemClick" @transfer="handleTransfer" @dragging="EmitDragging"></SubSlots>
         <div class="text-gray-100 bg-zinc-800 p-6 min-h-full relative select-none rounded-md flex flex-col justify-between dropzone"
@@ -35,7 +38,6 @@
                 </div>
             </div>
 
-            <!-- <hr class="mb-10" /> -->
             <div :class="`relative grid grid-flow-row-dense grid-cols-5 gap-2 select-none ${options.maxItemSlots >= 5 ? 'overflow-y-scroll pr-4' : ''}`"
                 style="height: 40%; min-height: 300px;">
                 <div v-for="(slot, key) in filteredList" :key="'playerslot' + key + side"
@@ -78,10 +80,11 @@
             </div>
         </div>
         <SubSlots v-if="side == 'left'" :side="side" :activeRightClickItem="activeRightClickItem" :id="inventory.id"
-            @submit="handleSubItemClick" @transfer="handleTransfer" @dragging="EmitDragging" @dropped="handleDrop"></SubSlots>
+            @submit="handleSubItemClick" @transfer="handleTransfer" @dragging="EmitDragging" @dropped="handleDrop">
+        </SubSlots>
     </div>
 </template>
-  
+
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import _ from 'lodash';
@@ -262,10 +265,14 @@ const endDrag = () => {
                     ghostRect.bottom <= dropZoneRect.bottom
                 ) {
                     if (dropZone.id == 'dropit') {
-                        dropping.active = true
-                        dropping.things = {
-                            id: dropZone.id,
-                            items: filteredList.value[draggingIndex.value]
+                        if (filteredList.value[draggingIndex.value].length <= 1) {
+                            handleDrop(dropZone.id, filteredList.value[draggingIndex.value])
+                        } else {
+                            dropping.things = {
+                                id: dropZone.id,
+                                items: filteredList.value[draggingIndex.value]
+                            }
+                            dropping.active = true
                         }
                     } else if (dropZone.id != `dropzone-${props.side}`) {
                         if (filteredList.value[draggingIndex.value].length <= 1) {
@@ -305,19 +312,15 @@ const handleItemAction = (actionData) => {
 }
 
 const handleDropClose = () => {
-    dropping.things = {
-        active: false,
-        things: {}
-    }
+    dropping.things = {}
+    dropping.active = false
 }
 
 const handleDropQuantity = (quantity) => {
     let dropItems = _.slice(dropping.things.items, 0, quantity)
     handleDrop(dropping.things.id, dropItems)
-    dropping.things = {
-        active: false,
-        things: {}
-    }
+    dropping.things = {}
+    dropping.active = false
 }
 
 const handleDrop = (id, items) => {
@@ -403,4 +406,3 @@ const nextString = () => {
     display: none !important;
 }
 </style>
-  

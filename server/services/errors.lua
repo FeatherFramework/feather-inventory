@@ -1,10 +1,12 @@
-if Config.hotbarLimit > 10 then
-  error('Hotbar limit is beyond acceptable range. Must not be greater than 10')
-end
+-- This file allows us to run validations against the config.
 
-if Config.maxItemSlots < Config.hotbarLimit then
-  error('Your inventory slots cannot be less than your hotbar slots')
-end
+-- if Config.hotbarLimit > 10 then
+--   error('Hotbar limit is beyond acceptable range. Must not be greater than 10')
+-- end
+
+-- if Config.maxItemSlots < Config.hotbarLimit then
+--   error('Your inventory slots cannot be less than your hotbar slots')
+-- end
 
 if type(Config.maxWeight) ~= 'number' or Config.maxWeight < 1 then
   error('Your max weight must be a number greater than 1.')

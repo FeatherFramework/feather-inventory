@@ -46,7 +46,7 @@ CreateThread(function()
             UpdateClientWithGroundLocations(-1)
         else
             while true do
-                Citizen.Wait(Config.Dropped.StreetSweep * 60000)
+                Wait(Config.Dropped.StreetSweep * 60000)
                 DeleteAllGround()
                 UpdateClientWithGroundLocations(-1)
             end

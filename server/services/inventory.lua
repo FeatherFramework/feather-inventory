@@ -177,9 +177,20 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
   -- Check to make sure inventoryId is a player source and not a string
   if tonumber(src) then
     local character = Feather.Character.GetCharacterBySrc(src)
+
+    -- Check if the character is available
+    if character == nil then
+      return {
+        error = 'Inventory not available'
+      }
+    end
+
     inventory, _, _ = GetInventoryByCharacter(character.id)
   else
     error('Invalid Character Source!')
+    return {
+      error = 'No Character Available'
+    }
   end
 
   local inventoryItems, otherInventoryItems = GetInventoryItems(inventory), nil
