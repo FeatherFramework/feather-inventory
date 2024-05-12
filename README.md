@@ -349,16 +349,16 @@ This inventory script is licensed under GPL3 License. Refer to the LICENSE file 
 Huge inspiration to RDO's inventory system with many QOL improvements.
 
 ## To-Do
-  - Add LOD to load ground items within a view distance
-  - Make character initiate loadscreen text configurable.
-  - Migrate all language/text to locales
-  - Frontend UI
-    - Migrate frontend to use state management.
-    - Add Inventory specific slot counts
-    - Account for inventory specific ignore limits (ignore item caps)
-    
-    
-    - Input for give/drop needs to have a minimum and max
+- Add LOD to load ground items within a view distance
+- Make character initiate loadscreen text configurable.
+- Migrate all language/text to locales
+- Frontend UI
+  - Migrate frontend to use state management.
+  - Add Inventory specific slot counts
+  - Account for inventory specific ignore limits (ignore item caps)
 
 ### Next version improvements
-- Shift + Drag will transfer or drop all items (no modal displays in this case.)
+
+- Frontend UI
+    - Migrate frontend to use state management.
+    - Shift + Drag will transfer or drop all items (no modal displays in this case.)

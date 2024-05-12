@@ -50,8 +50,6 @@ const handleAmountSubmit = () => {
     error.active = false
     error.message = ""
 
-    console.log(amount.value, maxAmount.value, amount.value > maxAmount.value)
-
     // input validations
     if (amount.value < minAmount.value || amount.value > maxAmount.value) {
         error.active = true
