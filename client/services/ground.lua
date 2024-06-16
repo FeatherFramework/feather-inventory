@@ -67,7 +67,7 @@ end
 
 Citizen.CreateThread(function()
     local PromptGroup = Feather.Prompt:SetupPromptGroup()
-    local groundPrompt = PromptGroup:RegisterPrompt("Pickup", Feather.KeysCodes[Config.pickupKey], 1, 1, true, 'hold')
+    local groundPrompt = PromptGroup:RegisterPrompt("Pickup", Feather.KeyCodes[Config.pickupKey], 1, 1, true, 'hold')
 
     while true do
         Citizen.Wait(0)
