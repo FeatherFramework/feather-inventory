@@ -85,7 +85,7 @@ InventoryAPI.RegisterInventory = function(tableName, id, maxWeight, restrictedIt
     end
 
     if restrictedItems then
-      UpdateRestrictedItems(inventory[1].id, restrictedItems)
+      InventoryControllers.UpdateRestrictedItems(inventory[1].id, restrictedItems)
     end
 
     return inventory[1].uuid, inventory[1].id
@@ -128,9 +128,9 @@ InventoryAPI.InventoryCanHold = function(items, inventoryId)
   local inventory, maxWeight, ignore_item_limit = nil, nil, nil
   if tonumber(inventoryId) then
     local character = Feather.Character.GetCharacterBySrc(inventoryId)
-    inventory, maxWeight, ignore_item_limit = GetInventoryByCharacter(character.id)
+    inventory, maxWeight, ignore_item_limit = InventoryControllers.GetInventoryByCharacter(character.id)
   else
-    inventory, maxWeight, ignore_item_limit = GetInventoryById(inventoryId)
+    inventory, maxWeight, ignore_item_limit = InventoryControllers.GetInventoryById(inventoryId)
   end
   if not inventory then
     error('Invalid inventory ID.')
@@ -139,15 +139,15 @@ InventoryAPI.InventoryCanHold = function(items, inventoryId)
 
   local weight = 0
   for _, v in pairs(items) do
-    local itemId, maxQuantity, itemWeight = GetItemByName(v)
+    local itemId, maxQuantity, itemWeight = ItemControllers.GetItemByName(v)
     -- Check if item is restricted
-    if IsItemRestricted(inventory, itemId) then
+    if InventoryControllers.IsItemRestrcited(inventory, itemId) then
       return { status = false, message = 'Item is restricted.' }
     end
 
     -- Check if inv can carry more
     if not Boolean(ignore_item_limit) then
-      if (InventoryItemCount(inventory, itemId) + v.quantity) > maxQuantity then
+      if (InventoryControllers.InventoryItemCount(inventory, itemId) + v.quantity) > maxQuantity then
         return { status = false, message = 'Max Quantity Exceeded.' }
       end
     end
@@ -156,7 +156,7 @@ InventoryAPI.InventoryCanHold = function(items, inventoryId)
   end
 
   -- Check if player has enough weight left
-  if (weight + GetInventoryTotalWeight(inventory)) > (maxWeight or Config.maxWeight) then
+  if (weight + InventoryControllers.GetInventoryTotalWeight(inventory)) > (maxWeight or Config.maxWeight) then
     return { status = false, message = 'Max Weight Exceeded.' }
   end
   return { status = true, message = '' }
@@ -177,7 +177,7 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
   -- Check to make sure inventoryId is a player source and not a string
   if tonumber(src) then
     local character = Feather.Character.GetCharacterBySrc(src)
-
+    
     -- Check if the character is available
     if character == nil then
       return {
@@ -185,7 +185,7 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
       }
     end
 
-    inventory, _, _ = GetInventoryByCharacter(character.id)
+    inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
   else
     error('Invalid Character Source!')
     return {
@@ -202,11 +202,11 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
     else 
       if tonumber(otherInventoryId) then
         local character = Feather.Character.GetCharacterBySrc(otherInventoryId)
-        otherInventory, _, inventoryIgnoreLimits = GetInventoryByCharacter(character.id)
+        otherInventory, _, inventoryIgnoreLimits = InventoryControllers.GetInventoryByCharacter(character.id)
       else
-        otherInventory, _, otherInventoryIgnoreLimits = GetInventoryById(otherInventoryId)
+        otherInventory, _, otherInventoryIgnoreLimits = nventoryControllers.GetInventoryById(otherInventoryId)
       end
-      otherInventoryItems = GetInventoryItems(otherInventory)
+      otherInventoryItems = InventoryControllers.GetInventoryItems(otherInventory)
       OpenInventories[tostring(otherInventory)] = {
         src = tostring(src),
         id = otherInventory,
@@ -234,15 +234,15 @@ InventoryAPI.CloseInventory = function(src)
 end
 
 InventoryAPI.GetInventory = function(inventoryID)
-  return GetInventoryById(inventoryID)
+  return InventoryControllers.GetInventoryById(inventoryID)
 end
 
 InventoryAPI.GetCustomInventory = function (key, inventoryID)
-  return GetCustomInventoryById(key, inventoryID)
+  return InventoryControllers.GetCustomInventoryById(key, inventoryID)
 end
 
 InventoryAPI.GetInventoryItems = function(inventoryID)
-  return GetInventoryItemById(inventoryID)
+  return InventoryControllers.GetInventoryItemById(inventoryID)
 end
 
 ---

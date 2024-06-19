@@ -63,7 +63,7 @@ end
 
 CreateThread(function()
     local PromptGroup = Feather.Prompt:SetupPromptGroup()
-    local groundPrompt = PromptGroup:RegisterPrompt("Pickup", Feather.Keys[Config.Dropped.PickupKey], 1, 1, true, 'hold')
+    local groundPrompt = PromptGroup:RegisterPrompt("Pickup", Feather.KeyCodes[Config.Dropped.PickupKey], 1, 1, true, 'hold')
 
     while true do
         Wait(5)

@@ -3,7 +3,7 @@ function RegisterGroundInventory()
 end
 
 function UpdateClientWithGroundLocations(src)
-    local locations = GetAllGroundLocations()
+    local locations = GroundControllers.GetAllGroundLocations()
     TriggerClientEvent("Feather:Inventory:UpdateGroundLocations", src, locations)
 end
 
@@ -20,7 +20,7 @@ end)
 
 Feather.RPC.Register("Feather:Inventory:DropItemsOnGround", function(params, res, src)
     local character = Feather.Character.GetCharacterBySrc(src)
-    local inventoryID, _, _ = GetInventoryByCharacter(character.id)
+    local inventoryID, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
     return res(ItemsAPI.DropItemsOnGround(inventoryID, params.items, params.x, params.y, params.z))
 end)
 

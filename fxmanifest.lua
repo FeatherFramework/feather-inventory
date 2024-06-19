@@ -6,11 +6,11 @@ lua54 "yes"
 description 'The Inventory API for the Feather Framework'
 author 'BCC Scripts'
 name 'feather-inventory'
-version '0.1.0'
+version '0.1.1'
 
-github_version_check 'false'
+github_version_check 'true'
 github_version_type 'release'
-github_ui_check 'false'
+github_ui_check 'true'
 github_link 'https://github.com/FeatherFramework/feather-inventory'
 
 shared_scripts {
@@ -36,13 +36,15 @@ client_scripts {
 }
 
 ui_page {
-  "ui/shim.html"
+  "ui/index.html"
 }
 
 files {
-  "ui/shim.html",
+  "ui/index.html",
   "ui/js/*.*",
-  "ui/css/*.*"
+  "ui/css/*.*",
+  "ui/fonts/*.*",
+  "ui/images/*.*"
 }
 
 dependencies {

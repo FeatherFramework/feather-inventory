@@ -12,7 +12,7 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
     }
   end
 
-  local itemId, max_quantity, _, max_stack_size = GetItemByName(itemName)
+  local itemId, max_quantity, _, max_stack_size = ItemControllers.GetItemByName(itemName)
   if not itemId then
     error('Invalid itemName. Please make sure it is in the items table in your database.')
     return {
@@ -45,9 +45,9 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   local inventory, _, _ = nil, nil, nil
   if tonumber(inventoryId) then
     local character = Feather.Character.GetCharacterBySrc(inventoryId)
-    inventory, _, _ = GetInventoryByCharacter(character.id)
+    inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
   else
-    inventory, _, _ = GetInventoryById(inventoryId)
+    inventory, _, _ = InventoryControllers.GetInventoryById(inventoryId)
   end
 
   if not inventory then
@@ -69,11 +69,11 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   end
 
   for count = 1, quantity do
-    local item = CreateInventoryItem(inventory, itemId)
+    local item = InventoryControllers.CreateInventoryItem(inventory, itemId)
 
     if metadata ~= nil then
       for k, v in pairs(metadata) do
-        SetMetadata(item[1].id, k, v)
+        InventoryControllers.SetMetadata(item[1].id, k, v)
       end
     end
 
@@ -96,7 +96,7 @@ ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
     }
   end
 
-  local itemId, _, _ = GetItemByName(itemName)
+  local itemId, _, _ = ItemControllers.GetItemByName(itemName)
   if not itemId then
     error('Invalid itemName. Please make sure it is in the items table in your database.')
     return {
@@ -108,9 +108,9 @@ ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
   local inventory, _, _ = nil, nil, nil
   if tonumber(inventoryId) then
     local character = Feather.Character.GetCharacterBySrc(inventoryId)
-    inventory, _, _ = GetInventoryByCharacter(character.id)
+    inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
   else
-    inventory, _, _ = GetInventoryById(inventoryId)
+    inventory, _, _ = InventoryControllers.GetInventoryById(inventoryId)
   end
   if not inventory then
     error('Invalid inventory ID.')
@@ -120,14 +120,14 @@ ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
     }
   end
 
-  local itemCount = InventoryItemCount(inventory, itemId)
+  local itemCount = InventoryControllers.InventoryItemCount(inventory, itemId)
   if itemCount < quantity then
     return {
       error = true,
       message = "Withdrawing more items than available."
     }
   end
-  DeleteInventoryItems(inventory.id, itemId, quantity)
+  InventoryControllers.DeleteInventoryItems(inventory.id, itemId, quantity)
   return {
     error = false
   }
@@ -135,14 +135,14 @@ end
 
 -- Removes a specific item from the players inventory.
 ItemsAPI.RemoveItemById = function(id)
-  local item = GetInventoryItemById(id)
+  local item = InventoryControllers.GetInventoryItemById(id)
   if not item then
     return {
       error = true,
       message = "Item not available."
     }
   end
-  DeleteInventoryItem(item.id)
+  InventoryControllers.DeleteInventoryItem(item.id)
   return {
     error = false,
   }
@@ -167,7 +167,7 @@ ItemsAPI.SetMetadata = function(item, metadata)
   end
 
   for k, v in pairs(metadata) do
-    SetMetadata(item, k, v)
+    InventoryControllers.SetMetadata(item, k, v)
   end
   return {
     error = false
@@ -175,7 +175,7 @@ ItemsAPI.SetMetadata = function(item, metadata)
 end
 
 ItemsAPI.GetItem = function(id)
-  local item = GetInventoryItemById(id)
+  local item = InventoryControllers.GetInventoryItemById(id)
   if not item then
     return nil
   end
@@ -184,7 +184,7 @@ ItemsAPI.GetItem = function(id)
 end
 
 ItemsAPI.GetItemCount = function(itemName, inventoryId)
-  local itemId, _, _ = GetItemByName(itemName)
+  local itemId, _, _ = ItemControllers.GetItemByName(itemName)
   if not itemId then
     error('Invalid itemName. Please make sure it is in the items table in your database.')
     return -1
@@ -194,22 +194,22 @@ ItemsAPI.GetItemCount = function(itemName, inventoryId)
   if tonumber(inventoryId) then
     print("inventoryId geting item count", inventoryId)
     local character = Feather.Character.GetCharacterBySrc(inventoryId)
-    inventory, _, _ = GetInventoryByCharacter(character.id)
+    inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
   else
-    inventory, _, _ = GetInventoryById(inventoryId)
+    inventory, _, _ = InventoryControllers.GetInventoryById(inventoryId)
   end
   if not inventory == nil then
     error('Invalid inventory ID.')
     return -1
   end
 
-  local itemCount = InventoryItemCount(inventory, itemId)
+  local itemCount = InventoryControllers.InventoryItemCount(inventory, itemId)
 
   return itemCount
 end
 
 ItemsAPI.ItemExists = function(itemName)
-  local itemId, _, _ = GetItemByName(itemName)
+  local itemId, _, _ = ItemControllers.GetItemByName(itemName)
   if itemId then
     return false
   end
@@ -223,11 +223,11 @@ ItemsAPI.InventoryHasItems = function(items, inventoryId)
   local inventory, _, _ = nil, nil, nil
   if tonumber(inventoryId) then
     local character = Feather.Character.GetCharacterBySrc(inventoryId)
-    inventory, _, _ = GetInventoryByCharacter(character.id)
+    inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
   else
-    inventory, _, _ = GetInventoryById(inventoryId)
+    inventory, _, _ = InventoryControllers.GetInventoryById(inventoryId)
   end
-  local playerItems = GetInventoryItemCounts(inventory)
+  local playerItems = InventoryControllers.InventoryItemCounts(inventory)
 
   -- Error Checks
   if not IsTable(items) then
@@ -268,7 +268,7 @@ ItemsAPI.RegisterUsableItem = function(itemName, callback)
 end
 
 ItemsAPI.UseItem = function(itemID, src)
-  local item = GetInventoryItemById(itemID)
+  local item = InventoryControllers.GetInventoryItemById(itemID)
   if not item then
     error('Item not found in the database! ItemID: ' .. itemID)
   end
@@ -277,7 +277,7 @@ ItemsAPI.UseItem = function(itemID, src)
   end
 
   -- local character = Feather.Character.GetCharacterBySrc(src)
-  -- local inventory, _, _ = GetInventoryByCharacter(character.id)
+  -- local inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
   -- if tonumber(inventory) == nil then
   --   error('Inventory ID is required.')
   --   return nil
@@ -304,7 +304,7 @@ end
 
 ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z)
   -- TODO: Add check to make sure items are all the same "item". If not then do different logic.
-  local item = GetInventoryItemById(items[1].id)
+  local item = InventoryControllers.GetInventoryItemById(items[1].id)
   if not item then
     warn('Item not found in the database! Item ID: ' .. items[1].id)
     return {
@@ -322,15 +322,15 @@ ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z)
     }
   end
 
-  local groundID = GetClosestGroundByCoords(x, y, z, Config.Dropped.GroupingRadius)
+  local groundID = GroundControllers.GetClosestGroundByCoords(x, y, z, Config.groundGroupingRadius)
   
   -- No nearby ground, lets create a new one
   if groundID == nil or groundID == 'nil' then
-    groundID = CreateGround(x, y, z)[1].id
+    groundID = GroundControllers.CreateGround(x, y, z)[1].id
   end
 
   local _, groundInventoryID = InventoryAPI.RegisterInventory('ground', groundID)
-  local updateinv = MoveInventoryItems(inventoryId, groundInventoryID, items)
+  local updateinv = InventoryControllers.MoveInventoryItems(inventoryId, groundInventoryID, items)
 
   UpdateClientWithGroundLocations(-1)
 

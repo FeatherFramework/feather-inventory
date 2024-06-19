@@ -1,4 +1,6 @@
-function GetGroundById(id)
+GroundControllers = {}
+
+function GroundControllers.GetGroundById(id)
     local result = MySQL.query.await(
         'SELECT `x`, `y`, `z` FROM `ground` WHERE `id` = ? LIMIT 1;', { id })[1]
     if not result then
@@ -7,12 +9,12 @@ function GetGroundById(id)
     return result.x, result.y, result.z
 end
 
-function GetAllGroundLocations()
+function GroundControllers.GetAllGroundLocations()
     return MySQL.query.await(
         'SELECT `id`, `x`, `y`, `z` FROM `ground`;')
 end
 
-function GetClosestGroundByCoords(x, y, z, radius)
+function GroundControllers.GetClosestGroundByCoords(x, y, z, radius)
     local result = MySQL.query.await([[
         SELECT id
         FROM ground
@@ -33,14 +35,13 @@ function GetClosestGroundByCoords(x, y, z, radius)
     return result.id
 end
 
-function CreateGround(x, y, z)
+function GroundControllers.CreateGround(x, y, z)
     return MySQL.query.await('INSERT INTO `ground` (`x`, `y`, `z`) VALUES (?, ?, ?) RETURNING *;',
         { x, y, z })
 end
 
-function DeleteGround(id)
-    print("SHOULD DELETE NOW", id)
-    MySQL.query.await('DELETE FROM `ground` WHERE `id` = ?;', { id })
+function GroundControllers.DeleteGround(id)
+     MySQL.query.await('DELETE FROM `ground` WHERE `id` = ?;', { id })
 end
 
 function DeleteGround(id)
