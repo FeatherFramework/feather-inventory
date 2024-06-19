@@ -9,7 +9,7 @@ function InventoryControllers.GetInventoryById(inventoryId)
   return result.id, result.max_weight, result.ignore_item_limit
 end
 
-function GetInventoryLocationById(id)
+function InventoryControllers.GetInventoryLocationById(id)
   local result = MySQL.query.await(
     'SELECT `location` FROM `inventory` WHERE `id` = ? LIMIT 1;', { id })[1]
   if not result then
@@ -89,7 +89,7 @@ function InventoryControllers.InventoryItemCounts(inventory)
     { inventory })
 end
 
-function GetInventoryTotalItemCounts(inventory)
+function InventoryControllers.GetInventoryTotalItemCounts(inventory)
   return MySQL.query.await(
     'SELECT COUNT(`id`) FROM `inventory_items` WHERE `inventory_id`=?;',
     { inventory })
@@ -120,7 +120,7 @@ function InventoryControllers.DeleteInventoryItems(inventory, itemId, quantity)
   MySQL.query.await(query, { inventory, itemId })
 end
 
-function InventoryControllers.IsItemRestrcited(inventory, itemId)
+function InventoryControllers.IsItemRestricted(inventory, itemId)
   local result = MySQL.query.await("SELECT id FROM `inventory_blacklist` WHERE `inventory_id`=? AND `item_id`=?",
     { inventory, itemId })
   if not result[1] then
@@ -173,6 +173,6 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
   }
 end
 
-function DeleteInventory(uuid)
+function InventoryControllers.DeleteInventory(uuid)
   MySQL.query.await('DELETE FROM `inventory` WHERE `uuid` = ?;', { uuid })
 end

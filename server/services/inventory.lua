@@ -141,7 +141,7 @@ InventoryAPI.InventoryCanHold = function(items, inventoryId)
   for _, v in pairs(items) do
     local itemId, maxQuantity, itemWeight = ItemControllers.GetItemByName(v)
     -- Check if item is restricted
-    if InventoryControllers.IsItemRestrcited(inventory, itemId) then
+    if InventoryControllers.IsItemRestricted(inventory, itemId) then
       return { status = false, message = 'Item is restricted.' }
     end
 
@@ -256,9 +256,7 @@ end
 InventoryAPI.InternalCloseInventory = function(src)
   for k, v in pairs(OpenInventories) do
     if v.src == tostring(src) then
-      Feather.Print(GetInventoryTotalItemCounts(v.id))
-
-      if GetInventoryTotalItemCounts(v.id)[1]["COUNT(`id`)"] <= 0 then
+      if InventoryControllers.GetInventoryTotalItemCounts(v.id)[1]["COUNT(`id`)"] <= 0 then
         TriggerEvent('Feather:Inventory:Empty', {
           id = v.id,
           uuid = v.uuid

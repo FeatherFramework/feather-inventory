@@ -44,15 +44,11 @@ function GroundControllers.DeleteGround(id)
      MySQL.query.await('DELETE FROM `ground` WHERE `id` = ?;', { id })
 end
 
-function DeleteGround(id)
-    MySQL.query.await('DELETE FROM `ground` WHERE `id` = ?;', { id })
-end
-
-function DeleteAllGround()
+function GroundControllers.DeleteAllGround()
     MySQL.query.await('DELETE FROM `ground`;')
 end
 
-function GetGroundID(id)
+function GroundControllers.GetGroundID(id)
     local result = MySQL.query.await(
         'SELECT `ground_id` FROM `inventory` WHERE `id` = ? LIMIT 1;', { id })[1]
     if not result then

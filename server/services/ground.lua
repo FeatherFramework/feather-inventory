@@ -25,10 +25,10 @@ Feather.RPC.Register("Feather:Inventory:DropItemsOnGround", function(params, res
 end)
 
 RegisterServerEvent("Feather:Inventory:Empty", function(args)
-    local location = GetInventoryLocationById(args.id)
+    local location = InventoryControllers.GetInventoryLocationById(args.id)
     if location == 'ground' then
-        local GID = GetGroundID(args.id)
-        DeleteGround(GID)
+        local GID = GroundControllers.GetGroundID(args.id)
+        GroundControllers.DeleteGround(GID)
         UpdateClientWithGroundLocations(-1)
     end
 end)
@@ -42,12 +42,12 @@ end)
 CreateThread(function()
     if Config.Dropped.StreetSweep ~= nil then
         if (Config.Dropped.StreetSweep == 0) then
-            DeleteAllGround()
+            GroundControllers.DeleteAllGround()
             UpdateClientWithGroundLocations(-1)
         else
             while true do
                 Wait(Config.Dropped.StreetSweep * 60000)
-                DeleteAllGround()
+                GroundControllers.DeleteAllGround()
                 UpdateClientWithGroundLocations(-1)
             end
         end
