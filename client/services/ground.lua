@@ -65,12 +65,12 @@ function DropItemsOnGround(items)
     return result
 end
 
-Citizen.CreateThread(function()
+CreateThread(function()
     local PromptGroup = Feather.Prompt:SetupPromptGroup()
     local groundPrompt = PromptGroup:RegisterPrompt("Pickup", Feather.KeyCodes[Config.pickupKey], 1, 1, true, 'hold')
 
     while true do
-        Citizen.Wait(0)
+        Wait(5)
         local isDead = IsEntityDead(playerped)
         if isDead ~= 0 then
             if GroundItems[1] ~= nil then
