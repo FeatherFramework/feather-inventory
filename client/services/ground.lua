@@ -1,7 +1,6 @@
--- TODO: Add LOD to load ground items within a view distance
-
 GroundItems = {}
 RegisterNetEvent("Feather:Inventory:UpdateGroundLocations", function(locations)
+    print("UPDATING GROUND LOCATIONS")
     ClearGroundItems()
     GroundItems = locations
     SpawnGroundItems()
@@ -13,16 +12,13 @@ end)
 
 function SpawnGroundItems()
     for index, groundItem in ipairs(GroundItems) do
-        local spawnedGroundItem = Feather.Object:Create(nil, tonumber(groundItem.x), tonumber(groundItem.y), tonumber(groundItem.z), 0, true)
-
+        local spawnedGroundItem = Feather.Object:Create(Config.Dropped.Item, tonumber(groundItem.x), tonumber(groundItem.y), tonumber(groundItem.z), 0, true)
         spawnedGroundItem:SetAsMission()
         spawnedGroundItem:Freeze()
 
         local spawnedGroundItemObj = spawnedGroundItem:GetObj()
 
         Citizen.InvokeNative(0x7DFB49BCDB73089A, spawnedGroundItemObj, true) --SetPickupLight
-
-        -- GroundItems[index] = spawnedGroundItem
         groundItem.entity = spawnedGroundItem
     end
 end
@@ -67,59 +63,44 @@ end
 
 CreateThread(function()
     local PromptGroup = Feather.Prompt:SetupPromptGroup()
-    local groundPrompt = PromptGroup:RegisterPrompt("Pickup", Feather.KeyCodes[Config.pickupKey], 1, 1, true, 'hold')
+    local groundPrompt = PromptGroup:RegisterPrompt("Pickup", Feather.KeyCodes[Config.Dropped.PickupKey], 1, 1, true, 'hold')
 
     while true do
         Wait(5)
         local isDead = IsEntityDead(playerped)
         if isDead ~= 0 then
             if GroundItems[1] ~= nil then
-                -- local closest = {
-                --     dist = 99999999
-                -- }
-
                 for i, item in ipairs(GroundItems) do
                     local playerped = PlayerPedId()
                     local playerCoords = GetEntityCoords(playerped)
                     local dist = Feather.Math.GetDistanceBetween(
                         vector3(playerCoords.x, playerCoords.y, playerCoords.z),
                         vector3(tonumber(item.x), tonumber(item.y), tonumber(item.z)))
-                    if dist < Config.dropPromptViewDistance then
-                        -- if dist <= closest.dist then
-                        --     closest = {
-                        --         dist = dist
-                        --     }
+                    if dist < Config.Dropped.PromptViewDistance then
 
+                        PromptGroup:ShowGroup("Ground Items")
+                        if groundPrompt:HasCompleted() then
                             Citizen.InvokeNative(0x69F4BE8C8CC4796C, playerped, item.entity:GetObj(), 3000, 2048, 3) -- TaskLookAtEntity
+                            
+                            local animDict =
+                            "amb_rest@world_human_sketchbook_ground_pickup@male_a@react_look@exit@generic"
+                            RequestAnimDict(animDict)
 
-                            PromptGroup:ShowGroup("Ground Items")
-                            if groundPrompt:HasCompleted() then
-                                
-
-                                -- local animDict =
-                                -- "amb_rest@world_human_sketchbook_ground_pickup@male_a@react_look@exit@generic"
-                                -- RequestAnimDict(animDict)
-
-                                -- while not HasAnimDictLoaded(animDict) do
-                                --     Wait(10)
-                                -- end
-
-                                -- TaskPlayAnim(playerped, animDict, "react_look_front_exit", 1.0, 8.0, -1, 1, 0, false,
-                                --     false, false)
-                                -- Wait(2200)
-                                -- ClearPedTasks(playerped)
-
-                                OpenGroundLocation(item.id)
-
-                                -- closest = {
-                                --     dist = 99999999
-                                -- }
+                            while not HasAnimDictLoaded(animDict) do
+                                Wait(10)
                             end
 
-                            if groundPrompt:HasFailed() then
-                                print("FAILED picked up!")
-                            end
-                        -- end
+                            TaskPlayAnim(playerped, animDict, "react_look_front_exit", 1.0, 8.0, -1, 1, 0, false,
+                                false, false)
+                            Wait(2200)
+                            ClearPedTasks(playerped)
+
+                            OpenGroundLocation(item.id)
+                        end
+
+                        if groundPrompt:HasFailed() then
+                            print("FAILED picked up!")
+                        end
                     end
                 end
             end

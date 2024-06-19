@@ -3,8 +3,8 @@
   "version": "0.1.1",
   "private": true,
   "scripts": {
-    "serve": "NODE_ENV=development yarn run shim && vue-cli-service serve",
-    "build": "NODE_ENV=production yarn run shim && vue-cli-service build",
+    "serve": "NODE_ENV=development npm run shim && vue-cli-service serve",
+    "build": "NODE_ENV=production npm run shim && vue-cli-service build",
     "lint": "vue-cli-service lint",
     "shim": "node build/fxupdate.js"
   },

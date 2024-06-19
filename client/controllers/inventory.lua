@@ -6,7 +6,7 @@ InventoryAction = {}
 function CanOpenInventory()
   if IsEntityDead(PlayerPedId()) then return false end
   if IsPauseMenuActive() then return false end
-  -- Add check for different states where inventory can't open like Handcuffed/HogTied/KnockedOut
+  -- TODO: Add check for different states where inventory can't open like Handcuffed/HogTied/KnockedOut
   return true
 end
 
@@ -17,9 +17,14 @@ InventoryAction.Open = function(otherInventoryId, target)
 
   print('Opening Inventory', otherInventoryId or 'character')
   if not isInvOpen and CanOpenInventory() then
+    local results = Feather.RPC.CallAsync('Feather:Inventory:GetInventoryItems', { otherInventoryId = otherInventoryId })
+    if results.error ~= nil then
+      Feather.Notify.RightNotify(results.error, 3000)
+      return
+    end
+
     isInvOpen = true
 
-    local results = Feather.RPC.CallAsync('Feather:Inventory:GetInventoryItems', { otherInventoryId = otherInventoryId })
     local player_display = Feather.RPC.CallAsync('Feather:Inventory:GetCharacterInfoForDisplay')
     
     SendNUIMessage({

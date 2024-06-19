@@ -44,7 +44,9 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
 
   local inventory, _, _ = nil, nil, nil
   if tonumber(inventoryId) then
-    local character = Feather.Character.GetCharacterBySrc(inventoryId)
+    local player = Feather.Character.GetCharacter({ src = inventoryId })
+    local character = player.char
+
     inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
   else
     inventory, _, _ = InventoryControllers.GetInventoryById(inventoryId)
@@ -107,7 +109,9 @@ ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
 
   local inventory, _, _ = nil, nil, nil
   if tonumber(inventoryId) then
-    local character = Feather.Character.GetCharacterBySrc(inventoryId)
+    local player = Feather.Character.GetCharacter({ src = inventoryId })
+    local character = player.char
+
     inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
   else
     inventory, _, _ = InventoryControllers.GetInventoryById(inventoryId)
@@ -192,7 +196,9 @@ ItemsAPI.GetItemCount = function(itemName, inventoryId)
 
   local inventory, _, _ = nil, nil, nil
   if tonumber(inventoryId) then
-    local character = Feather.Character.GetCharacterBySrc(inventoryId)
+    local player = Feather.Character.GetCharacter({ src = inventoryId })
+    local character = player.char
+
     inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
   else
     inventory, _, _ = InventoryControllers.GetInventoryById(inventoryId)
@@ -221,7 +227,8 @@ ItemsAPI.InventoryHasItems = function(items, inventoryId)
 
   local inventory, _, _ = nil, nil, nil
   if tonumber(inventoryId) then
-    local character = Feather.Character.GetCharacterBySrc(inventoryId)
+    local player = Feather.Character.GetCharacter({ src = inventoryId })
+    local character = player.char
     inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
   else
     inventory, _, _ = InventoryControllers.GetInventoryById(inventoryId)
@@ -259,7 +266,7 @@ end
 
 ItemsAPI.RegisterUsableItem = function(itemName, callback)
   if UsableItemCallbacks[itemName] then
-    error('An Item by that name has laready been registered. Item: ' .. itemName)
+    warn('An Item by that name has laready been registered. Item: ' .. itemName)
     return
   end
 
@@ -269,13 +276,14 @@ end
 ItemsAPI.UseItem = function(itemID, src)
   local item = InventoryControllers.GetInventoryItemById(itemID)
   if not item then
-    error('Item not found in the database!')
+    error('Item not found in the database! ItemID: ' .. itemID)
   end
   if tonumber(src) == nil then
     error('Invalid Player Source')
   end
 
-  -- local character = Feather.Character.GetCharacterBySrc(src)
+  -- local player = Feather.Character.GetCharacter({ src = src })
+  -- local character = player.char
   -- local inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
   -- if tonumber(inventory) == nil then
   --   error('Inventory ID is required.')
@@ -287,13 +295,13 @@ ItemsAPI.UseItem = function(itemID, src)
   -- elseif item.type == 'item_ammo' then
   --   TriggerEvent('Feather:Inventory:UsedItem', src, item)
   -- else
-  if UsableItemCallbacks[itemName] then
-    UsableItemCallbacks[itemName](item, function()
+  if UsableItemCallbacks[item.name] then
+    UsableItemCallbacks[item.name](item, function()
       -- Refresh the inventory ui on callback
       TriggerClientEvent('Feather:Inventory:OpenInventory', src, nil, "player")
     end)
   else
-    error('Not usable callback defined for item: ' .. item.name)
+    warn('No usable callback defined for item: ' .. item.name)
   end
   -- end
 
@@ -305,7 +313,7 @@ ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z)
   -- TODO: Add check to make sure items are all the same "item". If not then do different logic.
   local item = InventoryControllers.GetInventoryItemById(items[1].id)
   if not item then
-    error('Item not found in the database!')
+    warn('Item not found in the database! Item ID: ' .. items[1].id)
     return {
       error = true,
       message = 'Item not found in the database!'
@@ -314,7 +322,7 @@ ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z)
 
   local ItemCount = ItemsAPI.GetItemCount(item.name, inventoryId)
   if (ItemCount - #items) < 0 then
-    error('Attempting to drop more items than available.')
+    warn('Attempting to drop more items than available. Item Name: ' .. item.name)
     return {
       error = true,
       message = 'Attempting to drop more items than available.'
@@ -333,7 +341,6 @@ ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z)
 
   UpdateClientWithGroundLocations(-1)
 
-  print("Items dropped to ground: " .. groundID)
   return {
     error = false,
     inv = updateinv

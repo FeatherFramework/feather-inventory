@@ -11,10 +11,10 @@
         </MenuUI>
         <div class="absolute top-4 left-1/2 transform -translate-x-1/2  z-50">
           <Transition name="fade">
-            <div v-if="Error.active" class="max-w-xs bg-red-500 text-sm text-white rounded-md shadow-lg px-10"
+            <div v-if="error.active" class="max-w-xs bg-red-500 text-sm text-white rounded-md shadow-lg px-10"
               role="alert">
               <div class="flex p-4">
-                {{ Error.message }}
+                {{ error.message }}
               </div>
             </div>
           </Transition>
@@ -32,15 +32,11 @@ import _ from "lodash";
 
 import MenuUI from "./views/MenuUI.vue";
 
-// TODO: At a later date, MAYBE move this all to state management :/
-// TODO: Add Inventory specific slot counts
-// TODO: Account for inventory specific ignore limits (ignore item caps)
-
 const devmode = ref(false);
 const visible = ref(false);
 
-const ErrorTimeout = ref(null)
-const Error = reactive({
+const errorTimeout = ref(null)
+const error = reactive({
   displayName: '',
   active: false
 });
@@ -205,16 +201,16 @@ const useItem = (item) => {
 }
 
 const showError = (message) => {
-  Error.message = message
-  Error.active = true
+  error.message = message
+  error.active = true
 
-  if (ErrorTimeout.value) {
-    clearTimeout(ErrorTimeout.value);
+  if (errorTimeout.value) {
+    clearTimeout(errorTimeout.value);
   }
 
-  ErrorTimeout.value = setTimeout(() => {
-    Error.message = ''
-    Error.active = false
+  errorTimeout.value = setTimeout(() => {
+    error.message = ''
+    error.active = false
   }, 3000)
 }
 

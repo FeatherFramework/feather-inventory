@@ -5,7 +5,7 @@ Feather.RPC.Register('Feather:Inventory:GetInventoryItems', function(params, res
 end)
 
 Feather.RPC.Register('Feather:Inventory:Server:CloseInventory', function(params, res, src)
-  InventoryAPI.InternalCloseInventory()
+  InventoryAPI.InternalCloseInventory(src)
 end)
 
 -- Called when player uses item from their inventory. Close Inventory after use.
@@ -26,13 +26,17 @@ Feather.RPC.Register('Feather:Inventory:GiveItem', function(params, res, src)
   local target = params['target']
   local item = params['item']
 
-  local player = Feather.Character.getCharacterBySrc(src)
-  local sourceInventory = InventoryControllers.GetInventoryByCharacter(player.id)
-  local targetPlayer = Feather.Character.getCharacterBySrc(tonumber(target))
-  local destinationInventory = InventoryControllers.GetInventoryByCharacter(targetPlayer.id)
+  local player = Feather.Character.GetCharacter({ src = src })
+  local character = player.char 
+
+  local sourceInventory = InventoryControllers.GetInventoryByCharacter(character.id)
+
+  local targetPlayer = Feather.Character.GetCharacter({ src = tonumber(target) })
+  local targerCharacter = targetPlayer.char
+  local destinationInventory = InventoryControllers.GetInventoryByCharacter(targerCharacter.id)
 
   if sourceInventory ~= nil and destinationInventory ~= nil then
-    res(ItemsAPI.MoveInventoryItems(sourceInventory.id, destinationInventory.id, { item }))
+    res(InventoryControllers.MoveInventoryItems(sourceInventory.id, destinationInventory.id, { item }))
   end
 
   res(false)
@@ -43,11 +47,13 @@ Feather.RPC.Register('Feather:Inventory:GetCategories', function(params, res, sr
 end)
 
 Feather.RPC.Register('Feather:Inventory:GetCharacterInfoForDisplay', function(params, res, src)
-  local player = Feather.Character.GetCharacterBySrc(src)
+  local player = Feather.Character.GetCharacter({ src = src })
+  local character = player.char
+
   res({
-    dollars = player.dollars,
-    gold = player.gold,
-    tokens = player.tokens,
-    id = player.id
+    dollars = character.dollars,
+    gold = character.gold,
+    tokens = character.tokens,
+    id = character.id
   })
 end)

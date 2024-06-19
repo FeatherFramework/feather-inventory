@@ -57,7 +57,7 @@ end
 -- @param ignoreItemLimits Ignore the max quantity of items that can be added to the inventory
 -- @return Inventory UUID for accessing the inventory later (can be saved in your database table)
 --
-InventoryAPI.RegisterInventory = function(tableName, id, maxWeight, restrictedItems, ignoreItemLimits)
+InventoryAPI.RegisterInventory = function(tableName, id, maxWeight, restrictedItems, ignoreItemLimits, displayName)
   if not tableName or not id then
     error(
       'All parameters are required!')
@@ -92,8 +92,8 @@ InventoryAPI.RegisterInventory = function(tableName, id, maxWeight, restrictedIt
   end
 
   -- Create new inventory
-  query = 'INSERT INTO `inventory` (' .. foreignKey .. ') VALUES (?) RETURNING *;'
-  inventory = MySQL.query.await(query, { id })
+  query = 'INSERT INTO `inventory` (' .. foreignKey .. ', location, name) VALUES (?, ?, ?) RETURNING *;'
+  inventory = MySQL.query.await(query, { id, tableName, displayName or '' })
 
   if not inventory or not inventory[1] then
     return nil
@@ -127,7 +127,9 @@ InventoryAPI.InventoryCanHold = function(items, inventoryId)
 
   local inventory, maxWeight, ignore_item_limit = nil, nil, nil
   if tonumber(inventoryId) then
-    local character = Feather.Character.GetCharacterBySrc(inventoryId)
+    local player = Feather.Character.GetCharacter({ src = inventoryId })
+    local character = player.char
+
     inventory, maxWeight, ignore_item_limit = InventoryControllers.GetInventoryByCharacter(character.id)
   else
     inventory, maxWeight, ignore_item_limit = InventoryControllers.GetInventoryById(inventoryId)
@@ -141,7 +143,7 @@ InventoryAPI.InventoryCanHold = function(items, inventoryId)
   for _, v in pairs(items) do
     local itemId, maxQuantity, itemWeight = ItemControllers.GetItemByName(v)
     -- Check if item is restricted
-    if InventoryControllers.IsItemRestrcited(inventory, itemId) then
+    if InventoryControllers.IsItemRestricted(inventory, itemId) then
       return { status = false, message = 'Item is restricted.' }
     end
 
@@ -176,25 +178,48 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
 
   -- Check to make sure inventoryId is a player source and not a string
   if tonumber(src) then
-    local character = Feather.Character.GetCharacterBySrc(src)
+    local player = Feather.Character.GetCharacter({ src = src })
+    local character = player.char
+    
+    -- Check if the character is available
+    if character == nil then
+      return {
+        error = 'Inventory not available'
+      }
+    end
+
     inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
   else
     error('Invalid Character Source!')
+    return {
+      error = 'No Character Available'
+    }
   end
 
   local inventoryItems, otherInventoryItems = InventoryControllers.GetInventoryItems(inventory), nil
+
   if otherInventoryId ~= nil then
-    if tonumber(otherInventoryId) then
-      local character = Feather.Character.GetCharacterBySrc(otherInventoryId)
-      otherInventory, _, inventoryIgnoreLimits = InventoryControllers.GetInventoryByCharacter(character.id)
-    else
-      otherInventory, _, otherInventoryIgnoreLimits = InventoryControllers.GetInventoryById(otherInventoryId)
+    if OpenInventories[tostring(otherInventory)] ~= nil then
+      otherInventoryId = nil
+      Feather.Notify.RightNotify(src, 'This inventory is already opened. Try again later.', 3000)
+    else 
+      if tonumber(otherInventoryId) then
+        local player = Feather.Character.GetCharacter({ src = otherInventoryId })
+        local character = player.char
+
+        otherInventory, _, inventoryIgnoreLimits = InventoryControllers.GetInventoryByCharacter(character.id)
+      else
+        otherInventory, _, otherInventoryIgnoreLimits = InventoryControllers.GetInventoryById(otherInventoryId)
+      end
+      otherInventoryItems = InventoryControllers.GetInventoryItems(otherInventory)
+      OpenInventories[tostring(otherInventory)] = {
+        src = tostring(src),
+        id = otherInventory,
+        uuid = otherInventoryId
+      }
     end
-    otherInventoryItems = InventoryControllers.GetInventoryItems(otherInventory)
-    OpenInventories[tostring(otherInventory)] = tostring(src)
   end
 
-  OpenInventories[tostring(inventory)] = tostring(src)
   return {
     inventory = inventory,
     inventoryItems = inventoryItems,
@@ -204,7 +229,10 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
     otherInventoryIgnoreLimits = otherInventoryIgnoreLimits
   }
 end
-InventoryAPI.OpenInventory = InventoryAPI.InternalOpenInventory
+
+InventoryAPI.OpenInventory = function (src, InventoryId, target)
+  TriggerClientEvent('Feather:Inventory:OpenInventory', src, InventoryId, target)
+end
 
 InventoryAPI.CloseInventory = function(src)
   TriggerClientEvent('Feather:Inventory:CloseInventory', src)
@@ -219,7 +247,7 @@ InventoryAPI.GetCustomInventory = function (key, inventoryID)
 end
 
 InventoryAPI.GetInventoryItems = function(inventoryID)
-  return InventoryControllers.GetInventoryItemById(inventoryID)
+  return InventoryControllers.GetInventoryItems(inventoryID)
 end
 
 ---
@@ -230,11 +258,24 @@ end
 -- @param src Player Source
 -- @return None
 --
-InventoryAPI.InternalCloseInventory = function(src, inventory)
-  print("closing inventories")
+InventoryAPI.InternalCloseInventory = function(src)
   for k, v in pairs(OpenInventories) do
-    if v == src then
+    if v.src == tostring(src) then
+      if InventoryControllers.GetInventoryTotalItemCounts(v.id)[1]["COUNT(`id`)"] <= 0 then
+        TriggerEvent('Feather:Inventory:Empty', {
+          id = v.id,
+          uuid = v.uuid
+        })
+      end
+      
       OpenInventories[k] = nil
+      -- break
     end
   end
 end
+
+AddEventHandler('playerDropped', function()
+  local src = source
+  InventoryAPI.InternalCloseInventory(src)
+end)
+

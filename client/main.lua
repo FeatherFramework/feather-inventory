@@ -1,9 +1,9 @@
 Feather = exports['feather-core'].initiate()
 ClientReady = false
 
-local function makeReady()
+local function runInventory()
   StartAPI()
   ClientReady = true
 end
 
-makeReady()
+runInventory()

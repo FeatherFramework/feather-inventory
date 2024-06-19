@@ -28,7 +28,7 @@ end)
 
 RegisterNUICallback('Feather:Inventory:GiveItem', function(args, cb)
   local ped = GetPedInFront()
-  if ped == 0 then
+  if tonumber(ped) == 0 then
     cb({ status = 'error', message = 'Unable to find player' })
     return
   end

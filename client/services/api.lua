@@ -1,9 +1,9 @@
 function StartAPI()
-  InventoryClientApi = {}
+  local inventoryClientApi = {}
 
-  InventoryClientApi.Action = InventoryAction
+  inventoryClientApi.Action = InventoryAction
 
   exports('initiate', function()
-    return InventoryClientApi
+    return inventoryClientApi
   end)
 end
