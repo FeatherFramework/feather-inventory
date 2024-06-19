@@ -19,7 +19,7 @@ Feather.RPC.Register('Feather:Inventory:UpdateInventory', function(params, res, 
   local targetInventory = params['targetInventory']
   local items = params['items']
 
-  res(MoveInventoryItems(sourceInventory, targetInventory, items))
+  res(InventoryControllers.MoveInventoryItems(sourceInventory, targetInventory, items))
 end)
 
 Feather.RPC.Register('Feather:Inventory:GiveItem', function(params, res, src)
@@ -27,19 +27,19 @@ Feather.RPC.Register('Feather:Inventory:GiveItem', function(params, res, src)
   local item = params['item']
 
   local player = Feather.Character.getCharacterBySrc(src)
-  local sourceInventory = GetInventoryByCharacter(player.id)
+  local sourceInventory = InventoryControllers.GetInventoryByCharacter(player.id)
   local targetPlayer = Feather.Character.getCharacterBySrc(tonumber(target))
-  local destinationInventory = GetInventoryByCharacter(targetPlayer.id)
+  local destinationInventory = InventoryControllers.GetInventoryByCharacter(targetPlayer.id)
 
   if sourceInventory ~= nil and destinationInventory ~= nil then
-    res(ItemsAPI.MoveInventoryItems(sourceInventory.id, destinationInventory.id, { item }))
+    res(ItemsAPI.InventoryControllers.MoveInventoryItems(sourceInventory.id, destinationInventory.id, { item }))
   end
 
   res(false)
 end)
 
 Feather.RPC.Register('Feather:Inventory:GetCategories', function(params, res, src)
-  res(GetCategories())
+  res(CategoryControllers.GetCategories())
 end)
 
 Feather.RPC.Register('Feather:Inventory:GetCharacterInfoForDisplay', function(params, res, src)

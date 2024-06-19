@@ -1,4 +1,6 @@
-function GetItemByName(itemName)
+ItemControllers = {}
+
+function ItemControllers.GetItemByName(itemName)
   local result = MySQL.query.await(
     'SELECT `id`, `display_name`, `max_quantity`, `weight`, `max_stack_size`, `type`, `usable` FROM `items` WHERE `name` = ? LIMIT 1;',
     { itemName })
