@@ -52,7 +52,7 @@ function GroundControllers.GetGroundID(id)
     local result = MySQL.query.await(
         'SELECT `ground_id` FROM `inventory` WHERE `id` = ? LIMIT 1;', { id })[1]
     if not result then
-        return 0, 0, 0
+        return nil
     end
     return result.ground_id
 end

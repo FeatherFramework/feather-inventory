@@ -44,7 +44,9 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
 
   local inventory, _, _ = nil, nil, nil
   if tonumber(inventoryId) then
-    local character = Feather.Character.GetCharacterBySrc(inventoryId)
+    local player = Feather.Character.GetCharacter({ src = inventoryId })
+    local character = player.char
+
     inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
   else
     inventory, _, _ = InventoryControllers.GetInventoryById(inventoryId)
@@ -107,7 +109,9 @@ ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
 
   local inventory, _, _ = nil, nil, nil
   if tonumber(inventoryId) then
-    local character = Feather.Character.GetCharacterBySrc(inventoryId)
+    local player = Feather.Character.GetCharacter({ src = inventoryId })
+    local character = player.char
+
     inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
   else
     inventory, _, _ = InventoryControllers.GetInventoryById(inventoryId)
@@ -192,8 +196,9 @@ ItemsAPI.GetItemCount = function(itemName, inventoryId)
 
   local inventory, _, _ = nil, nil, nil
   if tonumber(inventoryId) then
-    print("inventoryId geting item count", inventoryId)
-    local character = Feather.Character.GetCharacterBySrc(inventoryId)
+    local player = Feather.Character.GetCharacter({ src = inventoryId })
+    local character = player.char
+
     inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
   else
     inventory, _, _ = InventoryControllers.GetInventoryById(inventoryId)
@@ -222,7 +227,8 @@ ItemsAPI.InventoryHasItems = function(items, inventoryId)
 
   local inventory, _, _ = nil, nil, nil
   if tonumber(inventoryId) then
-    local character = Feather.Character.GetCharacterBySrc(inventoryId)
+    local player = Feather.Character.GetCharacter({ src = inventoryId })
+    local character = player.char
     inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
   else
     inventory, _, _ = InventoryControllers.GetInventoryById(inventoryId)
@@ -276,7 +282,8 @@ ItemsAPI.UseItem = function(itemID, src)
     error('Invalid Player Source')
   end
 
-  -- local character = Feather.Character.GetCharacterBySrc(src)
+  -- local player = Feather.Character.GetCharacter({ src = src })
+  -- local character = player.char
   -- local inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
   -- if tonumber(inventory) == nil then
   --   error('Inventory ID is required.')

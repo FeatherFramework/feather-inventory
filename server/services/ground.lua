@@ -19,7 +19,9 @@ Feather.RPC.Register("Feather:Inventory:GetGroundUID", function(params, res, src
 end)
 
 Feather.RPC.Register("Feather:Inventory:DropItemsOnGround", function(params, res, src)
-    local character = Feather.Character.GetCharacterBySrc(src)
+    local player = Feather.Character.GetCharacter({ src = src })
+    local character = player.char
+
     local inventoryID, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
     return res(ItemsAPI.DropItemsOnGround(inventoryID, params.items, params.x, params.y, params.z))
 end)

@@ -127,7 +127,9 @@ InventoryAPI.InventoryCanHold = function(items, inventoryId)
 
   local inventory, maxWeight, ignore_item_limit = nil, nil, nil
   if tonumber(inventoryId) then
-    local character = Feather.Character.GetCharacterBySrc(inventoryId)
+    local player = Feather.Character.GetCharacter({ src = inventoryId })
+    local character = player.char
+
     inventory, maxWeight, ignore_item_limit = InventoryControllers.GetInventoryByCharacter(character.id)
   else
     inventory, maxWeight, ignore_item_limit = InventoryControllers.GetInventoryById(inventoryId)
@@ -176,7 +178,8 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
 
   -- Check to make sure inventoryId is a player source and not a string
   if tonumber(src) then
-    local character = Feather.Character.GetCharacterBySrc(src)
+    local player = Feather.Character.GetCharacter({ src = src })
+    local character = player.char
     
     -- Check if the character is available
     if character == nil then
@@ -193,7 +196,7 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
     }
   end
 
-  local inventoryItems, otherInventoryItems = GetInventoryItems(inventory), nil
+  local inventoryItems, otherInventoryItems = InventoryControllers.GetInventoryItems(inventory), nil
 
   if otherInventoryId ~= nil then
     if OpenInventories[tostring(otherInventory)] ~= nil then
@@ -201,10 +204,12 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
       Feather.Notify.RightNotify(src, 'This inventory is already opened. Try again later.', 3000)
     else 
       if tonumber(otherInventoryId) then
-        local character = Feather.Character.GetCharacterBySrc(otherInventoryId)
+        local player = Feather.Character.GetCharacter({ src = otherInventoryId })
+        local character = player.char
+
         otherInventory, _, inventoryIgnoreLimits = InventoryControllers.GetInventoryByCharacter(character.id)
       else
-        otherInventory, _, otherInventoryIgnoreLimits = nventoryControllers.GetInventoryById(otherInventoryId)
+        otherInventory, _, otherInventoryIgnoreLimits = InventoryControllers.GetInventoryById(otherInventoryId)
       end
       otherInventoryItems = InventoryControllers.GetInventoryItems(otherInventory)
       OpenInventories[tostring(otherInventory)] = {
@@ -242,7 +247,7 @@ InventoryAPI.GetCustomInventory = function (key, inventoryID)
 end
 
 InventoryAPI.GetInventoryItems = function(inventoryID)
-  return InventoryControllers.GetInventoryItemById(inventoryID)
+  return InventoryControllers.GetInventoryItems(inventoryID)
 end
 
 ---
