@@ -32,7 +32,7 @@ Feather.RPC.Register('Feather:Inventory:GiveItem', function(params, res, src)
   local destinationInventory = InventoryControllers.GetInventoryByCharacter(targetPlayer.id)
 
   if sourceInventory ~= nil and destinationInventory ~= nil then
-    res(ItemsAPI.InventoryControllers.MoveInventoryItems(sourceInventory.id, destinationInventory.id, { item }))
+    res(ItemsAPI.MoveInventoryItems(sourceInventory.id, destinationInventory.id, { item }))
   end
 
   res(false)

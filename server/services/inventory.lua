@@ -218,7 +218,7 @@ InventoryAPI.GetCustomInventory = function (key, inventoryID)
   return InventoryControllers.GetCustomInventoryById(key, inventoryID)
 end
 
-InventoryAPI.InventoryControllers.GetInventoryItems = function(inventoryID)
+InventoryAPI.GetInventoryItems = function(inventoryID)
   return InventoryControllers.GetInventoryItemById(inventoryID)
 end
 

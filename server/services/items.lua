@@ -148,7 +148,7 @@ ItemsAPI.RemoveItemById = function(id)
   }
 end
 
-ItemsAPI.InventoryControllers.SetMetadata = function(item, metadata)
+ItemsAPI.SetMetadata = function(item, metadata)
   if item == nil or type(item) ~= 'number' then
     error('Item ID is required.')
     return {
