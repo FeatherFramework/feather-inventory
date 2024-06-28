@@ -23,16 +23,7 @@ Follow these steps to set up the RedM inventory script in your server:
 
 ## API Documentation
 
-#### Accessing the API
-
-There is a client side and server side API for inventory. To obtain access to the API follow the instructions below:
-
-```lua
-FeatherInventory = exports['feather-inventory'].initiate()
-```
-
-#### Server Side Inventory API
-Link TBD
+[Documentation](https://featherframework.net/api/Inventory)
 
 ## Troubleshooting
 
@@ -51,17 +42,15 @@ This inventory script is licensed under GPL3 License. Refer to the LICENSE file 
 Huge inspiration to RDO's inventory system with many QOL improvements.
 
 ## To-Do
-
-- Add LOD to load ground items within a view distance
-- Make character initiate loadscreen text configurable.
 - Migrate all language/text to locales
-- Make secondary inventory titles customizable
-- Frontend UI
-  - Add Inventory specific slot counts
-  - Account for inventory specific ignore limits (ignore item caps)
+- Update use modal styling.
 
-### Next version improvements
-
+### Next Major version improvements
+- Add LOD to load ground items within a view distance
+- Make Max Item Slots customizable per inventory register.
+- Finish Weight Implementation
+- Implement Hotbar
 - Frontend UI
+  -  Add Inventory specific slot counts
     - Migrate frontend to use state management.
     - Shift + Drag will transfer or drop all items (no modal displays in this case.)

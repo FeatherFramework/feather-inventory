@@ -34,22 +34,22 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   end
 
 
-  -- Check to make sure this doesnt exceed the max quantity for this item.
-  if ItemCount + quantity >= max_quantity then
-    return {
-      error = true,
-      message = "Too Many Items in Inventory"
-    }
-  end
-
-  local inventory, _, _ = nil, nil, nil
+  local inventory, _, ignore_item_limit = nil, nil, nil
   if tonumber(inventoryId) then
     local player = Feather.Character.GetCharacter({ src = inventoryId })
     local character = player.char
 
-    inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
+    inventory, _, ignore_item_limit, _ = InventoryControllers.GetInventoryByCharacter(character.id)
   else
-    inventory, _, _ = InventoryControllers.GetInventoryById(inventoryId)
+    inventory, _, ignore_item_limit, _ = InventoryControllers.GetInventoryById(inventoryId)
+  end
+
+  -- Check to make sure this doesnt exceed the max quantity for this item.
+  if ItemCount + quantity >= max_quantity and ignore_item_limit == 0 then
+    return {
+      error = true,
+      message = "Too Many Items in Inventory"
+    }
   end
 
   if not inventory then
@@ -82,7 +82,6 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
     count = count + 1
   end
 
-  print("Item added!")
   return {
     error = false
   }
@@ -336,7 +335,7 @@ ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z)
     groundID = GroundControllers.CreateGround(x, y, z)[1].id
   end
 
-  local _, groundInventoryID = InventoryAPI.RegisterInventory('ground', groundID)
+  local _, groundInventoryID = InventoryAPI.RegisterInventory('ground', groundID, 'Ground')
   local updateinv = InventoryControllers.MoveInventoryItems(inventoryId, groundInventoryID, items)
 
   UpdateClientWithGroundLocations(-1)

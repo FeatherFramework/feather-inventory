@@ -23,16 +23,17 @@ if Config.DevMode then
         end
     end, false)
 
-
-    RegisterCommand('CreateStorage', function(source, args)
+    RegisterCommand('CreateStorageKey', function(source, args)
         InventoryAPI.RegisterForeignKey('storage', 'BIGINT UNSIGNED', 'id')
-        InventoryAPI.RegisterInventory('storage', 1)
     end, false)
 
+    RegisterCommand('CreateStorage', function(source, args)
+        InventoryAPI.RegisterInventory('storage', 1, 'Big Box')
+    end, false)
 
     RegisterCommand('AddStorageItems', function(source, args)
         local result = ItemsAPI.AddItem(args[1], tonumber(args[2]), args[3] or nil,
-            '5ab95e93-c590-11ee-a5cf-40b07640984b')
+            'dde04bd6-34cc-11ef-a92d-107c61489014')
 
         if result.error == true then
             Feather.Notify.RightNotify(source, result.message, 3000)

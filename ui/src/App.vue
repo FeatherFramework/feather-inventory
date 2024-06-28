@@ -2,9 +2,9 @@
   <Transition name="fade">
     <div id="content" class="flex flex-col h-screen justify-center items-center" style="width: 100vw; height: 100vh;"
       v-if="visible || devmode">
-      <div class="bg-zinc-900 px-4 relative mx-auto pt-10 bg-opacity-70 rounded-md"
+      <div :class="`${globalOptions.target != 'player' ? 'global-background' : 'global-background-single'} px-4 relative mx-auto pt-10 bg-opacity-70 rounded-md`"
         :style="`${globalOptions.target != 'player' ? 'width: 80vw;' : ''} height: 80vh;`">
-        <div class="absolute right-2 top-0 text-2xl text-white hover:text-red-500" @click="closeApp">&times;</div>
+        <div :class="`absolute ${ globalOptions.target != 'player' ? 'right-6 top-6': 'right-8 top-4' } text-2xl text-white hover:text-red-500`" @click="closeApp">&times;</div>
         <MenuUI :player-inventory="playerInventory" :other-iventory="otherInventory" :global-options="globalOptions"
           :target="globalOptions.target" :player-display="playerDisplay" @transfer="transferItems"
           @itemAction="handleItemAction" @dropped="handleDrop">
@@ -153,7 +153,7 @@ const onMessage = (event) => {
       }
 
       if (typeof data.otherItems !== "undefined" && data.otherItems !== null) {
-        otherInventory.name = "Other"
+        otherInventory.name = data.otherName || "Storage"
         otherInventory.id = data.otherInventory
         hydrateInventoryItems('other', data);
       }
@@ -323,6 +323,28 @@ const transferItems = (dropzoneid, items) => {
 @font-face {
   font-family: chinarocks;
   src: url(assets/fonts/chinese-rocks.ttf);
+}
+
+.global-background-single {
+  background-image: url(./assets/background-single.png);
+  
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 100% 100%;
+}
+
+.global-background {
+  background-image: url(./assets/background.png);
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 100% 100%;
+}
+
+.ink-background {
+  background-image: url(./assets/inkroller.png);
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 100% 100%;
 }
 
 #content {

@@ -1,6 +1,5 @@
 GroundItems = {}
 RegisterNetEvent("Feather:Inventory:UpdateGroundLocations", function(locations)
-    print("UPDATING GROUND LOCATIONS")
     ClearGroundItems()
     GroundItems = locations
     SpawnGroundItems()
@@ -66,7 +65,7 @@ CreateThread(function()
     local groundPrompt = PromptGroup:RegisterPrompt("Pickup", Feather.KeyCodes[Config.Dropped.PickupKey], 1, 1, true, 'hold')
 
     while true do
-        Wait(5)
+        Wait(3)
         local isDead = IsEntityDead(playerped)
         if isDead ~= 0 then
             if GroundItems[1] ~= nil then
