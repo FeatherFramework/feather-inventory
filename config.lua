@@ -6,8 +6,6 @@ Config.DevMode = true
 Config.hotkey = "B"
 
 Config.maxItemSlots = 41          -- maximum inventory slots (last slot is your last action key)
-Config.maxWeight = 120000         -- Max weight a player can pickup. 120kg in grams
-
 -- Ground/Dropped item settings
 Config.Dropped = {
     GroupingRadius = 10,
@@ -18,6 +16,6 @@ Config.Dropped = {
 }
 
 
-
-
--- Config.hotbarLimit = 6 -- NOT YET IMPLEMENTED
+-- NOT IMPLEMENTED YET!
+Config.maxWeight = 120000         -- Max weight a player can pickup. 120kg in grams (THIS IS NOT AVAILABLE YET)
+-- Config.hotbarLimit = 6

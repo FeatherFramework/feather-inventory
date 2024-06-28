@@ -1,7 +1,7 @@
 <template>
     <div class="flex items-center justify-center">
         <Transition :name="`slide-${side}`">
-            <div :class="`text-gray-100 bg-zinc-800 noscrollbar overflow-y-scroll select-none rounded-${side == 'right' ? 'l' : 'r'}-md`"
+            <div :class="`text-gray-100 bg-black noscrollbar overflow-y-scroll select-none rounded-md`"
                 v-if="activeRightClickItem?.items" style="max-height: 50vh;">
                 <div v-for="(subslot, key) in activeRightClickItem.items" :key="'playersubslot' + key + side"
                     @click.left="leftClick('subitem' + side + key, subslot)" @mousedown.left="startDrag($event, key)"

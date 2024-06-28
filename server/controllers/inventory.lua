@@ -2,11 +2,11 @@ InventoryControllers = {}
 
 function InventoryControllers.GetInventoryById(inventoryId)
   local result = MySQL.query.await(
-    'SELECT `id`, `uuid`, `max_weight`, `ignore_item_limit` FROM `inventory` WHERE `uuid` = ? LIMIT 1;', { inventoryId })[1]
+    'SELECT `id`, `uuid`, `max_weight`, `ignore_item_limit`, `name` FROM `inventory` WHERE `uuid` = ? LIMIT 1;', { inventoryId })[1]
   if not result then
-    return false, false, false
+    return false, false, false, nil
   end
-  return result.id, result.max_weight, result.ignore_item_limit
+  return result.id, result.max_weight, result.ignore_item_limit, result.name
 end
 
 function InventoryControllers.GetInventoryLocationById(id)
@@ -31,13 +31,13 @@ end
 
 function InventoryControllers.GetInventoryByCharacter(character)
   local result = MySQL.query.await(
-        'SELECT `id`, `max_weight`, `ignore_item_limit` FROM `inventory` WHERE `character_id` = ? LIMIT 1;',
+        'SELECT `id`, `max_weight`, `ignore_item_limit`, `name` FROM `inventory` WHERE `character_id` = ? LIMIT 1;',
         { character })
       [1]
   if not result then
-    return false, false, false
+    return false, false, false, nil
   end
-  return result.id, result.max_weight, result.ignore_item_limit
+  return result.id, result.max_weight, result.ignore_item_limit, result.name
 end
 
 function InventoryControllers.InventoryItemCount(inventory, itemId)

@@ -1,6 +1,6 @@
 {
   "name": "feather-inventory",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "scripts": {
     "serve": "NODE_ENV=development npm run shim && vue-cli-service serve",

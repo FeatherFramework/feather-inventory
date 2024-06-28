@@ -52,12 +52,13 @@ end
 --
 -- @param tableName Name of your Database Table
 -- @param id Foreign Key ID of the entity
+-- @param displayName the name of the inventory (default: storage)
+-- @param ignoreItemLimits Ignore the max quantity of items that can be added to the inventory
 -- @param maxWeight Override the maximum weight of the inventory (nill to use default)
 -- @param restrictedItems Table of items that are restricted from being added to the inventory. e.g. { "apple", "matches" }
--- @param ignoreItemLimits Ignore the max quantity of items that can be added to the inventory
 -- @return Inventory UUID for accessing the inventory later (can be saved in your database table)
 --
-InventoryAPI.RegisterInventory = function(tableName, id, maxWeight, restrictedItems, ignoreItemLimits, displayName)
+InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItemLimits, maxWeight, restrictedItems)
   if not tableName or not id then
     error(
       'All parameters are required!')
@@ -92,8 +93,8 @@ InventoryAPI.RegisterInventory = function(tableName, id, maxWeight, restrictedIt
   end
 
   -- Create new inventory
-  query = 'INSERT INTO `inventory` (' .. foreignKey .. ', location, name) VALUES (?, ?, ?) RETURNING *;'
-  inventory = MySQL.query.await(query, { id, tableName, displayName or '' })
+  query = 'INSERT INTO `inventory` (' .. foreignKey .. ', location, name, max_weight, ignore_item_limit) VALUES (?, ?, ?, ?, ?) RETURNING *;'
+  inventory = MySQL.query.await(query, { id, tableName, displayName or 'storage', maxWeight or nil, ignoreItemLimits or false })
 
   if not inventory or not inventory[1] then
     return nil
@@ -174,7 +175,7 @@ end
 -- @return Table of items in the inventory and other inventory if specified
 --
 InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
-  local inventory, inventoryIgnoreLimits, otherInventory, otherInventoryIgnoreLimits = nil, nil, nil, nil
+  local inventory, inventoryIgnoreLimits, otherInventory, otherInventoryIgnoreLimits, otherName = nil, nil, nil, nil, nil
 
   -- Check to make sure inventoryId is a player source and not a string
   if tonumber(src) then
@@ -188,7 +189,7 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
       }
     end
 
-    inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
+    inventory, _, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
   else
     error('Invalid Character Source!')
     return {
@@ -207,9 +208,9 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
         local player = Feather.Character.GetCharacter({ src = otherInventoryId })
         local character = player.char
 
-        otherInventory, _, inventoryIgnoreLimits = InventoryControllers.GetInventoryByCharacter(character.id)
+        otherInventory, _, inventoryIgnoreLimits, otherName = InventoryControllers.GetInventoryByCharacter(character.id)
       else
-        otherInventory, _, otherInventoryIgnoreLimits = InventoryControllers.GetInventoryById(otherInventoryId)
+        otherInventory, _, otherInventoryIgnoreLimits, otherName = InventoryControllers.GetInventoryById(otherInventoryId)
       end
       otherInventoryItems = InventoryControllers.GetInventoryItems(otherInventory)
       OpenInventories[tostring(otherInventory)] = {
@@ -224,6 +225,7 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
     inventory = inventory,
     inventoryItems = inventoryItems,
     inventoryIgnoreLimits = inventoryIgnoreLimits,
+    otherName = otherName,
     otherInventory = otherInventory,
     otherInventoryItems = otherInventoryItems,
     otherInventoryIgnoreLimits = otherInventoryIgnoreLimits

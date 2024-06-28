@@ -1,6 +1,6 @@
 <template>
    <div class="absolute w-full h-full">
-        <div class="absolute z-50 w-full h-full bg-zinc-800 bg-opacity-90" @click="handleItemPopup()" v-show="activeItem?.key">
+        <div class="absolute z-50 w-full h-full bg-zinc-800 bg-opacity-20" @click="handleItemPopup()" v-show="activeItem?.key">
         </div>
         <Transition name="fade">
             <div class="absolute z-50 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-zinc-900 p-10 rounded-md"

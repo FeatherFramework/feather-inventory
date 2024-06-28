@@ -13,7 +13,7 @@
             @close="handleDropClose" @submit="handleDropQuantity"></ItemCountModal>
         <SubSlots v-if="side == 'right'" :side="side" :activeRightClickItem="activeRightClickItem" :id="inventory.id"
             @submit="handleSubItemClick" @transfer="handleTransfer" @dragging="EmitDragging"></SubSlots>
-        <div class="text-gray-100 bg-zinc-800 p-6 min-h-full relative select-none rounded-md flex flex-col justify-between dropzone"
+        <div class="text-gray-100 p-8 min-h-full relative select-none rounded-md flex flex-col justify-between dropzone ink-background"
             :id="`dropzone-${side}`" style="width: 500px; height: 70vh;">
             <h1 class="font-bold text-2xl text-center">{{ inventory.name }}</h1>
             <div class="my-4">
