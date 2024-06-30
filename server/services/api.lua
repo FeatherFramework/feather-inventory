@@ -4,10 +4,10 @@ function StartAPI()
   inventoryServerAPI.Items = ItemsAPI
   inventoryServerAPI.Categories = CategoriesAPI
 
-  RegisterCharacterStart(inventoryServerAPI)
-  RegisterGroundInventory()
-
   exports('initiate', function()
     return inventoryServerAPI
   end)
+
+  RegisterCharacterStart(inventoryServerAPI)
+  RegisterGroundInventory()
 end

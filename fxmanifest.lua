@@ -44,7 +44,8 @@ files {
   "ui/js/*.*",
   "ui/css/*.*",
   "ui/fonts/*.*",
-  "ui/images/*.*"
+  "ui/images/*.*",
+  "ui/img/*.*"
 }
 
 dependencies {
