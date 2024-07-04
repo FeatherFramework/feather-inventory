@@ -295,7 +295,7 @@ ItemsAPI.UseItem = function(itemID, src)
   --   TriggerEvent('Feather:Inventory:UsedItem', src, item)
   -- else
   if UsableItemCallbacks[item.name] then
-    UsableItemCallbacks[item.name](item, function()
+    UsableItemCallbacks[item.name](item, src, function()
       -- Refresh the inventory ui on callback
       TriggerClientEvent('Feather:Inventory:OpenInventory', src, nil, "player")
     end)
