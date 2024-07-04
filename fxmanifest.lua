@@ -14,8 +14,7 @@ github_ui_check 'true'
 github_link 'https://github.com/FeatherFramework/feather-inventory'
 
 shared_scripts {
-  "config.lua",
-  "shared/*.lua",
+  "config.lua"
 }
 
 server_scripts {
