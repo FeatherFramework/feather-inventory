@@ -90,7 +90,7 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
 end
 
 -- Removes n number of items by name. (No specific order)
-ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId, src)
+ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
   if quantity < 1 then
     error('Invalid quantity. Must be creater than 0.')
     return {
