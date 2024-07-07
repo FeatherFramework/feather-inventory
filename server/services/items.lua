@@ -133,9 +133,9 @@ ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
     }
   end
 
-  TriggerEvent('feather-inventory:ItemRemoved', itemId, quantity, inventoryId)
-
   InventoryControllers.DeleteInventoryItems(inventory.id, itemId, quantity)
+  
+  TriggerEvent('feather-inventory:ItemRemoved', itemId, quantity, inventoryId)
   return {
     error = false
   }
