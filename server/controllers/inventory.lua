@@ -1,8 +1,21 @@
 InventoryControllers = {}
 
-function InventoryControllers.GetInventoryById(inventoryId)
+function InventoryControllers.GetInventoryById(inventoryId, type)
+  if type == nil then
+    type = 'uuid'
+  end
+
+  local query = ''
+
+  if type == 'id' then
+    query = 'SELECT `id`, `uuid`, `max_weight`, `ignore_item_limit`, `name` FROM `inventory` WHERE `id` = ? LIMIT 1;'
+  else
+    query = 'SELECT `id`, `uuid`, `max_weight`, `ignore_item_limit`, `name` FROM `inventory` WHERE `uuid` = ? LIMIT 1;'
+  end
+
+
   local result = MySQL.query.await(
-    'SELECT `id`, `uuid`, `max_weight`, `ignore_item_limit`, `name` FROM `inventory` WHERE `uuid` = ? LIMIT 1;', { inventoryId })[1]
+    query, { inventoryId })[1]
   if not result then
     return false, false, false, nil
   end
