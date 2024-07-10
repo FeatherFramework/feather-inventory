@@ -79,6 +79,8 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
       end
     end
 
+    TriggerEvent('feather-inventory:ItemAdded', itemId, 1, inventory)
+
     count = count + 1
   end
 
@@ -130,7 +132,10 @@ ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
       message = "Withdrawing more items than available."
     }
   end
+
   InventoryControllers.DeleteInventoryItems(inventory.id, itemId, quantity)
+  
+  TriggerEvent('feather-inventory:ItemRemoved', itemId, quantity, inventoryId)
   return {
     error = false
   }
@@ -146,6 +151,8 @@ ItemsAPI.RemoveItemById = function(id)
     }
   end
   InventoryControllers.DeleteInventoryItem(item.id)
+
+  TriggerEvent('feather-inventory:ItemRemoved', item.id, 1, item.inventory_id)
   return {
     error = false,
   }
