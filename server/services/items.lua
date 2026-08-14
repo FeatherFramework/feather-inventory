@@ -1,8 +1,16 @@
 --TODO: Replace errors with the core notifies
 
+-- Item-instance operations (add/remove/use/drop) on top of the raw
+-- inventory_items rows managed by InventoryControllers. `inventoryId`
+-- throughout this file follows the framework's dual convention: a numeric
+-- value is treated as a player src (resolved to that player's own
+-- character inventory), a string is treated as a raw inventory UUID.
 ItemsAPI = {}
 UsableItemCallbacks = {}
 
+-- Grants `quantity` of `itemName` to an inventory, enforcing per-item max
+-- quantity/stack-size limits (weight is not yet implemented, see
+-- config.lua). Fires feather-inventory:ItemAdded once per unit granted.
 ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   if quantity < 1 then
     error('Invalid quantity. Must be creater than 0.')
@@ -37,9 +45,14 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   local inventory, _, ignore_item_limit = nil, nil, nil
   if tonumber(inventoryId) then
     local player = Feather.Character.GetCharacter({ src = inventoryId })
-    local character = player.char
-
-    inventory, _, ignore_item_limit, _ = InventoryControllers.GetInventoryByCharacter(character.id)
+    local character = player and player.char
+    -- (Phase 6 consistency pass) No character loaded for this src used to
+    -- crash here (nil index on `.id`) instead of falling through to the
+    -- "Invalid inventory ID" rejection below, same as every other resolved-
+    -- character branch in this file.
+    if character then
+      inventory, _, ignore_item_limit, _ = InventoryControllers.GetInventoryByCharacter(character.id)
+    end
   else
     inventory, _, ignore_item_limit, _ = InventoryControllers.GetInventoryById(inventoryId)
   end
@@ -111,9 +124,10 @@ ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
   local inventory, _, _ = nil, nil, nil
   if tonumber(inventoryId) then
     local player = Feather.Character.GetCharacter({ src = inventoryId })
-    local character = player.char
-
-    inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
+    local character = player and player.char
+    if character then
+      inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
+    end
   else
     inventory, _, _ = InventoryControllers.GetInventoryById(inventoryId)
   end
@@ -203,13 +217,20 @@ ItemsAPI.GetItemCount = function(itemName, inventoryId)
   local inventory, _, _ = nil, nil, nil
   if tonumber(inventoryId) then
     local player = Feather.Character.GetCharacter({ src = inventoryId })
-    local character = player.char
-
-    inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
+    local character = player and player.char
+    if character then
+      inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
+    end
   else
     inventory, _, _ = InventoryControllers.GetInventoryById(inventoryId)
   end
-  if not inventory == nil then
+  -- (Phase 6 consistency pass) `not inventory == nil` -- `not` binds tighter
+  -- than `==`, so this was `(not inventory) == nil`, a boolean compared to
+  -- nil, which is always false. An invalid inventoryId silently fell
+  -- through to InventoryItemCount(nil, itemId) instead of ever hitting this
+  -- rejection (harmless there -- a nil inventory_id just matches nothing in
+  -- SQL -- but not the intended "return -1" contract).
+  if not inventory then
     error('Invalid inventory ID.')
     return -1
   end
@@ -234,10 +255,15 @@ ItemsAPI.InventoryHasItems = function(items, inventoryId)
   local inventory, _, _ = nil, nil, nil
   if tonumber(inventoryId) then
     local player = Feather.Character.GetCharacter({ src = inventoryId })
-    local character = player.char
-    inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
+    local character = player and player.char
+    if character then
+      inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
+    end
   else
     inventory, _, _ = InventoryControllers.GetInventoryById(inventoryId)
+  end
+  if not inventory then
+    return false
   end
   local playerItems = InventoryControllers.InventoryItemCounts(inventory)
 
@@ -270,6 +296,9 @@ ItemsAPI.InventoryHasItems = function(items, inventoryId)
   return count < numberOfItems
 end
 
+-- Lets other resources (e.g. feather-weapons, for every weapon item) attach
+-- a "use" behavior to an item by name. Looked up by ItemsAPI.UseItem below
+-- when a player actually uses the item from their inventory.
 ItemsAPI.RegisterUsableItem = function(itemName, callback)
   if UsableItemCallbacks[itemName] then
     warn('An Item by that name has laready been registered. Item: ' .. itemName)
@@ -283,18 +312,31 @@ ItemsAPI.UseItem = function(itemID, src)
   local item = InventoryControllers.GetInventoryItemById(itemID)
   if not item then
     error('Item not found in the database! ItemID: ' .. itemID)
+    return false
   end
   if tonumber(src) == nil then
     error('Invalid Player Source')
+    return false
   end
 
-  -- local player = Feather.Character.GetCharacter({ src = src })
-  -- local character = player.char
-  -- local inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
-  -- if tonumber(inventory) == nil then
-  --   error('Inventory ID is required.')
-  --   return nil
-  -- end
+  -- (INV-02) This ownership check was commented out, so any client could
+  -- "use" any item id -- including ones it didn't own -- which chains into
+  -- free weapon equips via feather-weapons' usable-item registration.
+  -- Re-enabled, and compares against the item's actual current
+  -- inventory_id (not something client-suppliable) rather than the
+  -- original draft's approach.
+  local player = Feather.Character.GetCharacter({ src = src })
+  local character = player and player.char
+  if not character then
+    error('No character loaded for src: ' .. src)
+    return false
+  end
+
+  local inventory = InventoryControllers.GetInventoryByCharacter(character.id)
+  if not inventory or tostring(item.inventory_id) ~= tostring(inventory) then
+    warn('Rejected UseItem: src ' .. src .. ' does not own item ' .. tostring(itemID))
+    return false
+  end
 
   -- if item.type == 'item_weapon' then
   --   TriggerEvent('Feather:Inventory:UsedItem', src, item)
@@ -316,23 +358,30 @@ end
 
 
 ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z)
-  -- TODO: Add check to make sure items are all the same "item". If not then do different logic.
-  local item = InventoryControllers.GetInventoryItemById(items[1].id)
-  if not item then
-    warn('Item not found in the database! Item ID: ' .. items[1].id)
+  if type(items) ~= 'table' or #items == 0 then
     return {
       error = true,
-      message = 'Item not found in the database!'
+      message = 'No items specified.'
     }
   end
 
-  local ItemCount = ItemsAPI.GetItemCount(item.name, inventoryId)
-  if (ItemCount - #items) < 0 then
-    warn('Attempting to drop more items than available. Item Name: ' .. item.name)
-    return {
-      error = true,
-      message = 'Attempting to drop more items than available.'
-    }
+  -- (INV-03) The old check only validated items[1]'s name/count via
+  -- GetItemCount, then let MoveInventoryItems move every items[].id
+  -- regardless of whether it actually matched that name or belonged to
+  -- inventoryId -- a client could mix in foreign item ids to duplicate/
+  -- steal items onto the ground. Every item is now checked against
+  -- inventoryId up front (inventoryId itself is already server-derived
+  -- from src by the caller, not client-supplied).
+  for _, entry in ipairs(items) do
+    local id = type(entry) == 'table' and entry.id or entry
+    local item = InventoryControllers.GetInventoryItemById(id)
+    if not item or tostring(item.inventory_id) ~= tostring(inventoryId) then
+      warn('Rejected DropItemsOnGround: item ' .. tostring(id) .. ' does not belong to inventory ' .. tostring(inventoryId))
+      return {
+        error = true,
+        message = 'One or more items are not in your inventory.'
+      }
+    end
   end
 
   local groundID = GroundControllers.GetClosestGroundByCoords(x, y, z, Config.groundGroupingRadius)

@@ -129,9 +129,10 @@ InventoryAPI.InventoryCanHold = function(items, inventoryId)
   local inventory, maxWeight, ignore_item_limit = nil, nil, nil
   if tonumber(inventoryId) then
     local player = Feather.Character.GetCharacter({ src = inventoryId })
-    local character = player.char
-
-    inventory, maxWeight, ignore_item_limit = InventoryControllers.GetInventoryByCharacter(character.id)
+    local character = player and player.char
+    if character then
+      inventory, maxWeight, ignore_item_limit = InventoryControllers.GetInventoryByCharacter(character.id)
+    end
   else
     inventory, maxWeight, ignore_item_limit = InventoryControllers.GetInventoryById(inventoryId)
   end
@@ -149,7 +150,9 @@ InventoryAPI.InventoryCanHold = function(items, inventoryId)
     end
 
     -- Check if inv can carry more
-    if not Boolean(ignore_item_limit) then
+    -- (INV-10) `Boolean` is a lookup table (see helpers/main.lua), not a
+    -- function -- calling it as `Boolean(x)` errored every time this ran.
+    if not Boolean[ignore_item_limit] then
       if (InventoryControllers.InventoryItemCount(inventory, itemId) + v.quantity) > maxQuantity then
         return { status = false, message = 'Max Quantity Exceeded.' }
       end
@@ -199,19 +202,32 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
 
   local inventoryItems, otherInventoryItems = InventoryControllers.GetInventoryItems(inventory), nil
 
+  -- (INV-07) The lock used to be checked against `OpenInventories[tostring(
+  -- otherInventory)]` *before* `otherInventory` was ever resolved from
+  -- `otherInventoryId` -- it was always nil at that point, so the check
+  -- always looked up the same "nil" key and the lock never actually fired.
+  -- Fixed by resolving the target inventory's real id first, then checking/
+  -- setting the lock against that resolved id (matching the key it's stored
+  -- under below). Also fixed `inventoryIgnoreLimits` being overwritten with
+  -- the *other* inventory's ignore-limit flag instead of the caller's own.
   if otherInventoryId ~= nil then
-    if OpenInventories[tostring(otherInventory)] ~= nil then
-      otherInventoryId = nil
-      Feather.Notify.RightNotify(src, 'This inventory is already opened. Try again later.', 3000)
-    else 
-      if tonumber(otherInventoryId) then
-        local player = Feather.Character.GetCharacter({ src = otherInventoryId })
-        local character = player.char
-
-        otherInventory, _, inventoryIgnoreLimits, otherName = InventoryControllers.GetInventoryByCharacter(character.id)
-      else
-        otherInventory, _, otherInventoryIgnoreLimits, otherName = InventoryControllers.GetInventoryById(otherInventoryId)
+    if tonumber(otherInventoryId) then
+      local player = Feather.Character.GetCharacter({ src = otherInventoryId })
+      local character = player and player.char
+      if character then
+        otherInventory, _, otherInventoryIgnoreLimits, otherName = InventoryControllers.GetInventoryByCharacter(character.id)
       end
+    else
+      otherInventory, _, otherInventoryIgnoreLimits, otherName = InventoryControllers.GetInventoryById(otherInventoryId)
+    end
+
+    if not otherInventory then
+      otherInventory = nil
+    elseif OpenInventories[tostring(otherInventory)] ~= nil then
+      otherInventory = nil
+      otherInventoryItems = nil
+      Feather.Notify.RightNotify(src, 'This inventory is already opened. Try again later.', 3000)
+    else
       otherInventoryItems = InventoryControllers.GetInventoryItems(otherInventory)
       OpenInventories[tostring(otherInventory)] = {
         src = tostring(src),
@@ -230,6 +246,40 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
     otherInventoryItems = otherInventoryItems,
     otherInventoryIgnoreLimits = otherInventoryIgnoreLimits
   }
+end
+
+---
+-- Is Inventory Accessible By Src
+--
+-- (INV-01) Authorization check for the RPCs that let a client name which
+-- inventories to move items between. A src may access its own character's
+-- inventory, or any inventory it currently has open via
+-- InternalOpenInventory (ground pickups, storage, etc.) -- nothing else.
+--
+-- @param src Player Source making the request
+-- @param inventoryId Raw inventory.id being requested
+-- @return True if src may read/write this inventory right now
+--
+InventoryAPI.IsInventoryAccessibleBySrc = function(src, inventoryId)
+  if not src or not inventoryId then
+    return false
+  end
+
+  local player = Feather.Character.GetCharacter({ src = src })
+  local character = player and player.char
+  if character then
+    local ownInventoryId = InventoryControllers.GetInventoryByCharacter(character.id)
+    if ownInventoryId and tostring(ownInventoryId) == tostring(inventoryId) then
+      return true
+    end
+  end
+
+  local opened = OpenInventories[tostring(inventoryId)]
+  if opened and opened.src == tostring(src) then
+    return true
+  end
+
+  return false
 end
 
 InventoryAPI.OpenInventory = function (src, InventoryId, target)

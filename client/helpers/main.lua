@@ -2,6 +2,7 @@ function IsTable(var)
   return type(var) == 'table'
 end
 
+-- Only meaningful for a table with no gaps in its integer keys.
 function IsArray(t)
   local i = 0
   for _ in pairs(t) do
@@ -11,6 +12,9 @@ function IsArray(t)
   return true
 end
 
+-- Raycasts a capsule shape in front of the player to find whichever ped is
+-- standing there -- the "give item to the ped in front of you" targeting
+-- used by the GiveItem NUI action (client/services/nuicallbacks.lua).
 function GetPedInFront()
   local player = PlayerId()
   local plyPed = GetPlayerPed(player)
@@ -22,6 +26,8 @@ function GetPedInFront()
   return ped
 end
 
+-- Maps a ped entity back to its owning player index (server-adjacent id),
+-- if it's a player ped at all -- returns -1 for an NPC.
 function GetPlayerFromPed(ped)
   for a = 0, 64 do
     if GetPlayerPed(a) == ped then

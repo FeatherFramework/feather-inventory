@@ -10,6 +10,12 @@ function CanOpenInventory()
   return true
 end
 
+-- Opens the inventory NUI: fetches the player's own items plus, if
+-- `otherInventoryId` is given, a second inventory (ground pile, storage
+-- box, another player) side-by-side -- both come back from a single
+-- GetInventoryItems RPC round-trip (server/services/callbacks.lua), which
+-- is also where the "other" inventory gets locked to this player via
+-- OpenInventories so nobody else can open it concurrently.
 InventoryAction.Open = function(otherInventoryId, target)
   if target == nil then
     target = "storage"

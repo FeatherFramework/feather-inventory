@@ -19,14 +19,27 @@ Feather.RPC.Register("Feather:Inventory:GetGroundUID", function(params, res, src
 end)
 
 Feather.RPC.Register("Feather:Inventory:DropItemsOnGround", function(params, res, src)
+    -- (Phase 6 consistency pass) No nil-guard here meant any client without
+    -- a loaded character crashed this RPC on `character.id` instead of
+    -- getting a clean rejection.
     local player = Feather.Character.GetCharacter({ src = src })
-    local character = player.char
+    local character = player and player.char
+    if not character then
+        return res({ error = true, message = 'No character loaded.' })
+    end
 
     local inventoryID, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
     return res(ItemsAPI.DropItemsOnGround(inventoryID, params.items, params.x, params.y, params.z))
 end)
 
-RegisterServerEvent("Feather:Inventory:Empty", function(args)
+-- (INV-04) Was a RegisterServerEvent, making it network-reachable -- any
+-- client could call it directly with an arbitrary inventory id and delete
+-- someone else's ground drop. The only real caller is the internal
+-- TriggerEvent in InternalCloseInventory (server/services/inventory.lua),
+-- so this is de-networked to AddEventHandler: it still fires for that
+-- internal signal, but a client's TriggerServerEvent can no longer reach it
+-- since the event name was never registered as network-enabled.
+AddEventHandler("Feather:Inventory:Empty", function(args)
     local location = InventoryControllers.GetInventoryLocationById(args.id)
     if location == 'ground' then
         local GID = GroundControllers.GetGroundID(args.id)

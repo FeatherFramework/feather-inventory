@@ -1,3 +1,6 @@
+-- Raw DB access for the `items` catalog table (item definitions, not owned
+-- instances -- see inventory.lua controller for the `inventory_items` table
+-- that tracks who actually has what).
 ItemControllers = {}
 
 function ItemControllers.GetItemByName(itemName)
