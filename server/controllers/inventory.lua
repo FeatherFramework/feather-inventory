@@ -125,11 +125,22 @@ function InventoryControllers.SetMetadata(item, key, value)
 end
 
 function InventoryControllers.DeleteInventoryItem(id)
-  MySQL.query.await('DELETE FROM `inventory_items` WHERE `id`=? LIMIT;', { id })
+  -- (INV-08) `LIMIT;` with no number is a SQL syntax error -- this deletes
+  -- by unique `id` already, so no LIMIT clause is needed at all.
+  MySQL.query.await('DELETE FROM `inventory_items` WHERE `id`=?;', { id })
 end
 
+-- (INV-08) `quantity` was concatenated straight into the query string --
+-- oxmysql can't bind LIMIT's argument as a `?` parameter, but it must still
+-- never be trusted as raw client input. `quantity` today only ever comes
+-- from server-side callers, but tonumber+math.floor here makes that a
+-- guarantee of this function rather than an assumption about its callers.
 function InventoryControllers.DeleteInventoryItems(inventory, itemId, quantity)
-  local query = 'DELETE FROM `inventory_items` WHERE `inventory_id`=? AND `item_id`=? LIMIT ' .. quantity .. ';'
+  local safeQuantity = math.floor(tonumber(quantity) or 0)
+  if safeQuantity < 1 then
+    return
+  end
+  local query = 'DELETE FROM `inventory_items` WHERE `inventory_id`=? AND `item_id`=? LIMIT ' .. safeQuantity .. ';'
   MySQL.query.await(query, { inventory, itemId })
 end
 
@@ -165,9 +176,17 @@ function InventoryControllers.UpdateRestrictedItems(inventory, items)
   end
 end
 
+-- (INV-01 root cause / INV-09) Previously moved every item by raw id with
+-- no check that it actually belonged to sourceInventory -- a caller could
+-- name any inventory_items.id and pull it out of wherever it actually
+-- lived, regardless of sourceInventory. Membership is now verified here so
+-- every caller (RPC handlers, GiveItem, any future resource) gets this for
+-- free, not just the one call site that happened to get patched. This also
+-- fixes the nested-loop bug that fired ItemRemoved/ItemAdded #items^2
+-- times instead of once per moved item.
 function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventory, items)
   for _, item in pairs(items) do
-    local id = nil 
+    local id = nil
     if type(item) == 'table' then
       id = item.id
     elseif type(item) == 'number' then
@@ -177,11 +196,14 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
       return
     end
 
-    MySQL.query.await('UPDATE `inventory_items` SET `inventory_id`=? WHERE `id`=?;', { targetInventory, id })
+    local existingItem = InventoryControllers.GetInventoryItemById(id)
+    if not existingItem or tostring(existingItem.inventory_id) ~= tostring(sourceInventory) then
+      warn('MoveInventoryItems: skipping item ' .. tostring(id) .. ' -- does not belong to source inventory ' .. tostring(sourceInventory))
+    else
+      MySQL.query.await('UPDATE `inventory_items` SET `inventory_id`=? WHERE `id`=?;', { targetInventory, id })
 
-    for _, item in ipairs(items) do
-      TriggerEvent('feather-inventory:ItemRemoved', item.id, 1, sourceInventory)
-      TriggerEvent('feather-inventory:ItemAdded', item.id, 1, targetInventory)
+      TriggerEvent('feather-inventory:ItemRemoved', id, 1, sourceInventory)
+      TriggerEvent('feather-inventory:ItemAdded', id, 1, targetInventory)
     end
   end
 

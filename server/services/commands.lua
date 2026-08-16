@@ -1,3 +1,7 @@
+-- (INV-05) Gated on Config.DevMode (default false) AND registered as
+-- ACE-restricted ("true" below, was "false") -- so a server that flips
+-- DevMode back on for testing doesn't hand free-item commands to every
+-- player, only to principals explicitly granted `command.<name>`.
 if Config.DevMode then
     RegisterCommand('AddItems', function(source, args)
         local result = ItemsAPI.AddItem(args[1], tonumber(args[2]), args[3] or nil, source)
@@ -7,7 +11,7 @@ if Config.DevMode then
         else
             Feather.Notify.RightNotify(source, "Item added!", 3000)
         end
-    end, false)
+    end, true)
 
     RegisterCommand('AddApples', function(source, args)
         local result = ItemsAPI.AddItem('consumable_apple', 5, {
@@ -21,15 +25,15 @@ if Config.DevMode then
         else
             Feather.Notify.RightNotify(source, "Item added!", 3000)
         end
-    end, false)
+    end, true)
 
     RegisterCommand('CreateStorageKey', function(source, args)
         InventoryAPI.RegisterForeignKey('storage', 'BIGINT UNSIGNED', 'id')
-    end, false)
+    end, true)
 
     RegisterCommand('CreateStorage', function(source, args)
         InventoryAPI.RegisterInventory('storage', 1, 'Big Box')
-    end, false)
+    end, true)
 
     RegisterCommand('AddStorageItems', function(source, args)
         local result = ItemsAPI.AddItem(args[1], tonumber(args[2]), args[3] or nil,
@@ -40,5 +44,5 @@ if Config.DevMode then
         else
             Feather.Notify.RightNotify(source, "Item added!", 3000)
         end
-    end, false)
+    end, true)
 end

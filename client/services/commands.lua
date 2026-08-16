@@ -1,4 +1,8 @@
 
+-- The inventory hotkey is registered immediately in DevMode (so it works
+-- before a character has even spawned, for quicker testing), otherwise it
+-- waits for Feather:Character:Spawned so the key does nothing until there's
+-- an actual character/inventory to open.
 if Config.DevMode then
   Feather.Keys:RegisterListener(Config.hotkey, function()
     InventoryAction.Open(nil, "player")

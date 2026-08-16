@@ -1,6 +1,11 @@
 Config = {}
 
-Config.DevMode = true
+-- (INV-05) Was `true`, shipping `/AddItems` and friends open to every
+-- player by default -- free item generation for the entire economy out of
+-- the box. Defaults to false now; the commands below are also
+-- ACE-restricted so flipping this back on for testing doesn't hand them to
+-- every player either.
+Config.DevMode = false
 
 -- Opens player inventory
 Config.hotkey = "B"

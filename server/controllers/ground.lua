@@ -1,3 +1,7 @@
+-- Raw DB access for the `ground` table -- world coordinates of dropped-item
+-- piles. Each row pairs 1:1 with an `inventory` row of location='ground'
+-- (see InventoryAPI.RegisterInventory), which is what actually holds the
+-- items; this table only exists to answer "where in the world is this pile."
 GroundControllers = {}
 
 function GroundControllers.GetGroundById(id)
@@ -14,6 +18,9 @@ function GroundControllers.GetAllGroundLocations()
         'SELECT `id`, `x`, `y`, `z` FROM `ground`;')
 end
 
+-- Finds an existing ground pile within `radius` of (x,y,z), if any -- used
+-- by DropItemsOnGround (server/services/items.lua) to merge nearby drops
+-- into one pile instead of creating a new one for every drop.
 function GroundControllers.GetClosestGroundByCoords(x, y, z, radius)
     local result = MySQL.query.await([[
         SELECT id
