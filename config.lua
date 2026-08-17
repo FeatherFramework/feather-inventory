@@ -24,3 +24,18 @@ Config.Dropped = {
 -- NOT IMPLEMENTED YET!
 Config.maxWeight = 120000         -- Max weight a player can pickup. 120kg in grams (THIS IS NOT AVAILABLE YET)
 -- Config.hotbarLimit = 6
+
+-- (INV-11/INV-12/INV-23) Access control for opening an inventory that isn't
+-- your own -- see server/services/access.lua.
+Config.Access = {
+    -- Max distance (world units) between two players' server-cached
+    -- positions to open one's inventory from the other -- robbery/forced
+    -- search. Checked at open time and re-checked on every subsequent move.
+    RobberyDistance = 3.0,
+
+    -- How long (seconds) a temporary access grant issued by a resource
+    -- (e.g. this repo's own ground pickup flow) stays valid after being
+    -- issued, for public/UUID-based inventories. Not re-checked on every
+    -- move -- unlike a robbery target, a world object doesn't walk away.
+    TemporaryGrantTTL = 60,
+}
