@@ -8,14 +8,42 @@ function UpdateClientWithGroundLocations(src)
 end
 
 -- Once a ground "inventory" gets to 0 items, it should be deleted.
+--
+-- (INV-12) Previously handed back the ground pile's inventory UUID to any
+-- caller, unconditionally -- the only proximity check anywhere in this flow
+-- was client-side (the pickup prompt loop). A client could request the UID
+-- for any pile id on the map regardless of distance. Ground inventories are
+-- registered `is_public = true` (see items.lua's DropItemsOnGround), so a
+-- bare UUID is not enough to open one -- this now verifies the caller is
+-- actually standing near the pile server-side before issuing the
+-- short-lived grant that InternalOpenInventory requires.
 Feather.RPC.Register("Feather:Inventory:GetGroundUID", function(params, res, src)
     if params.id == nil then
         error("Missing ID for ground")
         return res(nil)
     end
 
-    local _, groundInventoryID = InventoryAPI.GetCustomInventory('ground', params.id)
-    return res(groundInventoryID)
+    local player = Feather.Character.GetCharacter({ src = src })
+    local character = player and player.char
+    if not character or not character.x or not character.y or not character.z then
+        return res(nil)
+    end
+
+    local groundX, groundY, groundZ = GroundControllers.GetGroundById(params.id)
+    local dx, dy, dz = tonumber(character.x) - groundX, tonumber(character.y) - groundY, tonumber(character.z) - groundZ
+    local maxDistance = Config.Dropped.PromptViewDistance + 1.0 -- small buffer for position staleness (~CORE-32)
+    if (dx * dx + dy * dy + dz * dz) > (maxDistance * maxDistance) then
+        Feather.Notify.RightNotify(src, 'You are too far away.', 3000)
+        return res(nil)
+    end
+
+    local groundInventoryId, groundInventoryUUID = InventoryAPI.GetCustomInventory('ground', params.id)
+    if not groundInventoryId then
+        return res(nil)
+    end
+
+    InventoryAPI.GrantTemporaryAccess(src, groundInventoryId, Config.Access.TemporaryGrantTTL)
+    return res(groundInventoryUUID)
 end)
 
 Feather.RPC.Register("Feather:Inventory:DropItemsOnGround", function(params, res, src)

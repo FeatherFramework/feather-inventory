@@ -56,9 +56,15 @@ end
 -- @param ignoreItemLimits Ignore the max quantity of items that can be added to the inventory
 -- @param maxWeight Override the maximum weight of the inventory (nill to use default)
 -- @param restrictedItems Table of items that are restricted from being added to the inventory. e.g. { "apple", "matches" }
+-- @param ownerCharacterId (INV-11) Character id that owns this inventory's access list -- the owner
+--   may always open it and is the only non-admin who can grant/revoke access to others
+--   (see InventoryAPI.GrantInventoryAccess). Leave nil for an inventory with no ACL owner.
+-- @param isPublic (INV-11/INV-12) If true, any src holding a valid temporary access grant
+--   (InventoryAPI.GrantTemporaryAccess) may open this inventory, in addition to the owner/ACL.
+--   Ignored (treated as false) on update if not explicitly passed, same as the other flags below.
 -- @return Inventory UUID for accessing the inventory later (can be saved in your database table)
 --
-InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItemLimits, maxWeight, restrictedItems)
+InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItemLimits, maxWeight, restrictedItems, ownerCharacterId, isPublic)
   if not tableName or not id then
     error(
       'All parameters are required!')
@@ -89,12 +95,19 @@ InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItem
       InventoryControllers.UpdateRestrictedItems(inventory[1].id, restrictedItems)
     end
 
+    if ownerCharacterId ~= nil then
+      MySQL.query.await('UPDATE `inventory` SET `owner_character_id`=? WHERE `id`=?;', { ownerCharacterId, inventory[1].id })
+    end
+    if isPublic ~= nil then
+      MySQL.query.await('UPDATE `inventory` SET `is_public`=? WHERE `id`=?;', { isPublic and 1 or 0, inventory[1].id })
+    end
+
     return inventory[1].uuid, inventory[1].id
   end
 
   -- Create new inventory
-  query = 'INSERT INTO `inventory` (' .. foreignKey .. ', location, name, max_weight, ignore_item_limit) VALUES (?, ?, ?, ?, ?) RETURNING *;'
-  inventory = MySQL.query.await(query, { id, tableName, displayName or 'storage', maxWeight or nil, ignoreItemLimits or false })
+  query = 'INSERT INTO `inventory` (' .. foreignKey .. ', location, name, max_weight, ignore_item_limit, owner_character_id, is_public) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *;'
+  inventory = MySQL.query.await(query, { id, tableName, displayName or 'storage', maxWeight or nil, ignoreItemLimits or false, ownerCharacterId or nil, isPublic and 1 or 0 })
 
   if not inventory or not inventory[1] then
     return nil
@@ -184,7 +197,7 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
   if tonumber(src) then
     local player = Feather.Character.GetCharacter({ src = src })
     local character = player.char
-    
+
     -- Check if the character is available
     if character == nil then
       return {
@@ -202,38 +215,59 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
 
   local inventoryItems, otherInventoryItems = InventoryControllers.GetInventoryItems(inventory), nil
 
-  -- (INV-07) The lock used to be checked against `OpenInventories[tostring(
-  -- otherInventory)]` *before* `otherInventory` was ever resolved from
-  -- `otherInventoryId` -- it was always nil at that point, so the check
-  -- always looked up the same "nil" key and the lock never actually fired.
-  -- Fixed by resolving the target inventory's real id first, then checking/
-  -- setting the lock against that resolved id (matching the key it's stored
-  -- under below). Also fixed `inventoryIgnoreLimits` being overwritten with
-  -- the *other* inventory's ignore-limit flag instead of the caller's own.
+  -- (INV-11/INV-23) This used to resolve otherInventoryId and hand it back
+  -- unconditionally -- the mere act of calling this RPC populated
+  -- OpenInventories, which IsInventoryAccessibleBySrc then treated as proof
+  -- of authorization. That's circular: the caller granted themselves
+  -- access by asking. Authorization now comes from state the caller cannot
+  -- set themselves -- see server/services/inventory_access.lua.
   if otherInventoryId ~= nil then
+    local resolvedId, resolvedIgnoreLimits, resolvedName = nil, nil, nil
+
     if tonumber(otherInventoryId) then
-      local player = Feather.Character.GetCharacter({ src = otherInventoryId })
-      local character = player and player.char
-      if character then
-        otherInventory, _, otherInventoryIgnoreLimits, otherName = InventoryControllers.GetInventoryByCharacter(character.id)
+      -- Player-to-player: robbery / forced search. Requires the target to
+      -- actually be near the caller AND to be in a status that justifies
+      -- it -- neither alone is enough (proximity alone was INV-12's
+      -- mistake; status alone would let anyone loot anyone incapacitated
+      -- from across the map).
+      local targetPlayer = Feather.Character.GetCharacter({ src = otherInventoryId })
+      local targetCharacter = targetPlayer and targetPlayer.char
+
+      if not targetCharacter then
+        -- no target connected/loaded; leave otherInventory nil
+      elseif not IsWithinRobberyDistance(src, otherInventoryId) then
+        Feather.Notify.RightNotify(src, 'You are too far away.', 3000)
+      elseif not CanBeLootedDueToStatus(targetCharacter.id) then
+        Feather.Notify.RightNotify(src, 'This player cannot be searched right now.', 3000)
+      else
+        resolvedId, _, resolvedIgnoreLimits, resolvedName = InventoryControllers.GetInventoryByCharacter(targetCharacter.id)
       end
     else
-      otherInventory, _, otherInventoryIgnoreLimits, otherName = InventoryControllers.GetInventoryById(otherInventoryId)
+      -- Owned/shared inventory (storage, saddlebags, job lockers, ground
+      -- pickups, ...) -- gated by ownership, a persistent grant, or (for
+      -- public inventories) a short-lived grant issued by whichever
+      -- resource disclosed this UUID after checking its own proximity/
+      -- consent condition.
+      local uuidId, _, uuidIgnoreLimits, uuidName = InventoryControllers.GetInventoryById(otherInventoryId)
+      if uuidId and not IsAuthorizedForOwnedInventory(src, character.id, uuidId) then
+        Feather.Notify.RightNotify(src, 'You do not have access to this inventory.', 3000)
+      elseif uuidId then
+        resolvedId, resolvedIgnoreLimits, resolvedName = uuidId, uuidIgnoreLimits, uuidName
+      end
     end
 
-    if not otherInventory then
-      otherInventory = nil
-    elseif OpenInventories[tostring(otherInventory)] ~= nil then
-      otherInventory = nil
-      otherInventoryItems = nil
-      Feather.Notify.RightNotify(src, 'This inventory is already opened. Try again later.', 3000)
-    else
-      otherInventoryItems = InventoryControllers.GetInventoryItems(otherInventory)
-      OpenInventories[tostring(otherInventory)] = {
-        src = tostring(src),
-        id = otherInventory,
-        uuid = otherInventoryId
-      }
+    if resolvedId then
+      if OpenInventories[tostring(resolvedId)] ~= nil then
+        Feather.Notify.RightNotify(src, 'This inventory is already opened. Try again later.', 3000)
+      else
+        otherInventory, otherInventoryIgnoreLimits, otherName = resolvedId, resolvedIgnoreLimits, resolvedName
+        otherInventoryItems = InventoryControllers.GetInventoryItems(otherInventory)
+        OpenInventories[tostring(otherInventory)] = {
+          src = tostring(src),
+          id = otherInventory,
+          uuid = otherInventoryId
+        }
+      end
     end
   end
 
@@ -275,11 +309,29 @@ InventoryAPI.IsInventoryAccessibleBySrc = function(src, inventoryId)
   end
 
   local opened = OpenInventories[tostring(inventoryId)]
-  if opened and opened.src == tostring(src) then
-    return true
+  if not opened or opened.src ~= tostring(src) then
+    return false
   end
 
-  return false
+  -- (INV-11/INV-23) The lock only proves src was authorized to open this
+  -- inventory at open time. For another player's own character inventory
+  -- specifically, re-verify proximity and status live rather than trusting
+  -- a lock that could be minutes old -- a robbery target who wakes up and
+  -- runs, or who the caller simply walked away from, should stop being
+  -- lootable immediately. Public/UUID inventories (storage, ground, ...)
+  -- skip this: the object isn't a person and doesn't run away.
+  if tonumber(opened.uuid) then
+    local targetPlayer = Feather.Character.GetCharacter({ src = opened.uuid })
+    local targetCharacter = targetPlayer and targetPlayer.char
+    if not targetCharacter
+      or not IsWithinRobberyDistance(src, opened.uuid)
+      or not CanBeLootedDueToStatus(targetCharacter.id)
+    then
+      return false
+    end
+  end
+
+  return true
 end
 
 InventoryAPI.OpenInventory = function (src, InventoryId, target)
