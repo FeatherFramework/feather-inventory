@@ -32,7 +32,9 @@ if Config.DevMode then
     end, true)
 
     RegisterCommand('CreateStorage', function(source, args)
-        InventoryAPI.RegisterInventory('storage', 1, 'Big Box')
+        -- (INV-11) Dev/test-only storage; marked public since this ACE-gated
+        -- debug tool has no owner-assignment flow of its own.
+        InventoryAPI.RegisterInventory('storage', 1, 'Big Box', nil, nil, nil, nil, true)
     end, true)
 
     RegisterCommand('AddStorageItems', function(source, args)

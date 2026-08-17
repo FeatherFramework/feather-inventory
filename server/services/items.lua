@@ -391,7 +391,11 @@ ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z)
     groundID = GroundControllers.CreateGround(x, y, z)[1].id
   end
 
-  local _, groundInventoryID = InventoryAPI.RegisterInventory('ground', groundID, 'Ground')
+  -- (INV-11/INV-12) isPublic=true: anyone may open a ground pile, but only
+  -- after GetGroundUID (server/services/ground.lua) has verified they're
+  -- actually standing near it and issued a short-lived grant -- see
+  -- InventoryAPI.GrantTemporaryAccess / IsAuthorizedForOwnedInventory.
+  local _, groundInventoryID = InventoryAPI.RegisterInventory('ground', groundID, 'Ground', nil, nil, nil, nil, true)
   local updateinv = InventoryControllers.MoveInventoryItems(inventoryId, groundInventoryID, items)
 
   UpdateClientWithGroundLocations(-1)

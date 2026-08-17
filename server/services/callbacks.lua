@@ -79,6 +79,26 @@ Feather.RPC.Register('Feather:Inventory:GiveItem', function(params, res, src)
   return res(InventoryControllers.MoveInventoryItems(sourceInventoryId, destinationInventoryId, { item }))
 end)
 
+-- (INV-11) Access-list management for owned/shared inventories (storage,
+-- saddlebags, job lockers, ...). Authorization (owner or admin) is checked
+-- inside each InventoryAPI function itself, re-derived from `src` -- these
+-- RPCs are thin wrappers, not a separate trust boundary.
+Feather.RPC.Register('Feather:Inventory:GrantAccess', function(params, res, src)
+  res(InventoryAPI.GrantInventoryAccess(src, params.inventoryId, params.targetCharacterId))
+end)
+
+Feather.RPC.Register('Feather:Inventory:RevokeAccess', function(params, res, src)
+  res(InventoryAPI.RevokeInventoryAccess(src, params.inventoryId, params.targetCharacterId))
+end)
+
+Feather.RPC.Register('Feather:Inventory:SetPublic', function(params, res, src)
+  res(InventoryAPI.SetInventoryPublic(src, params.inventoryId, params.isPublic and true or false))
+end)
+
+Feather.RPC.Register('Feather:Inventory:ListAccess', function(params, res, src)
+  res(InventoryAPI.ListInventoryAccess(src, params.inventoryId))
+end)
+
 Feather.RPC.Register('Feather:Inventory:GetCategories', function(params, res, src)
   res(CategoryControllers.GetCategories())
 end)
