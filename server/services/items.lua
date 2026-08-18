@@ -1,4 +1,4 @@
---TODO: Replace errors with the core notifies
+﻿--TODO: Replace errors with the core notifies
 
 -- Item-instance operations (add/remove/use/drop) on top of the raw
 -- inventory_items rows managed by InventoryControllers. `inventoryId`
@@ -13,7 +13,7 @@ UsableItemCallbacks = {}
 -- config.lua). Fires feather-inventory:ItemAdded once per unit granted.
 ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   if quantity < 1 then
-    error('Invalid quantity. Must be creater than 0.')
+    warn('Invalid quantity. Must be creater than 0.')
     return {
       error = true,
       message = "Invalid quantity. Must be creater than 0."
@@ -22,7 +22,7 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
 
   local itemId, max_quantity, _, max_stack_size = ItemControllers.GetItemByName(itemName)
   if not itemId then
-    error('Invalid itemName. Please make sure it is in the items table in your database.')
+    warn('Invalid itemName. Please make sure it is in the items table in your database.')
     return {
       error = true,
       message = "Invalid itemName. Please make sure it is in the items table in your database."
@@ -34,7 +34,11 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   local ItemCount = ItemsAPI.GetItemCount(itemName, inventoryId)
 
   -- Check to make sure this doesnt exceed the amount of slots available.
-  if (ItemCount + quantity) / max_stack_size > max_stack_size then
+  -- (Tier 1 audit sweep) Was `(ItemCount + quantity) / max_stack_size >
+  -- max_stack_size`, which requires ItemCount+quantity > max_stack_size^2
+  -- to ever reject -- far more permissive than the stated "max stack size"
+  -- limit.
+  if (ItemCount + quantity) > max_stack_size then
     return {
       error = true,
       message = "Max slots reached"
@@ -66,7 +70,7 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   end
 
   if not inventory then
-    error('Invalid inventory ID.')
+    warn('Invalid inventory ID.')
     return {
       error = true,
       message = "Invalid inventory ID."
@@ -74,7 +78,7 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   end
 
   if metadata ~= nil and type(metadata) ~= 'table' then
-    error(
+    warn(
       "Invalid format for meta data. Meta data must be a table of key value pairs. Example: { quality = 'poor', durability = 50, maxDurability = 100 }")
     return {
       error = true,
@@ -105,7 +109,7 @@ end
 -- Removes n number of items by name. (No specific order)
 ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
   if quantity < 1 then
-    error('Invalid quantity. Must be creater than 0.')
+    warn('Invalid quantity. Must be creater than 0.')
     return {
       error = true,
       message = "Invalid quantity. Must be creater than 0."
@@ -114,7 +118,7 @@ ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
 
   local itemId, _, _ = ItemControllers.GetItemByName(itemName)
   if not itemId then
-    error('Invalid itemName. Please make sure it is in the items table in your database.')
+    warn('Invalid itemName. Please make sure it is in the items table in your database.')
     return {
       error = true,
       message = "Invalid itemName. Please make sure it is in the items table in your database."
@@ -132,7 +136,7 @@ ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
     inventory, _, _ = InventoryControllers.GetInventoryById(inventoryId)
   end
   if not inventory then
-    error('Invalid inventory ID.')
+    warn('Invalid inventory ID.')
     return {
       error = true,
       message = "Invalid inventory ID."
@@ -147,7 +151,13 @@ ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
     }
   end
 
-  InventoryControllers.DeleteInventoryItems(inventory.id, itemId, quantity)
+  -- (Tier 1 audit sweep) Was `inventory.id` -- `inventory` here is already
+  -- the raw numeric inventory id (DeleteInventoryItems' own signature takes
+  -- the id directly), not a table, so this indexed a number and crashed on
+  -- every call. Every caller of this exported function -- crafting
+  -- ingredient consumption, ammo use, anything built on RemoveItemByName --
+  -- was broken.
+  InventoryControllers.DeleteInventoryItems(inventory, itemId, quantity)
   
   TriggerEvent('feather-inventory:ItemRemoved', itemId, quantity, inventoryId)
   return {
@@ -174,14 +184,14 @@ end
 
 ItemsAPI.SetMetadata = function(item, metadata)
   if item == nil or type(item) ~= 'number' then
-    error('Item ID is required.')
+    warn('Item ID is required.')
     return {
       error = true,
       message = "Item ID is required."
     }
   end
   if metadata == nil or type(metadata) ~= 'table' then
-    error(
+    warn(
       "Invalid format for meta data. Meta data must be a table of key value pairs. Example: { quality = 'poor', durability = 50, maxDurability = 100 }")
     return {
       error = true,
@@ -210,7 +220,7 @@ end
 ItemsAPI.GetItemCount = function(itemName, inventoryId)
   local itemId, _, _ = ItemControllers.GetItemByName(itemName)
   if not itemId then
-    error('Invalid itemName. Please make sure it is in the items table in your database.')
+    warn('Invalid itemName. Please make sure it is in the items table in your database.')
     return -1
   end
 
@@ -231,7 +241,7 @@ ItemsAPI.GetItemCount = function(itemName, inventoryId)
   -- rejection (harmless there -- a nil inventory_id just matches nothing in
   -- SQL -- but not the intended "return -1" contract).
   if not inventory then
-    error('Invalid inventory ID.')
+    warn('Invalid inventory ID.')
     return -1
   end
 
@@ -240,12 +250,12 @@ ItemsAPI.GetItemCount = function(itemName, inventoryId)
   return itemCount
 end
 
+-- (INV-15) Was inverted -- returned false when the item *was* found and true
+-- when it wasn't, so every caller's "does this item exist" check read
+-- backwards.
 ItemsAPI.ItemExists = function(itemName)
   local itemId, _, _ = ItemControllers.GetItemByName(itemName)
-  if itemId then
-    return false
-  end
-  return true
+  return itemId ~= nil and itemId ~= false
 end
 
 ItemsAPI.InventoryHasItems = function(items, inventoryId)
@@ -269,31 +279,37 @@ ItemsAPI.InventoryHasItems = function(items, inventoryId)
 
   -- Error Checks
   if not IsTable(items) then
-    error('items must be a table! e.g. {{name = "apple", quantity = 2}, {name = "lemon", quantity = 1}}')
+    warn('items must be a table! e.g. {{name = "apple", quantity = 2}, {name = "lemon", quantity = 1}}')
     return false
   end
 
   for _, v in pairs(items) do
     if not IsTable(v) then
-      error('items must be a table! e.g. {{name = "apple", quantity = 2}, {name = "lemon", quantity = 1}}')
+      warn('items must be a table! e.g. {{name = "apple", quantity = 2}, {name = "lemon", quantity = 1}}')
       return false
     end
 
     if v.name == nil or tonumber(v.quantity) == nil then
-      error('items must be a table! e.g. {{name = "apple", quantity = 2}, {name = "lemon", quantity = 1}}')
+      warn('items must be a table! e.g. {{name = "apple", quantity = 2}, {name = "lemon", quantity = 1}}')
       return false
     end
   end
 
-  for _, playerItem in pairs(playerItems) do
-    for _, requestedItem in pairs(items) do
-      if playerItem and requestedItem.name == playerItem.name and tonumber(playerItem['COUNT[`items`.`name`]']) >= tonumber(requestedItem.quantity) then
+  -- (INV-15) Two bugs: `playerItem['COUNT[...]']` never matched the query's
+  -- actual column key (now `.count`, see InventoryControllers.
+  -- InventoryItemCounts), so the quantity comparison always errored/failed;
+  -- and the final `count < numberOfItems` was backwards -- it should report
+  -- "has items" when every requested item was satisfied, not when fewer than
+  -- all of them were.
+  for _, requestedItem in pairs(items) do
+    for _, playerItem in pairs(playerItems) do
+      if playerItem and requestedItem.name == playerItem.name and tonumber(playerItem.count) >= tonumber(requestedItem.quantity) then
         count = count + 1
       end
     end
   end
 
-  return count < numberOfItems
+  return count >= numberOfItems
 end
 
 -- Lets other resources (e.g. feather-weapons, for every weapon item) attach
@@ -311,11 +327,11 @@ end
 ItemsAPI.UseItem = function(itemID, src)
   local item = InventoryControllers.GetInventoryItemById(itemID)
   if not item then
-    error('Item not found in the database! ItemID: ' .. itemID)
+    warn('Item not found in the database! ItemID: ' .. itemID)
     return false
   end
   if tonumber(src) == nil then
-    error('Invalid Player Source')
+    warn('Invalid Player Source')
     return false
   end
 
@@ -328,7 +344,7 @@ ItemsAPI.UseItem = function(itemID, src)
   local player = Feather.Character.GetCharacter({ src = src })
   local character = player and player.char
   if not character then
-    error('No character loaded for src: ' .. src)
+    warn('No character loaded for src: ' .. src)
     return false
   end
 
@@ -384,7 +400,12 @@ ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z)
     end
   end
 
-  local groundID = GroundControllers.GetClosestGroundByCoords(x, y, z, Config.groundGroupingRadius)
+  -- (INV-16) Was `Config.groundGroupingRadius`, which doesn't exist -- the
+  -- real key is `Config.Dropped.GroupingRadius` (see config.lua and
+  -- services/errors.lua's startup validation of it). Reading the wrong key
+  -- passed nil as the radius, silently disabling grouping: every drop made
+  -- its own ground pile instead of joining a nearby one.
+  local groundID = GroundControllers.GetClosestGroundByCoords(x, y, z, Config.Dropped.GroupingRadius)
   
   -- No nearby ground, lets create a new one
   if groundID == nil or groundID == 'nil' then

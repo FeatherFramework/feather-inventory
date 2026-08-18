@@ -1,4 +1,4 @@
-InventoryControllers = {}
+﻿InventoryControllers = {}
 
 function InventoryControllers.GetInventoryById(inventoryId, type)
   if type == nil then
@@ -74,15 +74,22 @@ function InventoryControllers.GetInventoryItemById(id)
   return result
 end
 
+-- (INV-15-pattern) Same bug as InventoryItemCounts had: the unaliased
+-- SUM(...) expression's actual returned column key is the full expression
+-- text "SUM(`items`.`weight`)", not the bare "`items`.`weight`" this used
+-- to index -- so this always fell through to `return 0`, silently making
+-- InventoryCanHold's weight-limit check (INV-14) a no-op: it only ever saw
+-- the new items' weight, never what the inventory already held. Explicit
+-- `AS weight` fixes the mismatch.
 function InventoryControllers.GetInventoryTotalWeight(inventory)
   local result = MySQL.query.await(
-    'SELECT SUM(`items`.`weight`) FROM `items` INNER JOIN `inventory_items` ON `items`.`id`=`inventory_items`.`item_id` WHERE `inventory_items`.`inventory_id`=?',
+    'SELECT SUM(`items`.`weight`) AS `weight` FROM `items` INNER JOIN `inventory_items` ON `items`.`id`=`inventory_items`.`item_id` WHERE `inventory_items`.`inventory_id`=?',
     { inventory })
-  if not result[1]['`items`.`weight`'] then
+  if not result[1] or not result[1].weight then
     return 0
   end
 
-  return result[1]['`items`.`weight`']
+  return result[1].weight
 end
 
 function InventoryControllers.GetInventoryItems(inventory)
@@ -97,8 +104,11 @@ function InventoryControllers.GetInventoryItems(inventory)
 end
 
 function InventoryControllers.InventoryItemCounts(inventory)
+  -- (INV-15) Explicit `AS count` -- the unaliased COUNT(...) expression's
+  -- returned column key doesn't match the bracket-string ItemsAPI.
+  -- InventoryHasItems used to index it by, so every lookup read nil.
   return MySQL.query.await(
-    'SELECT `items`.`name`, COUNT(`items`.`name`) FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id`=`items`.`id` WHERE `inventory_items`.`inventory_id`=?;',
+    'SELECT `items`.`name`, COUNT(`items`.`name`) AS `count` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id`=`items`.`id` WHERE `inventory_items`.`inventory_id`=? GROUP BY `items`.`name`;',
     { inventory })
 end
 
@@ -185,6 +195,38 @@ end
 -- fixes the nested-loop bug that fired ItemRemoved/ItemAdded #items^2
 -- times instead of once per moved item.
 function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventory, items)
+  -- (INV-14) Every transfer path (UpdateInventory, GiveItem,
+  -- DropItemsOnGround) funnels through here, so this is the one place that
+  -- can guarantee slot/weight/restricted-item limits are actually enforced
+  -- instead of decorative. Resolve the requested item ids to names/counts
+  -- first and reject the whole move if the target can't hold them -- items
+  -- are per-unit rows here (no quantity field), so counts are built by name.
+  local requestCounts = {}
+  for _, item in pairs(items) do
+    local id = type(item) == 'table' and item.id or item
+    local existingItem = InventoryControllers.GetInventoryItemById(id)
+    if existingItem and tostring(existingItem.inventory_id) == tostring(sourceInventory) then
+      requestCounts[existingItem.name] = (requestCounts[existingItem.name] or 0) + 1
+    end
+  end
+
+  local checkItems = {}
+  for name, quantity in pairs(requestCounts) do
+    table.insert(checkItems, { item = name, quantity = quantity })
+  end
+
+  if #checkItems > 0 then
+    local canHold = InventoryAPI.InventoryCanHold(checkItems, targetInventory)
+    if not canHold or canHold.status == false then
+      return {
+        error = true,
+        message = canHold and canHold.message or 'Target inventory cannot hold these items.',
+        sourceItems = InventoryControllers.GetInventoryItems(sourceInventory),
+        targetItems = InventoryControllers.GetInventoryItems(targetInventory)
+      }
+    end
+  end
+
   for _, item in pairs(items) do
     local id = nil
     if type(item) == 'table' then
@@ -192,7 +234,7 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
     elseif type(item) == 'number' then
       id = item
     else
-      error('Invalid Item type in MoveItems')
+      warn('Invalid Item type in MoveItems')
       return
     end
 

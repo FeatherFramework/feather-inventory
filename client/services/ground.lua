@@ -66,8 +66,14 @@ CreateThread(function()
 
     while true do
         Wait(3)
-        local isDead = IsEntityDead(playerped)
-        if isDead ~= 0 then
+        -- (INV-21) `playerped` was undefined at this scope (only declared
+        -- inside the inner loop below), so IsEntityDead(nil) was called every
+        -- tick. Its BOOL return was then compared to the number 0
+        -- (`isDead ~= 0`), which is true for both true and false -- the
+        -- dead-check was a permanent no-op that always fell through as
+        -- "alive", regardless of actual state.
+        local isDead = IsEntityDead(PlayerPedId())
+        if not isDead then
             if GroundItems[1] ~= nil then
                 for i, item in ipairs(GroundItems) do
                     local playerped = PlayerPedId()
@@ -89,8 +95,13 @@ CreateThread(function()
                                 Wait(10)
                             end
 
+                            -- (INV-21) TASK_PLAY_ANIM takes 13 params
+                            -- (verified against the native DB); this was
+                            -- calling it with 11, so `false` landed in the
+                            -- `int ikFlags` slot and `taskFilter`/`p12` were
+                            -- missing entirely.
                             TaskPlayAnim(playerped, animDict, "react_look_front_exit", 1.0, 8.0, -1, 1, 0, false,
-                                false, false)
+                                0, false, nil, false)
                             Wait(2200)
                             ClearPedTasks(playerped)
 
