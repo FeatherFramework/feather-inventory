@@ -1,4 +1,4 @@
-function RegisterGroundInventory()
+﻿function RegisterGroundInventory()
     InventoryAPI.RegisterForeignKey('ground', 'BIGINT UNSIGNED', 'id')
 end
 
@@ -19,7 +19,7 @@ end
 -- short-lived grant that InternalOpenInventory requires.
 Feather.RPC.Register("Feather:Inventory:GetGroundUID", function(params, res, src)
     if params.id == nil then
-        error("Missing ID for ground")
+        warn("Missing ID for ground")
         return res(nil)
     end
 
@@ -54,6 +54,25 @@ Feather.RPC.Register("Feather:Inventory:DropItemsOnGround", function(params, res
     local character = player and player.char
     if not character then
         return res({ error = true, message = 'No character loaded.' })
+    end
+
+    -- (INV-17) x/y/z used to go straight from the client into CreateGround
+    -- with no check at all -- an attacker could seed ground piles (and, per
+    -- INV-12's fix, only reachably lootable ones) anywhere on the map,
+    -- including out-of-bounds coordinates the `ground` table's numeric
+    -- columns reject. Bound the drop to near the caller's own server-known
+    -- position, same radius GetGroundUID already requires to pick a pile
+    -- back up.
+    if type(params.x) ~= 'number' or type(params.y) ~= 'number' or type(params.z) ~= 'number' then
+        return res({ error = true, message = 'Invalid drop location.' })
+    end
+    if not character.x or not character.y or not character.z then
+        return res({ error = true, message = 'No character loaded.' })
+    end
+    local dx, dy, dz = tonumber(character.x) - params.x, tonumber(character.y) - params.y, tonumber(character.z) - params.z
+    local maxDistance = Config.Dropped.PromptViewDistance + 1.0 -- small buffer for position staleness (~CORE-32)
+    if (dx * dx + dy * dy + dz * dz) > (maxDistance * maxDistance) then
+        return res({ error = true, message = 'You are too far away.' })
     end
 
     local inventoryID, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)

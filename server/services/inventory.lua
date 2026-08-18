@@ -1,4 +1,4 @@
-InventoryAPI = {}
+﻿InventoryAPI = {}
 local RegisteredForeignKeys = {}
 local OpenInventories = {}
 
@@ -12,15 +12,30 @@ local OpenInventories = {}
 -- @param primaryKeyName Name of the primary key in your table (e.g. id)
 -- @return None
 --
+-- (INV-18) tableName/primaryKeyName end up concatenated directly into DDL
+-- below. Both come from other resources' RegisterForeignKey calls rather
+-- than client input, but a whitelist check costs nothing and turns a typo'd
+-- or malicious identifier into a clean rejection instead of arbitrary SQL
+-- landing in an ALTER TABLE statement. foreignKeyType is passed through as
+-- typed (e.g. "BIGINT UNSIGNED") since it's a SQL type, not an identifier.
+local function IsSafeIdentifier(name)
+  return type(name) == 'string' and name:match('^[A-Za-z_][A-Za-z0-9_]*$') ~= nil
+end
+
 InventoryAPI.RegisterForeignKey = function(tableName, foreignKeyType, primaryKeyName)
   if not tableName or not foreignKeyType or not primaryKeyName then
-    error(
+    warn(
       'All parameters are required!')
     return
   end
 
+  if not IsSafeIdentifier(tableName) or not IsSafeIdentifier(primaryKeyName) then
+    warn('Invalid tableName or primaryKeyName. Must be a valid SQL identifier.')
+    return
+  end
+
   if RegisteredForeignKeys[tableName] then
-    error('This foreign key has already been registered by a different resource.')
+    warn('This foreign key has already been registered by a different resource.')
     return
   end
 
@@ -42,7 +57,12 @@ InventoryAPI.RegisterForeignKey = function(tableName, foreignKeyType, primaryKey
     MySQL.query.await(query)
   end
 
-  table.insert(RegisteredForeignKeys, 'tableName')
+  -- (Tier 1 audit sweep) Was `table.insert(RegisteredForeignKeys, 'tableName')`
+  -- -- array-appending the literal string "tableName" instead of setting
+  -- the dict key the guard above (`RegisteredForeignKeys[tableName]`)
+  -- actually reads, so the "already registered by a different resource"
+  -- check never triggered.
+  RegisteredForeignKeys[tableName] = true
 end
 
 ---
@@ -66,15 +86,22 @@ end
 --
 InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItemLimits, maxWeight, restrictedItems, ownerCharacterId, isPublic)
   if not tableName or not id then
-    error(
+    warn(
       'All parameters are required!')
+    return
+  end
+
+  -- (INV-18) Same rationale as RegisterForeignKey -- tableName is
+  -- concatenated into DDL/DML below via `foreignKey`.
+  if not IsSafeIdentifier(tableName) then
+    warn('Invalid tableName. Must be a valid SQL identifier.')
     return
   end
 
   local foreignKey = string.lower(tableName) .. '_id'
   local column = MySQL.query.await("SHOW COLUMNS FROM `inventory` LIKE ?;", { foreignKey })
   if #(column) < 1 then
-    error(
+    warn(
       'A foreign key for this script has not been registered. Please refer to the documentation to register a foreign key.')
     return
   end
@@ -126,14 +153,14 @@ end
 --
 InventoryAPI.InventoryCanHold = function(items, inventoryId)
   if type(items) ~= 'table' then
-    error(
+    warn(
       'Invalid items format. Must be a table of items and their quantity. { {item="apple", quantity=5}, {item="matches", quantity=10} }')
     return nil
   end
 
   for _, v in pairs(items) do
     if not v.item or tonumber(v.quantity) == nil or tonumber(v.quantity) < 0 then
-      error(
+      warn(
         'Invalid items format. Must be a table of items and their quantity. { {item="apple", quantity=5}, {item="matches", quantity=10} }')
       return nil
     end
@@ -150,13 +177,18 @@ InventoryAPI.InventoryCanHold = function(items, inventoryId)
     inventory, maxWeight, ignore_item_limit = InventoryControllers.GetInventoryById(inventoryId)
   end
   if not inventory then
-    error('Invalid inventory ID.')
+    warn('Invalid inventory ID.')
     return nil
   end
 
   local weight = 0
   for _, v in pairs(items) do
-    local itemId, maxQuantity, itemWeight = ItemControllers.GetItemByName(v)
+    -- (INV-14) Was `GetItemByName(v)` -- passing the whole {item=, quantity=}
+    -- table where the function (and the underlying query param) expects the
+    -- item's name string. Every call resolved to `false`, so this always
+    -- fell through to the "Invalid itemName" error below and InventoryCanHold
+    -- could never return a real result.
+    local itemId, maxQuantity, itemWeight = ItemControllers.GetItemByName(v.item)
     -- Check if item is restricted
     if InventoryControllers.IsItemRestricted(inventory, itemId) then
       return { status = false, message = 'Item is restricted.' }
@@ -207,7 +239,7 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
 
     inventory, _, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
   else
-    error('Invalid Character Source!')
+    warn('Invalid Character Source!')
     return {
       error = 'No Character Available'
     }
@@ -365,13 +397,18 @@ end
 InventoryAPI.InternalCloseInventory = function(src)
   for k, v in pairs(OpenInventories) do
     if v.src == tostring(src) then
-      if InventoryControllers.GetInventoryTotalItemCounts(v.id)[1]["COUNT(`id`)"] <= 0 then
+      -- (INV-20) GetInventoryTotalItemCounts(...)[1] crashed InternalCloseInventory
+      -- (and by extension, the playerDropped handler for every other still-
+      -- connected player) whenever the query returned no rows -- e.g. the
+      -- inventory row itself was deleted between opening and disconnect.
+      local counts = InventoryControllers.GetInventoryTotalItemCounts(v.id)
+      if counts and counts[1] and tonumber(counts[1]["COUNT(`id`)"]) and tonumber(counts[1]["COUNT(`id`)"]) <= 0 then
         TriggerEvent('Feather:Inventory:Empty', {
           id = v.id,
           uuid = v.uuid
         })
       end
-      
+
       OpenInventories[k] = nil
       -- break
     end
