@@ -1,4 +1,4 @@
-﻿--TODO: Replace errors with the core notifies
+--TODO: Replace errors with the core notifies
 
 -- Item-instance operations (add/remove/use/drop) on top of the raw
 -- inventory_items rows managed by InventoryControllers. `inventoryId`
