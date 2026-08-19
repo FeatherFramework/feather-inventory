@@ -8,11 +8,89 @@
 ItemsAPI = {}
 UsableItemCallbacks = {}
 
+function ItemsAPI.GetDefinitions()
+  return ItemControllers.GetItemDefinitions()
+end
+
+-- Atomically grants catalog items without metadata. Intended for trusted
+-- server resources such as administration, rewards, and scripted payouts.
+function ItemsAPI.GrantItem(itemName, quantity, inventoryId)
+  if type(itemName) ~= 'string' or itemName == '' then
+    return { error = true, code = 'invalid_item', message = 'Invalid item name.' }
+  end
+  quantity = tonumber(quantity)
+  if not quantity or quantity < 1 or quantity % 1 ~= 0 or quantity > 10000 then
+    return { error = true, code = 'invalid_quantity', message = 'Invalid quantity.' }
+  end
+
+  local definition = ItemControllers.GetItemDefinitionByName(itemName)
+  if not definition then
+    return { error = true, code = 'invalid_item', message = 'Item does not exist.' }
+  end
+
+  local inventory, maxWeight, ignoreItemLimit
+  if tonumber(inventoryId) then
+    local player = Feather.Character.GetCharacter({ src = tonumber(inventoryId) })
+    local character = player and player.char
+    if character then
+      inventory, maxWeight, ignoreItemLimit = InventoryControllers.GetInventoryByCharacter(character.id)
+    end
+  else
+    inventory, maxWeight, ignoreItemLimit = InventoryControllers.GetInventoryById(inventoryId)
+  end
+  if not inventory then
+    return { error = true, code = 'invalid_inventory', message = 'Inventory does not exist.' }
+  end
+
+  local currentItemCount = InventoryControllers.InventoryItemCount(inventory, definition.id)
+  local totalItemCount = InventoryControllers.GetInventoryTotalItemCounts(inventory)
+  totalItemCount = totalItemCount[1] and tonumber(totalItemCount[1].count) or 0
+  if totalItemCount + quantity > (tonumber(Config.maxItemSlots) or math.huge) then
+    return { error = true, code = 'inventory_full', message = 'Inventory has no available slots.' }
+  end
+
+  if tonumber(ignoreItemLimit) ~= 1 then
+    local maximum = math.min(tonumber(definition.max_quantity) or 0,
+      tonumber(definition.max_stack_size) or 0)
+    if maximum < 1 or currentItemCount + quantity > maximum then
+      return { error = true, code = 'item_limit', message = 'Item quantity limit would be exceeded.' }
+    end
+  end
+
+  local addedWeight = (tonumber(definition.weight) or 0) * quantity
+  local weightLimit = tonumber(maxWeight) or tonumber(Config.maxWeight)
+  if weightLimit and InventoryControllers.GetInventoryTotalWeight(inventory) + addedWeight > weightLimit then
+    return { error = true, code = 'weight_limit', message = 'Inventory weight limit would be exceeded.' }
+  end
+
+  local placeholders = {}
+  local values = {}
+  for index = 1, quantity do
+    placeholders[index] = '(?, ?)'
+    values[#values + 1] = inventory
+    values[#values + 1] = definition.id
+  end
+  local succeeded, insertId = pcall(MySQL.insert.await,
+    ('INSERT INTO inventory_items (inventory_id, item_id) VALUES %s'):format(table.concat(placeholders, ', ')), values)
+  if not succeeded or insertId == nil then
+    return { error = true, code = 'database_error', message = 'Items could not be granted.' }
+  end
+
+  TriggerEvent('feather-inventory:ItemAdded', definition.id, quantity, inventory)
+  return {
+    error = false,
+    itemName = definition.name,
+    displayName = definition.display_name,
+    quantity = quantity
+  }
+end
+
 -- Grants `quantity` of `itemName` to an inventory, enforcing per-item max
 -- quantity/stack-size limits (weight is not yet implemented, see
 -- config.lua). Fires feather-inventory:ItemAdded once per unit granted.
 ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
-  if quantity < 1 then
+  quantity = tonumber(quantity)
+  if not quantity or quantity < 1 or quantity % 1 ~= 0 then
     warn('Invalid quantity. Must be creater than 0.')
     return {
       error = true,
