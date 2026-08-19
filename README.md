@@ -9,6 +9,7 @@ Feather inventory is designed to provide a realistic and immersive inventory sys
 3. **Ground inventory**: A global ground inventory for when players drop items
 4. **Usable Items**: The inventory system supports registering usable items, such as consumables or items that trigger specific actions when used.
 5. **Custom Inventory API**: Developers can easily register custom inventories for different entities within the game, expanding the functionality of the script to cater to specific gameplay scenarios.
+6. **Trusted grant API**: Server resources can list item definitions and atomically grant validated catalog items to an inventory.
 
 ## Getting Started
 
