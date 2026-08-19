@@ -1,4 +1,4 @@
-﻿InventoryControllers = {}
+InventoryControllers = {}
 
 function InventoryControllers.GetInventoryById(inventoryId, type)
   if type == nil then
