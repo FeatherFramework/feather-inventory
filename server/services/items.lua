@@ -62,7 +62,9 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   end
 
   -- Check to make sure this doesnt exceed the max quantity for this item.
-  if ItemCount + quantity >= max_quantity and ignore_item_limit == 0 then
+  -- (was >=, which rejected exactly reaching the max -- every seeded weapon
+  -- has max_quantity=1, so granting even a single one always failed)
+  if ItemCount + quantity > max_quantity and ignore_item_limit == 0 then
     return {
       error = true,
       message = "Too Many Items in Inventory"
