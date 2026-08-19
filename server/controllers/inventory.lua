@@ -114,7 +114,7 @@ end
 
 function InventoryControllers.GetInventoryTotalItemCounts(inventory)
   return MySQL.query.await(
-    'SELECT COUNT(`id`) FROM `inventory_items` WHERE `inventory_id`=?;',
+    'SELECT COUNT(`id`) AS `count` FROM `inventory_items` WHERE `inventory_id`=?;',
     { inventory })
 end
 
