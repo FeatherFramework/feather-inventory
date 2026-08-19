@@ -21,8 +21,7 @@ Config.Dropped = {
 }
 
 
--- NOT IMPLEMENTED YET!
-Config.maxWeight = 120000         -- Max weight a player can pickup. 120kg in grams (THIS IS NOT AVAILABLE YET)
+Config.maxWeight = 120000         -- Default inventory weight limit in grams (120 kg).
 -- Config.hotbarLimit = 6
 
 -- (INV-11/INV-12/INV-23) Access control for opening an inventory that isn't
