@@ -1,4 +1,4 @@
-﻿InventoryAPI = {}
+InventoryAPI = {}
 local RegisteredForeignKeys = {}
 local OpenInventories = {}
 
