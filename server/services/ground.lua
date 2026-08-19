@@ -1,4 +1,4 @@
-﻿function RegisterGroundInventory()
+function RegisterGroundInventory()
     InventoryAPI.RegisterForeignKey('ground', 'BIGINT UNSIGNED', 'id')
 end
 
