@@ -1,4 +1,4 @@
-﻿InventoryAPI = {}
+InventoryAPI = {}
 local RegisteredForeignKeys = {}
 local OpenInventories = {}
 
@@ -402,7 +402,7 @@ InventoryAPI.InternalCloseInventory = function(src)
       -- connected player) whenever the query returned no rows -- e.g. the
       -- inventory row itself was deleted between opening and disconnect.
       local counts = InventoryControllers.GetInventoryTotalItemCounts(v.id)
-      if counts and counts[1] and tonumber(counts[1]["COUNT(`id`)"]) and tonumber(counts[1]["COUNT(`id`)"]) <= 0 then
+      if counts and counts[1] and tonumber(counts[1].count) and tonumber(counts[1].count) <= 0 then
         TriggerEvent('Feather:Inventory:Empty', {
           id = v.id,
           uuid = v.uuid
