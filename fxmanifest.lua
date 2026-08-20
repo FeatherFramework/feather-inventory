@@ -40,11 +40,8 @@ ui_page {
 
 files {
   "ui/index.html",
-  "ui/js/*.*",
-  "ui/css/*.*",
-  "ui/fonts/*.*",
-  "ui/images/*.*",
-  "ui/img/*.*"
+  "ui/assets/*.*",
+  "ui/images/*.*"
 }
 
 dependencies {

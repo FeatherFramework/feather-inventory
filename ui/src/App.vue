@@ -27,7 +27,7 @@
 <script setup>
 import api from "./api";
 import { ref, onMounted, onUnmounted, reactive } from "vue";
-import "@/assets/styles/main.scss";
+import "@/assets/tailwind.css";
 import _ from "lodash";
 
 import MenuUI from "./views/MenuUI.vue";

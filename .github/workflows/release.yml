@@ -8,18 +8,26 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
-      - name: Set Node.js 20.x
-        uses: actions/setup-node@v3
+        uses: actions/checkout@v4
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
         with:
-          node-version: 20.x
+          version: 9
+      - name: Set Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
       - name: Install Node Modules
-        run: yarn install
+        run: pnpm install --frozen-lockfile
         working-directory: ./ui
       - name: Build Application
-        run: yarn run build
+        run: pnpm run build
         working-directory: ./ui
       - uses: vimtor/action-zip@v1
         with:
