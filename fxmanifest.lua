@@ -41,7 +41,7 @@ ui_page {
 files {
   "ui/index.html",
   "ui/assets/*.*",
-  "ui/images/*.*"
+  "ui/images/items/*.*"
 }
 
 dependencies {
