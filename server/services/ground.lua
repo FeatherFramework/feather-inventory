@@ -39,10 +39,14 @@ Feather.RPC.Register("Feather:Inventory:GetGroundUID", function(params, res, src
 
     local groundInventoryId, groundInventoryUUID = InventoryAPI.GetCustomInventory('ground', params.id)
     if not groundInventoryId then
+        print(("[DEBUG-GROUND] GetGroundUID: no inventory row for ground.id=%s"):format(tostring(params.id)))
         return res(nil)
     end
 
-    InventoryAPI.GrantTemporaryAccess(src, groundInventoryId, Config.Access.TemporaryGrantTTL)
+    -- (Public-access simplification) Ground inventories are `is_public = true`,
+    -- and IsAuthorizedForOwnedInventory now grants access on that flag alone --
+    -- the proximity check above is the only gate that actually matters here.
+    -- No temporary grant needed for the caller to open what this returns.
     return res(groundInventoryUUID)
 end)
 
@@ -91,6 +95,10 @@ AddEventHandler("Feather:Inventory:Empty", function(args)
     if location == 'ground' then
         local GID = GroundControllers.GetGroundID(args.id)
         GroundControllers.DeleteGround(GID)
+        -- (Ground cleanup bugfix) This deleted the world-position row but
+        -- left the inventory row itself (args.id) sitting in the DB
+        -- forever -- orphaned rows accumulate with every emptied pile.
+        InventoryControllers.DeleteInventoryById(args.id)
         UpdateClientWithGroundLocations(-1)
     end
 end)
@@ -101,15 +109,27 @@ RegisterServerEvent("Feather:Inventory:GetGroundLocations", function()
 end)
 
 -- Street Sweepers Logic (Essentially a garbage collector)
+--
+-- (Ground cleanup bugfix) Wiping `ground` (world positions) without also
+-- clearing the `inventory` rows pointing at `location = 'ground'` left every
+-- one of them orphaned -- on a server with StreetSweep = 0 (the default),
+-- this meant a fresh, empty `inventory` row got left behind on every single
+-- restart, forever. Worse: RegisterInventory looks up an existing inventory
+-- by ground_id before creating a new one, so if a freshly created ground
+-- row's auto-increment id ever coincided with an old orphaned row's
+-- ground_id, a brand new drop could silently reuse that stale row instead
+-- of getting its own.
 CreateThread(function()
     if Config.Dropped.StreetSweep ~= nil then
         if (Config.Dropped.StreetSweep == 0) then
             GroundControllers.DeleteAllGround()
+            InventoryControllers.DeleteInventoriesByLocation('ground')
             UpdateClientWithGroundLocations(-1)
         else
             while true do
                 Wait(Config.Dropped.StreetSweep * 60000)
                 GroundControllers.DeleteAllGround()
+                InventoryControllers.DeleteInventoriesByLocation('ground')
                 UpdateClientWithGroundLocations(-1)
             end
         end

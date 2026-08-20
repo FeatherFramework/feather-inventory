@@ -340,3 +340,16 @@ end
 function InventoryControllers.DeleteInventory(uuid)
   MySQL.query.await('DELETE FROM `inventory` WHERE `uuid` = ?;', { uuid })
 end
+
+function InventoryControllers.DeleteInventoryById(id)
+  MySQL.query.await('DELETE FROM `inventory` WHERE `id` = ?;', { id })
+end
+
+-- (Ground cleanup bugfix) Sweeping the `ground` table (world positions)
+-- without also clearing the `inventory` rows that point at it left every
+-- emptied/swept ground pile's inventory row orphaned forever -- nothing
+-- ever deleted them. inventory_items/inventory_access both cascade-delete
+-- on inventory_id, so this alone is enough to fully clean a location up.
+function InventoryControllers.DeleteInventoriesByLocation(location)
+  MySQL.query.await('DELETE FROM `inventory` WHERE `location` = ?;', { location })
+end

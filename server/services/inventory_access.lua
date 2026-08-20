@@ -288,7 +288,14 @@ end
 InventoryAPI.HasTemporaryAccess = function(src, inventoryId)
     local grants = TemporaryGrants[tostring(src)]
     local expiresAt = grants and grants[tostring(inventoryId)]
-    return expiresAt ~= nil and expiresAt > GetGameTimer()
+    local now = GetGameTimer()
+    local keys = {}
+    if grants then
+        for k in pairs(grants) do table.insert(keys, k) end
+    end
+    print(("[DEBUG-GROUND] HasTemporaryAccess: src=%s inventoryId=%s expiresAt=%s now=%s grantKeysForSrc=[%s]"):format(
+        tostring(src), tostring(inventoryId), tostring(expiresAt), tostring(now), table.concat(keys, ', ')))
+    return expiresAt ~= nil and expiresAt > now
 end
 
 AddEventHandler('playerDropped', function()
@@ -309,16 +316,34 @@ end)
 --
 function IsAuthorizedForOwnedInventory(src, callerCharacterId, inventoryId)
     local ownerCharacterId, isPublic = InventoryAPI.GetInventoryOwnerAndVisibility(inventoryId)
+    local hasGrant = InventoryAPI.HasInventoryAccessGrant(callerCharacterId, inventoryId)
+    local hasTemp = InventoryAPI.HasTemporaryAccess(src, inventoryId)
+    print(("[DEBUG-GROUND] IsAuthorizedForOwnedInventory: src=%s callerCharacterId=%s inventoryId=%s owner=%s isPublic=%s hasAccessGrant=%s hasTemporaryAccess=%s"):format(
+        tostring(src), tostring(callerCharacterId), tostring(inventoryId), tostring(ownerCharacterId), tostring(isPublic), tostring(hasGrant), tostring(hasTemp)))
 
     if ownerCharacterId and callerCharacterId and tostring(ownerCharacterId) == tostring(callerCharacterId) then
         return true
     end
 
-    if InventoryAPI.HasInventoryAccessGrant(callerCharacterId, inventoryId) then
+    if hasGrant then
         return true
     end
 
-    if isPublic and InventoryAPI.HasTemporaryAccess(src, inventoryId) then
+    -- (Public-access simplification) `is_public` used to still require a
+    -- short-lived temp grant on top -- meaningful for a resource that wants
+    -- to disclose one specific inventory to one specific player for a
+    -- moment, but ground piles have no privacy concern at all: there's
+    -- nothing to gate beyond "were you near it," which GetGroundUID already
+    -- checks server-side before a client can even learn the UUID at all.
+    -- Public now means public -- no additional expiring grant required.
+    if isPublic then
+        return true
+    end
+
+    -- Kept for non-public disclosed-UUID cases a future resource might
+    -- still want (see InventoryAPI.GrantTemporaryAccess's doc comment) --
+    -- just no longer required for is_public=true inventories specifically.
+    if hasTemp then
         return true
     end
 

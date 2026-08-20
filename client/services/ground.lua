@@ -51,6 +51,22 @@ function DropItemsOnGround(items)
     local y = coords.y + forward.y * 1.6
     local z = coords.z + forward.z * 1.6
 
+    -- (Drop-distance bugfix) The server checks this drop position against
+    -- its own cached character.x/y/z (never the client-supplied coords
+    -- directly -- see server/services/ground.lua), which is correct, but
+    -- that cache is only refreshed every Config.PositionSync (feather-core,
+    -- 20s by default). A player who'd moved at all since the last sync
+    -- would get rejected as "too far away" even standing right next to
+    -- where they actually are. Forcing a fresh sync immediately before the
+    -- check keeps the server-authoritative model intact -- it's just no
+    -- longer working from stale data.
+    -- Same call shape feather-core's own position-sync loop uses
+    -- (client/services/character.lua's startPositionSync) -- passing the
+    -- raw vector3 rather than a hand-built table, since the server side
+    -- (RPCAPI.Register("UpdatePlayerCoords", ...)) unpacks it expecting
+    -- exactly that shape.
+    Feather.RPC.CallAsync("UpdatePlayerCoords", coords)
+
     local result = Feather.RPC.CallAsync("Feather:Inventory:DropItemsOnGround", {
         items = items,
         x = x,

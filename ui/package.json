@@ -1,6 +1,6 @@
 {
   "name": "feather-inventory-ui",
-  "version": "0.1.7",
+  "version": "0.1.9",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@9.15.0",
