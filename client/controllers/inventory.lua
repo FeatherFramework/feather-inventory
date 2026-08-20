@@ -51,7 +51,8 @@ InventoryAction.Open = function(otherInventoryId, target)
         dollars = player_display.dollars,
         gold = player_display.gold,
         tokens = player_display.tokens,
-        id = player_display.id
+        id = player_display.id,
+        characterName = ((player_display.firstName or '') .. ' ' .. (player_display.lastName or '')):gsub('^%s+', ''):gsub('%s+$', '')
       }
     })
     SetNuiFocus(true, true)

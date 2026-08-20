@@ -79,6 +79,70 @@ Feather.RPC.Register('Feather:Inventory:GiveItem', function(params, res, src)
   return res(InventoryControllers.MoveInventoryItems(sourceInventoryId, destinationInventoryId, { item }))
 end)
 
+-- (Steampunk ledger) Drag-and-drop placement: moves the whole compartment
+-- (every row sharing the source item's slot_index -- stack splitting isn't
+-- part of this design, see the design handoff) to a specific destination
+-- slot, swapping with whatever's already there rather than displacing it.
+-- Same ownership pattern as UpdateInventory above: both the source and
+-- destination inventory must actually be accessible to the caller right
+-- now, re-derived from src rather than trusted from the client.
+Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
+  local itemId = tonumber(params.itemId)
+  local toInventory = params.toInventory
+  local toSlot = tonumber(params.toSlot)
+  local capacity = tonumber(Config.maxItemSlots) or 0
+
+  if not itemId or not toInventory or toSlot == nil or toSlot < 0 or toSlot >= capacity then
+    return res({ error = true, message = 'Invalid move.' })
+  end
+
+  local movingItem = InventoryControllers.GetInventoryItemById(itemId)
+  if not movingItem then
+    return res({ error = true, message = 'Item not found.' })
+  end
+
+  local fromInventory = movingItem.inventory_id
+  local fromSlot = movingItem.slot_index
+
+  if not InventoryAPI.IsInventoryAccessibleBySrc(src, fromInventory) then
+    warn('Rejected MoveItem: src ' .. src .. ' does not have access to source inventory ' .. tostring(fromInventory))
+    return res({ error = true, message = 'You do not have access to that inventory.' })
+  end
+
+  if not InventoryAPI.IsInventoryAccessibleBySrc(src, toInventory) then
+    warn('Rejected MoveItem: src ' .. src .. ' does not have access to target inventory ' .. tostring(toInventory))
+    return res({ error = true, message = 'You do not have access to that inventory.' })
+  end
+
+  if fromSlot == nil then
+    return res({ error = true, message = 'Item is not placed anywhere yet.' })
+  end
+
+  if tostring(fromInventory) == tostring(toInventory) and tonumber(fromSlot) == toSlot then
+    -- No-op drag back onto itself.
+    return res({
+      sourceItems = InventoryControllers.GetInventoryItems(fromInventory),
+      targetItems = InventoryControllers.GetInventoryItems(toInventory)
+    })
+  end
+
+  InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory, toSlot)
+
+  -- Only fire the cross-resource item-left/item-arrived events (e.g.
+  -- feather-weapons unequipping on ItemRemoved) when the item actually left
+  -- an inventory -- rearranging compartments within the same book isn't a
+  -- removal.
+  if tostring(fromInventory) ~= tostring(toInventory) then
+    TriggerEvent('feather-inventory:ItemRemoved', itemId, 1, fromInventory)
+    TriggerEvent('feather-inventory:ItemAdded', itemId, 1, toInventory)
+  end
+
+  res({
+    sourceItems = InventoryControllers.GetInventoryItems(fromInventory),
+    targetItems = InventoryControllers.GetInventoryItems(toInventory)
+  })
+end)
+
 -- (INV-11) Access-list management for owned/shared inventories (storage,
 -- saddlebags, job lockers, ...). Authorization (owner or admin) is checked
 -- inside each InventoryAPI function itself, re-derived from `src` -- these
@@ -118,6 +182,9 @@ Feather.RPC.Register('Feather:Inventory:GetCharacterInfoForDisplay', function(pa
     dollars = character.dollars,
     gold = character.gold,
     tokens = character.tokens,
-    id = character.id
+    id = character.id,
+    -- Steampunk ledger: the player book's subtitle is the character's name.
+    firstName = character.first_name,
+    lastName = character.last_name
   })
 end)

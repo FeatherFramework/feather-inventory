@@ -61,7 +61,7 @@ function InventoryControllers.InventoryItemCount(inventory, itemId)
 end
 
 function InventoryControllers.GetInventoryItemById(id)
-  local result = MySQL.query.await('SELECT `inventory_items`.`id`, `inventory_items`.`updated_at`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, JSON_OBJECTAGG(`item_metadata`.`key`, `item_metadata`.`value`) AS `item_metadata`, `inventory_items`.`inventory_id` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` LEFT JOIN `item_metadata` ON `item_metadata`.`inventory_items_id` = `inventory_items`.`id` WHERE `inventory_items`.`id`=? GROUP BY `inventory_items`.`id`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size` LIMIT 1;', { id })[1]
+  local result = MySQL.query.await('SELECT `inventory_items`.`id`, `inventory_items`.`updated_at`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, JSON_OBJECTAGG(`item_metadata`.`key`, `item_metadata`.`value`) AS `item_metadata`, `inventory_items`.`inventory_id` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` LEFT JOIN `item_metadata` ON `item_metadata`.`inventory_items_id` = `inventory_items`.`id` WHERE `inventory_items`.`id`=? GROUP BY `inventory_items`.`id`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size` LIMIT 1;', { id })[1]
 
   if result == nil then
     return false
@@ -93,7 +93,7 @@ function InventoryControllers.GetInventoryTotalWeight(inventory)
 end
 
 function InventoryControllers.GetInventoryItems(inventory)
-  local items = MySQL.query.await( 'SELECT `inventory_items`.`id`, `inventory_items`.`updated_at`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, JSON_OBJECTAGG(`item_metadata`.`key`, `item_metadata`.`value`) AS `item_metadata` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` LEFT JOIN `item_metadata` ON `item_metadata`.`inventory_items_id` = `inventory_items`.`id` WHERE `inventory_items`.`inventory_id` = ? GROUP BY `inventory_items`.`id`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`;', { inventory })
+  local items = MySQL.query.await( 'SELECT `inventory_items`.`id`, `inventory_items`.`updated_at`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, JSON_OBJECTAGG(`item_metadata`.`key`, `item_metadata`.`value`) AS `item_metadata` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` LEFT JOIN `item_metadata` ON `item_metadata`.`inventory_items_id` = `inventory_items`.`id` WHERE `inventory_items`.`inventory_id` = ? GROUP BY `inventory_items`.`id`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`;', { inventory })
   for key, value in pairs(items) do
     if value["item_metadata"] and value["item_metadata"] ~= nil then
       items[key]["item_metadata"] = json.decode(value["item_metadata"])
@@ -119,9 +119,72 @@ function InventoryControllers.GetInventoryTotalItemCounts(inventory)
 end
 
 
-function InventoryControllers.CreateInventoryItem(inventory, itemId)
-  return MySQL.query.await('INSERT INTO `inventory_items` (`inventory_id`, `item_id`) VALUES (?, ?) RETURNING *;',
-    { inventory, itemId })
+function InventoryControllers.CreateInventoryItem(inventory, itemId, slotIndex)
+  return MySQL.query.await('INSERT INTO `inventory_items` (`inventory_id`, `item_id`, `slot_index`) VALUES (?, ?, ?) RETURNING *;',
+    { inventory, itemId, slotIndex })
+end
+
+-- Steampunk ledger: a compartment already holding this item with room left
+-- under its stack limit -- new units join it instead of claiming a fresh
+-- slot, same "stack up to max_stack_size" behavior the client used to fake
+-- with lodash chunk/groupBy, now actually persisted.
+function InventoryControllers.GetJoinableSlot(inventory, itemId, maxStackSize)
+  local result = MySQL.query.await(
+    'SELECT `slot_index`, COUNT(*) AS `count` FROM `inventory_items` WHERE `inventory_id`=? AND `item_id`=? AND `slot_index` IS NOT NULL GROUP BY `slot_index` HAVING COUNT(*) < ? LIMIT 1;',
+    { inventory, itemId, maxStackSize })
+  if not result[1] then
+    return nil
+  end
+  return result[1].slot_index
+end
+
+-- First compartment index in [0, capacity) not occupied by any item at all.
+function InventoryControllers.GetFreeSlot(inventory, capacity)
+  local used = MySQL.query.await(
+    'SELECT DISTINCT `slot_index` FROM `inventory_items` WHERE `inventory_id`=? AND `slot_index` IS NOT NULL;',
+    { inventory })
+  local occupied = {}
+  for _, row in pairs(used) do
+    occupied[tonumber(row.slot_index)] = true
+  end
+  for i = 0, capacity - 1 do
+    if not occupied[i] then
+      return i
+    end
+  end
+  return nil
+end
+
+-- Every row sharing an (inventory, slot) pair -- a whole compartment's stack,
+-- since a slot can hold more than one unit of the same item.
+function InventoryControllers.GetItemsInSlot(inventory, slot)
+  return MySQL.query.await('SELECT `id` FROM `inventory_items` WHERE `inventory_id`=? AND `slot_index`=?;',
+    { inventory, slot })
+end
+
+-- Steampunk ledger drag-and-drop: moves every row in (fromInventory, fromSlot)
+-- to (toInventory, toSlot). If toSlot is already occupied, swaps -- the
+-- occupant's rows move to (fromInventory, fromSlot) instead of being
+-- displaced silently. Matches the design's "drop on empty moves, drop on
+-- occupied swaps," and moves the whole compartment's stack at once since
+-- stack splitting isn't part of this design.
+function InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory, toSlot)
+  local moving = InventoryControllers.GetItemsInSlot(fromInventory, fromSlot)
+  local occupant = InventoryControllers.GetItemsInSlot(toInventory, toSlot)
+
+  if #occupant > 0 then
+    for _, row in pairs(occupant) do
+      MySQL.query.await('UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=? WHERE `id`=?;',
+        { fromInventory, fromSlot, row.id })
+    end
+  end
+
+  for _, row in pairs(moving) do
+    MySQL.query.await('UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=? WHERE `id`=?;',
+      { toInventory, toSlot, row.id })
+  end
+
+  return #moving > 0
 end
 
 function InventoryControllers.GetMetadata(itemId)
@@ -242,7 +305,18 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
     if not existingItem or tostring(existingItem.inventory_id) ~= tostring(sourceInventory) then
       warn('MoveInventoryItems: skipping item ' .. tostring(id) .. ' -- does not belong to source inventory ' .. tostring(sourceInventory))
     else
-      MySQL.query.await('UPDATE `inventory_items` SET `inventory_id`=? WHERE `id`=?;', { targetInventory, id })
+      -- (Steampunk ledger) Carrying the item's old slot_index straight over
+      -- would silently collide with whatever the target inventory already
+      -- has sitting in that same slot -- give it a real compartment in the
+      -- destination the same way ItemsAPI.AddItem does (join a matching
+      -- under-full stack, else the first free slot).
+      local itemDefId = ItemControllers.GetItemByName(existingItem.name)
+      local targetSlot = InventoryControllers.GetJoinableSlot(targetInventory, itemDefId, existingItem.max_stack_size)
+      if targetSlot == nil then
+        targetSlot = InventoryControllers.GetFreeSlot(targetInventory, tonumber(Config.maxItemSlots) or 0)
+      end
+
+      MySQL.query.await('UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=? WHERE `id`=?;', { targetInventory, targetSlot, id })
 
       TriggerEvent('feather-inventory:ItemRemoved', id, 1, sourceInventory)
       TriggerEvent('feather-inventory:ItemAdded', id, 1, targetInventory)

@@ -63,15 +63,31 @@ function ItemsAPI.GrantItem(itemName, quantity, inventoryId)
     return { error = true, code = 'weight_limit', message = 'Inventory weight limit would be exceeded.' }
   end
 
+  -- Steampunk ledger: same slot-assignment as AddItem below -- join an
+  -- under-full stack of this item first, then roll into fresh free slots.
+  local maxStackSize = tonumber(definition.max_stack_size) or 1
+  local currentSlot = InventoryControllers.GetJoinableSlot(inventory, definition.id, maxStackSize)
+  local currentSlotCount = currentSlot ~= nil and #InventoryControllers.GetItemsInSlot(inventory, currentSlot) or 0
+
   local placeholders = {}
   local values = {}
   for index = 1, quantity do
-    placeholders[index] = '(?, ?)'
+    if currentSlot == nil or currentSlotCount >= maxStackSize then
+      currentSlot = InventoryControllers.GetFreeSlot(inventory, tonumber(Config.maxItemSlots) or 0)
+      currentSlotCount = 0
+      if currentSlot == nil then
+        return { error = true, code = 'inventory_full', message = 'Inventory has no available slots.' }
+      end
+    end
+
+    placeholders[index] = '(?, ?, ?)'
     values[#values + 1] = inventory
     values[#values + 1] = definition.id
+    values[#values + 1] = currentSlot
+    currentSlotCount = currentSlotCount + 1
   end
   local succeeded, insertId = pcall(MySQL.insert.await,
-    ('INSERT INTO inventory_items (inventory_id, item_id) VALUES %s'):format(table.concat(placeholders, ', ')), values)
+    ('INSERT INTO inventory_items (inventory_id, item_id, slot_index) VALUES %s'):format(table.concat(placeholders, ', ')), values)
   if not succeeded or insertId == nil then
     return { error = true, code = 'database_error', message = 'Items could not be granted.' }
   end
@@ -167,8 +183,27 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
     }
   end
 
+  -- Steampunk ledger: each granted unit needs a real compartment (slot_index),
+  -- not just a bare row. Join an existing under-full stack of this item
+  -- first; once that's full (or there wasn't one), roll into fresh free
+  -- slots for the rest. The max-quantity/slot checks above already confirm
+  -- there's room overall, so GetFreeSlot running out here would only mean a
+  -- race with another grant -- guarded rather than trusted.
+  local currentSlot = InventoryControllers.GetJoinableSlot(inventory, itemId, max_stack_size)
+  local currentSlotCount = currentSlot ~= nil and #InventoryControllers.GetItemsInSlot(inventory, currentSlot) or 0
+
   for count = 1, quantity do
-    local item = InventoryControllers.CreateInventoryItem(inventory, itemId)
+    if currentSlot == nil or currentSlotCount >= max_stack_size then
+      currentSlot = InventoryControllers.GetFreeSlot(inventory, tonumber(Config.maxItemSlots) or 0)
+      currentSlotCount = 0
+      if currentSlot == nil then
+        warn('AddItem: ran out of free slots granting ' .. itemName .. ' to inventory ' .. tostring(inventory))
+        break
+      end
+    end
+
+    local item = InventoryControllers.CreateInventoryItem(inventory, itemId, currentSlot)
+    currentSlotCount = currentSlotCount + 1
 
     if metadata ~= nil then
       for k, v in pairs(metadata) do
