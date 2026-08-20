@@ -39,10 +39,13 @@ Feather.RPC.Register("Feather:Inventory:GetGroundUID", function(params, res, src
 
     local groundInventoryId, groundInventoryUUID = InventoryAPI.GetCustomInventory('ground', params.id)
     if not groundInventoryId then
+        print(("[DEBUG-GROUND] GetGroundUID: no inventory row for ground.id=%s"):format(tostring(params.id)))
         return res(nil)
     end
 
     InventoryAPI.GrantTemporaryAccess(src, groundInventoryId, Config.Access.TemporaryGrantTTL)
+    print(("[DEBUG-GROUND] GetGroundUID: src=%s ground.id=%s inventory.id=%s inventory.uuid=%s -- grant issued"):format(
+        tostring(src), tostring(params.id), tostring(groundInventoryId), tostring(groundInventoryUUID)))
     return res(groundInventoryUUID)
 end)
 
