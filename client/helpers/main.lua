@@ -38,12 +38,21 @@ function GetPedInFront()
   return ped
 end
 
--- Maps a ped entity back to its owning player index (server-adjacent id),
--- if it's a player ped at all -- returns -1 for an NPC.
+-- Maps a ped entity back to its server id (the `source` every server-side
+-- RPC/callback actually expects), if it's a player ped at all -- returns
+-- -1 for an NPC.
+--
+-- `a` here is a client-side player INDEX (what GetPlayerPed/PlayerId deal
+-- in), not a server id -- those are two different numbering spaces. This
+-- used to return the raw index straight to the server, which then called
+-- Feather.Character.GetCharacter({ src = <that index> }) expecting a
+-- server id, resolving nobody and rejecting every give with "That player
+-- is not available." regardless of who was actually standing there.
+-- GetPlayerServerId converts the index into the server id.
 function GetPlayerFromPed(ped)
   for a = 0, 64 do
     if GetPlayerPed(a) == ped then
-      return a
+      return GetPlayerServerId(a)
     end
   end
   return -1
