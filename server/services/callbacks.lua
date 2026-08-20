@@ -56,13 +56,13 @@ Feather.RPC.Register('Feather:Inventory:GiveItem', function(params, res, src)
   local player = Feather.Character.GetCharacter({ src = src })
   local character = player and player.char
   if not character then
-    return res(false)
+    return res({ error = true, message = 'No character loaded.' })
   end
 
   local targetPlayer = Feather.Character.GetCharacter({ src = tonumber(target) })
   local targetCharacter = targetPlayer and targetPlayer.char
   if not targetCharacter then
-    return res(false)
+    return res({ error = true, message = 'That player is not available.' })
   end
 
   -- GetInventoryByCharacter returns (id, max_weight, ignore_item_limit,
@@ -73,7 +73,7 @@ Feather.RPC.Register('Feather:Inventory:GiveItem', function(params, res, src)
   local destinationInventoryId = InventoryControllers.GetInventoryByCharacter(targetCharacter.id)
 
   if not sourceInventoryId or not destinationInventoryId then
-    return res(false)
+    return res({ error = true, message = 'Inventory not available.' })
   end
 
   return res(InventoryControllers.MoveInventoryItems(sourceInventoryId, destinationInventoryId, { item }))
