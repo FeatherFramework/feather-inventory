@@ -214,6 +214,68 @@ InventoryAPI.InventoryCanHold = function(items, inventoryId)
 end
 
 ---
+-- Can Inventory Hold Items, by raw inventory.id
+--
+-- (Drop/give bugfix) InventoryCanHold's `inventoryId` only ever means
+-- "player source" (numeric) or "inventory UUID" (string) per its own
+-- convention -- it has no way to mean "this specific numeric inventory.id",
+-- which is exactly what MoveInventoryItems' targetInventory/sourceInventory
+-- always are (raw ids from GetInventoryByCharacter/RegisterInventory, not a
+-- player src). Calling InventoryCanHold with one of those numeric ids got
+-- silently misread as a player source, resolved to no character, and
+-- InventoryCanHold returned nil -- which MoveInventoryItems then treated as
+-- "target can't hold this," rejecting every single drop/give/transfer
+-- without ever actually checking capacity. This variant skips the
+-- src-vs-uuid guessing entirely and always resolves by raw id.
+--
+-- @param items Table of items and their quantity, same shape as InventoryCanHold
+-- @param inventoryId Raw inventory.id
+-- @return True if inventory can hold items, false if not
+--
+InventoryAPI.InventoryCanHoldById = function(items, inventoryId)
+  if type(items) ~= 'table' then
+    warn(
+      'Invalid items format. Must be a table of items and their quantity. { {item="apple", quantity=5}, {item="matches", quantity=10} }')
+    return nil
+  end
+
+  for _, v in pairs(items) do
+    if not v.item or tonumber(v.quantity) == nil or tonumber(v.quantity) < 0 then
+      warn(
+        'Invalid items format. Must be a table of items and their quantity. { {item="apple", quantity=5}, {item="matches", quantity=10} }')
+      return nil
+    end
+  end
+
+  local inventory, maxWeight, ignore_item_limit = InventoryControllers.GetInventoryById(inventoryId, 'id')
+  if not inventory then
+    warn('Invalid inventory ID.')
+    return nil
+  end
+
+  local weight = 0
+  for _, v in pairs(items) do
+    local itemId, maxQuantity, itemWeight = ItemControllers.GetItemByName(v.item)
+    if InventoryControllers.IsItemRestricted(inventory, itemId) then
+      return { status = false, message = 'Item is restricted.' }
+    end
+
+    if not Boolean[ignore_item_limit] then
+      if (InventoryControllers.InventoryItemCount(inventory, itemId) + v.quantity) > maxQuantity then
+        return { status = false, message = 'Max Quantity Exceeded.' }
+      end
+    end
+
+    weight = weight + itemWeight
+  end
+
+  if (weight + InventoryControllers.GetInventoryTotalWeight(inventory)) > (maxWeight or Config.maxWeight) then
+    return { status = false, message = 'Max Weight Exceeded.' }
+  end
+  return { status = true, message = '' }
+end
+
+---
 -- Open Inventory
 --
 -- Returns items in the specified inventories
@@ -224,11 +286,17 @@ end
 --
 InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
   local inventory, inventoryIgnoreLimits, otherInventory, otherInventoryIgnoreLimits, otherName = nil, nil, nil, nil, nil
+  -- (Ground pickup bugfix) Was `local character` scoped only to this
+  -- if-block -- every read of it below (the "Owned/shared inventory" branch
+  -- further down, e.g. picking a dropped item back up) hit an unset global
+  -- instead, crashing this whole RPC with "attempt to index a nil value
+  -- (global 'character')" and taking GetInventoryItems down with it.
+  local character
 
   -- Check to make sure inventoryId is a player source and not a string
   if tonumber(src) then
     local player = Feather.Character.GetCharacter({ src = src })
-    local character = player.char
+    character = player.char
 
     -- Check if the character is available
     if character == nil then

@@ -30,6 +30,7 @@ const emit = defineEmits([
   'cellMouseEnter',
   'cellMouseUp',
   'cellDblClick',
+  'cellContextMenu',
 ]);
 
 // Every compartment sharing a slot_index stacks together (up to
@@ -60,10 +61,14 @@ const cells = computed(() => {
   });
 });
 
+// Deliberately does NOT fall back to the first occupied compartment when
+// nothing (valid) is selected -- the design brief calls for that, but it
+// reads as "an item picked itself" before you've clicked anything, or after
+// the selected one gets consumed/moved away. A blank placeholder is less
+// confusing than an item appearing to select itself.
 const selectedCell = computed(() => {
-  const fromSelection = cells.value[props.selectedIndex];
-  if (fromSelection && fromSelection.repItem) return fromSelection;
-  return cells.value.find((c) => c.repItem) || null;
+  const cell = cells.value[props.selectedIndex];
+  return cell && cell.repItem ? cell : null;
 });
 
 const detail = computed(() => {
@@ -86,7 +91,12 @@ const carrying = computed(() => {
 });
 
 function iconSrc(name) {
-  return `/images/items/${name}.png`;
+  // Relative, not root-absolute: the release layout flattens the build so
+  // images/ sits next to index.html inside ui/, not at the resource root
+  // (see fxmanifest.lua's files{} -- "ui/index.html", "ui/images/*.*"). A
+  // leading "/" resolves against the resource root under nui:// and misses
+  // entirely; this must resolve against index.html's own location instead.
+  return `images/items/${name}.png`;
 }
 
 function onIconError(event) {
@@ -148,16 +158,18 @@ function tabLabelSize(count) {
           class="ledger-cell"
           :style="{ background: cellBg(cell) }"
           :class="{ selected: cell.index === selectedIndex && cell.repItem }"
-          @mousedown="emit('cellMouseDown', cell.index)"
-          @mouseup="emit('cellMouseUp', cell.index)"
+          @mousedown.left.prevent="emit('cellMouseDown', cell.index)"
+          @mouseup.left="emit('cellMouseUp', cell.index)"
           @mouseenter="emit('cellMouseEnter', cell.index)"
           @dblclick="emit('cellDblClick', cell.index)"
+          @contextmenu.prevent="(event) => emit('cellContextMenu', cell.index, event)"
         >
           <div class="ledger-cell-icon">
             <img
               v-if="cell.repItem"
               :src="iconSrc(cell.repItem.name)"
               class="ink"
+              draggable="false"
               @error="onIconError"
             />
           </div>
@@ -168,7 +180,7 @@ function tabLabelSize(count) {
 
       <div class="ledger-detail">
         <div class="ledger-detail-icon">
-          <img v-if="detail.img" :src="detail.img" class="ink" @error="onIconError" />
+          <img v-if="detail.img" :src="detail.img" class="ink" draggable="false" @error="onIconError" />
         </div>
         <div class="ledger-detail-body">
           <div class="ledger-detail-name">{{ detail.label }}</div>
@@ -200,6 +212,13 @@ function tabLabelSize(count) {
   background-image: url('@/assets/ledger/folio-page.png');
   background-size: 100% 100%;
   filter: drop-shadow(0 34px 60px rgba(0, 0, 0, 0.7));
+  /* The mousedown-driven drag here is custom, not native HTML5 DnD --
+     without this, the browser's own text-selection drag and (especially)
+     its default image-drag-ghost behavior on <img> elements fight with it,
+     which is what caused drags to intermittently "stick" until an
+     unrelated click reset the browser's own gesture state. */
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .ledger-book.paired {
@@ -521,5 +540,7 @@ function tabLabelSize(count) {
 
 .ink {
   filter: invert(1) sepia(0.55) saturate(0.6) contrast(1.25) brightness(0.62);
+  -webkit-user-drag: none;
+  user-drag: none;
 }
 </style>

@@ -3,8 +3,8 @@ import api from './api';
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 import '@/assets/tailwind.css';
 import LedgerBook from '@/components/LedgerBook.vue';
-import UsableModal from '@/components/UsableModal.vue';
-import DropItem from '@/components/DropItem.vue';
+import ContextMenu from '@/components/ContextMenu.vue';
+import ItemCountModal from '@/components/ItemCountModal.vue';
 
 const visible = ref(false);
 const devmode = ref(false);
@@ -37,10 +37,8 @@ const categoryOptions = computed(() => [
 // started in one book highlight valid drop targets in the other.
 const drag = ref(null); // { book: 'player' | 'other', slot, itemId }
 const hover = ref(null); // { book, slot }
-const showDropZone = ref(false);
-let dropZoneTimer = null;
 
-const usableItem = ref(null); // item passed to UsableModal, or null
+const contextMenu = ref(null); // { book, slot, x, y } | null
 
 function bookByKey(key) {
   return key === 'player' ? player : other;
@@ -104,24 +102,22 @@ const closeApp = () => {
   visible.value = false;
   drag.value = null;
   hover.value = null;
-  usableItem.value = null;
+  contextMenu.value = null;
+  quantityPrompt.value = null;
   api.post('Feather:Inventory:NuiCloseInventory', {}).catch((e) => console.log(e.message));
 };
 
 // --- Drag and drop -------------------------------------------------------
 
 function onCellMouseDown(bookKey, slotIndex) {
+  contextMenu.value = null;
+
   const book = bookByKey(bookKey);
   const cellHasItem = book.items.some((i) => i.slot_index === slotIndex);
   if (!cellHasItem) return;
 
   book.selectedIndex = slotIndex;
   drag.value = { book: bookKey, slot: slotIndex };
-
-  if (dropZoneTimer) clearTimeout(dropZoneTimer);
-  dropZoneTimer = setTimeout(() => {
-    showDropZone.value = true;
-  }, 100);
 }
 
 function onCellMouseEnter(bookKey, slotIndex) {
@@ -194,54 +190,130 @@ async function onCellMouseUp(bookKey, slotIndex) {
 function clearDrag() {
   drag.value = null;
   hover.value = null;
-  if (dropZoneTimer) clearTimeout(dropZoneTimer);
-  showDropZone.value = false;
 }
 
 function onGlobalMouseUp() {
-  // Released outside any compartment (and outside the drop zone, which
-  // stops its own mouseup event) -- a no-op drag per the design.
+  // Released outside any compartment -- a no-op drag per the design.
   if (drag.value) clearDrag();
 }
 
-// --- Ground drop -----------------------------------------------------------
+// --- Item use / give / drop ---------------------------------------------
 
-function onDropZoneRelease(event) {
-  event.stopPropagation();
-  const d = drag.value;
-  clearDrag();
-  if (!d) return;
-
-  const book = bookByKey(d.book);
-  const stack = book.items.filter((i) => i.slot_index === d.slot);
+// Double-click: immediate use, no confirmation -- only for items that are
+// actually usable, per your call. Non-usable items just stay selected
+// (mousedown already handled that).
+function onCellDblClick(bookKey, slotIndex) {
+  const book = bookByKey(bookKey);
+  const stack = book.items.filter((i) => i.slot_index === slotIndex);
   if (stack.length === 0) return;
+  const item = stack[0];
+  if (!item.usable) return;
 
+  api.post('Feather:Inventory:UseItem', { itemId: item.id, itemName: item.name }).catch((e) => console.log(e.message));
+}
+
+function onCellContextMenu(bookKey, slotIndex, event) {
+  const book = bookByKey(bookKey);
+  const cellHasItem = book.items.some((i) => i.slot_index === slotIndex);
+  if (!cellHasItem) {
+    contextMenu.value = null;
+    return;
+  }
+
+  drag.value = null;
+  hover.value = null;
+  book.selectedIndex = slotIndex;
+  contextMenu.value = { book: bookKey, slot: slotIndex, x: event.clientX, y: event.clientY };
+}
+
+function contextStack() {
+  const c = contextMenu.value;
+  if (!c) return { book: null, items: [] };
+  const book = bookByKey(c.book);
+  return { book, items: book.items.filter((i) => i.slot_index === c.slot) };
+}
+
+function onContextUse() {
+  const { items } = contextStack();
+  contextMenu.value = null;
+  if (items.length === 0) return;
+  const item = items[0];
+  api.post('Feather:Inventory:UseItem', { itemId: item.id, itemName: item.name }).catch((e) => console.log(e.message));
+}
+
+// Drop/Give prompt for a quantity first when the compartment holds more
+// than one unit -- a single item (or a non-stackable one, which can only
+// ever hold one) skips the modal and just acts, per your call.
+const quantityPrompt = ref(null); // { action: 'drop' | 'give', book, items, itemName, max } | null
+
+function onContextGive() {
+  const { items } = contextStack();
+  contextMenu.value = null;
+  if (items.length === 0) return;
+
+  if (items.length > 1) {
+    quantityPrompt.value = { action: 'give', book: null, items, itemName: items[0].display_name, max: items.length };
+    return;
+  }
+
+  performGive(items);
+}
+
+function onContextDrop() {
+  const { book, items } = contextStack();
+  contextMenu.value = null;
+  if (!book || items.length === 0) return;
+
+  if (items.length > 1) {
+    quantityPrompt.value = { action: 'drop', book, items, itemName: items[0].display_name, max: items.length };
+    return;
+  }
+
+  performDrop(book, items);
+}
+
+function onQuantityConfirm(quantity) {
+  const prompt = quantityPrompt.value;
+  quantityPrompt.value = null;
+  if (!prompt) return;
+
+  const chosen = prompt.items.slice(0, quantity);
+  if (prompt.action === 'drop') {
+    performDrop(prompt.book, chosen);
+  } else {
+    performGive(chosen);
+  }
+}
+
+function performDrop(book, items) {
   api
-    .post('Feather:Inventory:DropItems', { items: stack.map((i) => i.id) })
+    .post('Feather:Inventory:DropItems', { items: items.map((i) => i.id) })
     .then(({ data }) => {
-      if (data?.error) return;
+      if (data?.error) {
+        console.log('Drop rejected: ' + (data.message || 'unknown error'));
+        return;
+      }
       if (data?.inv?.sourceItems) book.items = data.inv.sourceItems;
     })
     .catch((e) => console.log(e.message));
 }
 
-// --- Item use / give ---------------------------------------------------
-
-function onCellDblClick(bookKey, slotIndex) {
-  const book = bookByKey(bookKey);
-  const stack = book.items.filter((i) => i.slot_index === slotIndex);
-  if (stack.length === 0) return;
-  usableItem.value = { key: stack[0].id, items: stack };
-}
-
-function onUsableAction({ item, action }) {
-  usableItem.value = null;
-  if (action === 'use') {
-    api.post('Feather:Inventory:UseItem', { itemId: item.id, itemName: item.name }).catch((e) => console.log(e.message));
-  } else if (action === 'give') {
-    api.post('Feather:Inventory:GiveItem', { item }).catch((e) => console.log(e.message));
+// Feather:Inventory:GiveItem only ever takes one item per call (it re-
+// resolves "whoever's standing in front of you" fresh each time on the Lua
+// side) -- giving several units of a stack is just that same call repeated
+// in order, not a new server-side batch path.
+async function performGive(items) {
+  for (const item of items) {
+    try {
+      await api.post('Feather:Inventory:GiveItem', { item });
+    } catch (e) {
+      console.log(e.message);
+      break;
+    }
   }
 }
+
+const contextCanUse = computed(() => !!contextStack().items[0]?.usable);
 </script>
 
 <template>
@@ -267,6 +339,7 @@ function onUsableAction({ item, action }) {
         @cell-mouse-enter="(i) => onCellMouseEnter('player', i)"
         @cell-mouse-up="(i) => onCellMouseUp('player', i)"
         @cell-dbl-click="(i) => onCellDblClick('player', i)"
+        @cell-context-menu="(i, e) => onCellContextMenu('player', i, e)"
       />
 
       <LedgerBook
@@ -287,20 +360,30 @@ function onUsableAction({ item, action }) {
         @cell-mouse-enter="(i) => onCellMouseEnter('other', i)"
         @cell-mouse-up="(i) => onCellMouseUp('other', i)"
         @cell-dbl-click="(i) => onCellDblClick('other', i)"
+        @cell-context-menu="(i, e) => onCellContextMenu('other', i, e)"
       />
     </div>
 
     <div v-if="hasOther" class="ledger-hint">Drag an entry from one book to the other to move it &bull; ESC closes both</div>
 
-    <div v-if="showDropZone" class="ledger-dropzone" @mouseup="onDropZoneRelease">
-      <DropItem />
-    </div>
+    <ContextMenu
+      v-if="contextMenu"
+      :x="contextMenu.x"
+      :y="contextMenu.y"
+      :can-use="contextCanUse"
+      @use="onContextUse"
+      @give="onContextGive"
+      @drop="onContextDrop"
+      @close="contextMenu = null"
+    />
 
-    <UsableModal
-      v-if="usableItem"
-      :active-item="usableItem"
-      @close="usableItem = null"
-      @item-action="onUsableAction"
+    <ItemCountModal
+      v-if="quantityPrompt"
+      :item-name="quantityPrompt.itemName"
+      :action-label="quantityPrompt.action === 'drop' ? 'Drop' : 'Give'"
+      :max="quantityPrompt.max"
+      @confirm="onQuantityConfirm"
+      @cancel="quantityPrompt = null"
     />
   </div>
 </template>
@@ -406,11 +489,4 @@ body {
   color: #f0e6d2;
 }
 
-.ledger-dropzone {
-  position: absolute;
-  bottom: 40px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 50;
-}
 </style>

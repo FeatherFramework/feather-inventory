@@ -279,7 +279,9 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
   end
 
   if #checkItems > 0 then
-    local canHold = InventoryAPI.InventoryCanHold(checkItems, targetInventory)
+    -- InventoryCanHold (not ById) would misread this raw inventory.id as a
+    -- player source and always reject -- see InventoryCanHoldById's comment.
+    local canHold = InventoryAPI.InventoryCanHoldById(checkItems, targetInventory)
     if not canHold or canHold.status == false then
       return {
         error = true,
