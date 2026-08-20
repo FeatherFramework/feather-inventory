@@ -534,6 +534,18 @@ ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z)
   local _, groundInventoryID = InventoryAPI.RegisterInventory('ground', groundID, 'Ground', nil, nil, nil, nil, true)
   local updateinv = InventoryControllers.MoveInventoryItems(inventoryId, groundInventoryID, items)
 
+  -- This always reported `error = false` even when MoveInventoryItems
+  -- itself rejected the move (e.g. capacity) -- the ground pile row would
+  -- exist but the item never actually left the source inventory, with no
+  -- error surfaced to the client to explain why.
+  if updateinv and updateinv.error then
+    return {
+      error = true,
+      message = updateinv.message,
+      inv = updateinv
+    }
+  end
+
   UpdateClientWithGroundLocations(-1)
 
   return {
