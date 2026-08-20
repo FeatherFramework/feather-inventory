@@ -247,16 +247,16 @@ function onContextUse() {
 const quantityPrompt = ref(null); // { action: 'drop' | 'give', book, items, itemName, max } | null
 
 function onContextGive() {
-  const { items } = contextStack();
+  const { book, items } = contextStack();
   contextMenu.value = null;
   if (items.length === 0) return;
 
   if (items.length > 1) {
-    quantityPrompt.value = { action: 'give', book: null, items, itemName: items[0].display_name, max: items.length };
+    quantityPrompt.value = { action: 'give', book, items, itemName: items[0].display_name, max: items.length };
     return;
   }
 
-  performGive(items);
+  performGive(book, items);
 }
 
 function onContextDrop() {
@@ -281,7 +281,7 @@ function onQuantityConfirm(quantity) {
   if (prompt.action === 'drop') {
     performDrop(prompt.book, chosen);
   } else {
-    performGive(chosen);
+    performGive(prompt.book, chosen);
   }
 }
 
@@ -302,10 +302,21 @@ function performDrop(book, items) {
 // resolves "whoever's standing in front of you" fresh each time on the Lua
 // side) -- giving several units of a stack is just that same call repeated
 // in order, not a new server-side batch path.
-async function performGive(items) {
+//
+// The response used to be checked for nothing but a network-level
+// rejection -- a clean { error, message } response (no player in front of
+// you, target too far, etc.) was silently ignored, so a failed give looked
+// like nothing happened at all. Now surfaced the same way performDrop
+// reports its rejections.
+async function performGive(book, items) {
   for (const item of items) {
     try {
-      await api.post('Feather:Inventory:GiveItem', { item });
+      const { data } = await api.post('Feather:Inventory:GiveItem', { item });
+      if (data?.error) {
+        console.log('Give rejected: ' + (data.message || 'unknown error'));
+        break;
+      }
+      if (book && data?.sourceItems) book.items = data.sourceItems;
     } catch (e) {
       console.log(e.message);
       break;
