@@ -54,3 +54,9 @@ end)
 RegisterNUICallback('Feather:Inventory:DropItems', function(args, cb)
   cb(DropItemsOnGround(args.items))
 end)
+
+RegisterNUICallback('Feather:Inventory:MoveItem', function(args, cb)
+  local res = Feather.RPC.CallAsync('Feather:Inventory:MoveItem', args)
+
+  cb(res)
+end)

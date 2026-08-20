@@ -1,428 +1,408 @@
-<template>
-  <Transition name="fade">
-    <div id="content" class="flex flex-col h-screen justify-center items-center" style="width: 100vw; height: 100vh;"
-      v-if="visible || devmode">
-      <div :class="`${globalOptions.target != 'player' ? 'global-background' : 'global-background-single'} px-4 relative mx-auto pt-10 bg-opacity-70 rounded-md`"
-        :style="`${globalOptions.target != 'player' ? 'width: 80vw;' : ''} height: 80vh;`">
-        <div :class="`absolute ${ globalOptions.target != 'player' ? 'right-6 top-6': 'right-8 top-4' } text-2xl text-white hover:text-red-500`" @click="closeApp">&times;</div>
-        <MenuUI :player-inventory="playerInventory" :other-iventory="otherInventory" :global-options="globalOptions"
-          :target="globalOptions.target" :player-display="playerDisplay" @transfer="transferItems"
-          @itemAction="handleItemAction" @dropped="handleDrop">
-        </MenuUI>
-        <div class="absolute top-4 left-1/2 transform -translate-x-1/2  z-50">
-          <Transition name="fade">
-            <div v-if="error.active" class="max-w-xs bg-red-500 text-sm text-white rounded-md shadow-lg px-10"
-              role="alert">
-              <div class="flex p-4">
-                {{ error.message }}
-              </div>
-            </div>
-          </Transition>
-        </div>
-      </div>
-    </div>
-  </Transition>
-</template>
-
 <script setup>
-import api from "./api";
-import { ref, onMounted, onUnmounted, reactive } from "vue";
-import "@/assets/tailwind.css";
-import _ from "lodash";
+import api from './api';
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
+import '@/assets/tailwind.css';
+import LedgerBook from '@/components/LedgerBook.vue';
+import UsableModal from '@/components/UsableModal.vue';
+import DropItem from '@/components/DropItem.vue';
 
-import MenuUI from "./views/MenuUI.vue";
-
-const devmode = ref(false);
 const visible = ref(false);
+const devmode = ref(false);
 
-const errorTimeout = ref(null)
-const error = reactive({
-  displayName: '',
-  active: false
-});
-
-const playerInventory = reactive({
-  displayName: '',
-  id: null,
-  items: []
-});
-
-const otherInventory = reactive({
-  displayName: '',
-  id: null,
-  items: []
-});
-
-const globalOptions = reactive({
-  maxWeight: 0,
-  maxItemSlots: 0,
-  categories: [],
-  target: ''
-});
-
-const playerDisplay = reactive({
-  dollars: '',
-  gold: '',
-  tokens: '',
-  id: 0
-})
-
-onMounted(() => {
-  window.addEventListener("message", onMessage);
-});
-
-onUnmounted(() => {
-  window.removeEventListener("message", onMessage);
-});
-
-const translateItems = (items) => {
-  let tempItems = _.map(items, (item) => {
-    return {
-      id: item.id,
-      name: item.name,
-      displayName: item.display_name,
-      description: item.description,
-      usable: item.usable,
-      weight: item.weight,
-      category: item.category_id,
-      maxQuantity: item.max_quantity,
-      maxStackSize: item.max_stack_size,
-      metadata: item.item_metadata,
-      updatedAt: item.updated_at
-    }
+function makeBook(footerLabel) {
+  return reactive({
+    title: '',
+    subtitle: '',
+    footerLabel,
+    capacity: 0,
+    inventoryId: null,
+    ignoreLimits: 0,
+    items: [],
+    activeCategoryId: null,
+    selectedIndex: -1,
   });
-
-  let groupedItems = _.groupBy(tempItems, (item) => item.name)
-  let outputItems = []
-
-  _.forEach(groupedItems, (itemGroup, key) => {
-    let sorted = _.sortBy(itemGroup, ['updatedAt'])
-
-    let chunked = _.chunk(sorted, itemGroup[0].maxStackSize)
-    outputItems = outputItems.concat(chunked)
-  });
-
-  return outputItems
 }
 
-const resetInventory = () => {
-  visible.value = false
-  playerInventory.displayName = ''
-  playerInventory.id = null
-  playerInventory.items = []
+const player = makeBook('CARRYING');
+const other = makeBook('STORED');
+const hasOther = computed(() => other.inventoryId !== null);
 
-  otherInventory.displayName = ''
-  otherInventory.id = null
-  otherInventory.items = []
+const rawCategories = ref([]);
+const categoryOptions = computed(() => [
+  { id: null, label: 'ALL' },
+  ...rawCategories.value.map((c) => ({ id: c.id, label: String(c.name).toUpperCase() })),
+]);
 
-  globalOptions.maxWeight = 0
-  globalOptions.maxItemSlots = 0
-  globalOptions.categories = []
-  globalOptions.target = ''
+// Single global drag pointer shared across both books -- lets a drag that
+// started in one book highlight valid drop targets in the other.
+const drag = ref(null); // { book: 'player' | 'other', slot, itemId }
+const hover = ref(null); // { book, slot }
+const showDropZone = ref(false);
+let dropZoneTimer = null;
 
-  playerDisplay.dollars = ''
-  playerDisplay.gold = ''
-  playerDisplay.tokens = ''
-  playerDisplay.id = 0
+const usableItem = ref(null); // item passed to UsableModal, or null
 
+function bookByKey(key) {
+  return key === 'player' ? player : other;
+}
+
+// Books are "paired" for drag purposes only when both are actually open --
+// matches the design's "source and destination must both be open" rule.
+function dragArmedFor(bookKey) {
+  return !!drag.value && (drag.value.book === bookKey || hasOther.value);
 }
 
 const onMessage = (event) => {
-  switch (event.data.type) {
-    case "toggleInventory":
-      let data = event.data;
+  const data = event.data;
+  if (data.type !== 'toggleInventory') return;
 
-      resetInventory()
+  visible.value = data.visible;
+  rawCategories.value = data.categories || [];
 
-      visible.value = data.visible;
+  player.title = 'PERSONAL EFFECTS';
+  player.subtitle = data.player?.characterName || '';
+  player.capacity = Number(data.maxSlots) || 0;
+  player.inventoryId = data.playerInventory;
+  player.ignoreLimits = data.playerIgnoreLimits || 0;
+  player.items = data.playerItems || [];
+  player.activeCategoryId = null;
+  player.selectedIndex = -1;
 
-      playerDisplay.id = data.player.id;
-      playerDisplay.gold = data.player.gold;
-      playerDisplay.dollars = data.player.dollars;
-      playerDisplay.tokens = data.player.tokens;
-
-      globalOptions.maxWeight = data.maxWeight;
-      globalOptions.maxItemSlots = data.maxSlots;
-      globalOptions.categories = data.categories;
-      globalOptions.target = data.target;
-
-      if (typeof data.playerItems !== "undefined" && data.playerItems !== null) {
-        playerInventory.name = "Inventory"
-        playerInventory.id = data.playerInventory
-        hydrateInventoryItems('player', data);
-      }
-
-      if (typeof data.otherItems !== "undefined" && data.otherItems !== null) {
-        otherInventory.name = data.otherName || "Storage"
-        otherInventory.id = data.otherInventory
-        hydrateInventoryItems('other', data);
-      }
-      break;
-    default:
-      break;
+  if (data.otherItems != null) {
+    other.title = String(data.otherName || 'STORAGE').toUpperCase();
+    other.subtitle = '';
+    other.capacity = Number(data.maxSlots) || 0;
+    other.inventoryId = data.otherInventory;
+    other.ignoreLimits = data.otherIgnoreLimits || 0;
+    other.items = data.otherItems;
+    other.activeCategoryId = null;
+    other.selectedIndex = -1;
+  } else {
+    other.inventoryId = null;
+    other.items = [];
   }
 };
 
-const hydrateInventoryItems = (location, data) => {
-  if (location == 'player') {
-    playerInventory.items = {}
-    playerInventory.items = translateItems(data.playerItems)
-  } else if (location == 'other') {
-    otherInventory.items = {}
-    otherInventory.items = translateItems(data.otherItems)
-  } else {
-    playerInventory.items = {}
-    playerInventory.items = translateItems(data.playerItems)
+onMounted(() => {
+  window.addEventListener('message', onMessage);
+  window.addEventListener('keydown', onKeydown);
+  window.addEventListener('mouseup', onGlobalMouseUp);
+});
 
-    otherInventory.items = {}
-    otherInventory.items = translateItems(data.otherItems)
-  }
-}
+onUnmounted(() => {
+  window.removeEventListener('message', onMessage);
+  window.removeEventListener('keydown', onKeydown);
+  window.removeEventListener('mouseup', onGlobalMouseUp);
+});
+
+const onKeydown = (event) => {
+  if (!visible.value) return;
+  if (event.code === 'Escape') closeApp();
+};
 
 const closeApp = () => {
   visible.value = false;
-  api
-    .post("Feather:Inventory:NuiCloseInventory", {
-      state: visible.value,
-    })
-    .catch((e) => {
-      console.log(e.message);
-    });
+  drag.value = null;
+  hover.value = null;
+  usableItem.value = null;
+  api.post('Feather:Inventory:NuiCloseInventory', {}).catch((e) => console.log(e.message));
 };
 
-const useItem = (item) => {
-  api.post("Feather:Inventory:UseItem", {
-    itemId: item.id,
-    itemName: item.name
-  })
-    .catch((e) => {
-      console.log(e.message);
-    });
+// --- Drag and drop -------------------------------------------------------
+
+function onCellMouseDown(bookKey, slotIndex) {
+  const book = bookByKey(bookKey);
+  const cellHasItem = book.items.some((i) => i.slot_index === slotIndex);
+  if (!cellHasItem) return;
+
+  book.selectedIndex = slotIndex;
+  drag.value = { book: bookKey, slot: slotIndex };
+
+  if (dropZoneTimer) clearTimeout(dropZoneTimer);
+  dropZoneTimer = setTimeout(() => {
+    showDropZone.value = true;
+  }, 100);
 }
 
-const showError = (message) => {
-  error.message = message
-  error.active = true
+function onCellMouseEnter(bookKey, slotIndex) {
+  if (!drag.value) return;
+  if (!dragArmedFor(bookKey)) return;
+  hover.value = { book: bookKey, slot: slotIndex };
+}
 
-  if (errorTimeout.value) {
-    clearTimeout(errorTimeout.value);
+async function onCellMouseUp(bookKey, slotIndex) {
+  const d = drag.value;
+  clearDrag();
+
+  if (!d) return;
+  if (!dragArmedFor(bookKey)) return;
+  if (d.book === bookKey && d.slot === slotIndex) return; // dropped back on itself
+
+  const fromBook = bookByKey(d.book);
+  const toBook = bookByKey(bookKey);
+  const movingStack = fromBook.items.filter((i) => i.slot_index === d.slot);
+  if (movingStack.length === 0) return;
+
+  const itemId = movingStack[0].id;
+
+  // Optimistic local swap/move so it feels instant; reconciled from the
+  // server response right after (or rolled back on error).
+  const occupying = toBook.items.filter((i) => i.slot_index === slotIndex);
+  for (const item of movingStack) item.slot_index = slotIndex;
+  for (const item of occupying) item.slot_index = d.slot;
+  if (d.book !== bookKey) {
+    fromBook.items = fromBook.items.filter((i) => !movingStack.includes(i));
+    toBook.items.push(...movingStack);
+    if (occupying.length) {
+      toBook.items = toBook.items.filter((i) => !occupying.includes(i));
+      fromBook.items.push(...occupying);
+    }
+  }
+  toBook.selectedIndex = slotIndex;
+
+  try {
+    const { data } = await api.post('Feather:Inventory:MoveItem', {
+      itemId,
+      toInventory: toBook.inventoryId,
+      toSlot: slotIndex,
+    });
+    if (data?.error) {
+      rollbackMove();
+      return;
+    }
+    if (data?.sourceItems) fromBook.items = data.sourceItems;
+    if (data?.targetItems) toBook.items = data.targetItems;
+  } catch (e) {
+    console.log(e.message);
+    rollbackMove();
   }
 
-  errorTimeout.value = setTimeout(() => {
-    error.message = ''
-    error.active = false
-  }, 3000)
-}
-
-const giveItem = (item) => {
-  api.post("Feather:Inventory:GiveItem", {
-    item: item
-  })
-    .then(({ data }) => {
-      if (data?.status == 'error') {
-        showError(data.message)
-      }
-    })
-    .catch((e) => {
-      console.log(e.message);
-    });
-}
-
-const handleDrop = (dropzoneid, items) => {
-  const shieldinv = document.querySelectorAll('.shieldinv');
-  shieldinv.forEach(shield => shield.style.display = 'block')
-
-  api.post("Feather:Inventory:DropItems", {
-    items: items
-  })
-    .then(({ data }) => {
-      if (data?.error == 'error') {
-        showError(data.message)
-      } else {
-
-        hydrateInventoryItems('both', {
-          playerItems: data.inv.sourceItems,
-          otherItems: data.inv.targetItems
-        });
-        const shieldinv = document.querySelectorAll('.shieldinv');
-        shieldinv.forEach(shield => shield.style.display = 'none')
-      }
-    })
-    .catch((e) => {
-      console.log(e.message);
-      const shieldinv = document.querySelectorAll('.shieldinv');
-        shieldinv.forEach(shield => shield.style.display = 'none')
-    });
-}
-
-const handleItemAction = (actionData) => {
-  switch (actionData.action) {
-    case 'use':
-      useItem(actionData.item);
-      break;
-    case 'give':
-      giveItem(actionData.item);
-      break;
+  function rollbackMove() {
+    for (const item of movingStack) item.slot_index = d.slot;
+    for (const item of occupying) item.slot_index = slotIndex;
   }
 }
 
-const transferItems = (dropzoneid, items) => {
-  //Disable the UI while transfering
-  const shieldinv = document.querySelectorAll('.shieldinv');
-  shieldinv.forEach(shield => shield.style.display = 'block')
-
-  let targetid = null
-  let sourceid = null
-
-  if (dropzoneid == `dropzone-left`) {
-    sourceid = otherInventory.id
-    targetid = playerInventory.id
-  } else {
-    sourceid = playerInventory.id
-    targetid = otherInventory.id
-  }
-
-  api.post("Feather:Inventory:UpdateInventory", {
-    sourceInventory: sourceid,
-    targetInventory: targetid,
-    items: items
-  })
-    .then(({ data }) => {
-      var outputItems = {}
-      if (dropzoneid == `dropzone-left`) {
-        outputItems = {
-          playerItems: data.targetItems,
-          otherItems: data.sourceItems
-        }
-      } else {
-        outputItems = {
-          playerItems: data.sourceItems,
-          otherItems: data.targetItems
-        }
-      }
-
-      hydrateInventoryItems('both', outputItems);
-      const shieldinv = document.querySelectorAll('.shieldinv');
-      shieldinv.forEach(shield => shield.style.display = 'none')
-    })
-    .catch((e) => {
-      const shieldinv = document.querySelectorAll('.shieldinv');
-      shieldinv.forEach(shield => shield.style.display = 'none')
-      console.log(e.message);
-    });
+function clearDrag() {
+  drag.value = null;
+  hover.value = null;
+  if (dropZoneTimer) clearTimeout(dropZoneTimer);
+  showDropZone.value = false;
 }
 
+function onGlobalMouseUp() {
+  // Released outside any compartment (and outside the drop zone, which
+  // stops its own mouseup event) -- a no-op drag per the design.
+  if (drag.value) clearDrag();
+}
+
+// --- Ground drop -----------------------------------------------------------
+
+function onDropZoneRelease(event) {
+  event.stopPropagation();
+  const d = drag.value;
+  clearDrag();
+  if (!d) return;
+
+  const book = bookByKey(d.book);
+  const stack = book.items.filter((i) => i.slot_index === d.slot);
+  if (stack.length === 0) return;
+
+  api
+    .post('Feather:Inventory:DropItems', { items: stack.map((i) => i.id) })
+    .then(({ data }) => {
+      if (data?.error) return;
+      if (data?.inv?.sourceItems) book.items = data.inv.sourceItems;
+    })
+    .catch((e) => console.log(e.message));
+}
+
+// --- Item use / give ---------------------------------------------------
+
+function onCellDblClick(bookKey, slotIndex) {
+  const book = bookByKey(bookKey);
+  const stack = book.items.filter((i) => i.slot_index === slotIndex);
+  if (stack.length === 0) return;
+  usableItem.value = { key: stack[0].id, items: stack };
+}
+
+function onUsableAction({ item, action }) {
+  usableItem.value = null;
+  if (action === 'use') {
+    api.post('Feather:Inventory:UseItem', { itemId: item.id, itemName: item.name }).catch((e) => console.log(e.message));
+  } else if (action === 'give') {
+    api.post('Feather:Inventory:GiveItem', { item }).catch((e) => console.log(e.message));
+  }
+}
 </script>
+
+<template>
+  <div v-if="visible || devmode" class="ledger-overlay">
+    <div class="ledger-vignette"></div>
+    <div class="ledger-close" @click="closeApp">&times;</div>
+
+    <div class="ledger-books" :class="{ paired: hasOther }">
+      <LedgerBook
+        title="PERSONAL EFFECTS"
+        :subtitle="player.subtitle"
+        footer-label="CARRYING"
+        :capacity="player.capacity"
+        :items="player.items"
+        :categories="categoryOptions"
+        v-model:active-category-id="player.activeCategoryId"
+        v-model:selected-index="player.selectedIndex"
+        :paired="hasOther"
+        :drag-slot="drag && drag.book === 'player' ? drag.slot : -1"
+        :drag-armed="dragArmedFor('player')"
+        :hover-slot="hover && hover.book === 'player' ? hover.slot : -1"
+        @cell-mouse-down="(i) => onCellMouseDown('player', i)"
+        @cell-mouse-enter="(i) => onCellMouseEnter('player', i)"
+        @cell-mouse-up="(i) => onCellMouseUp('player', i)"
+        @cell-dbl-click="(i) => onCellDblClick('player', i)"
+      />
+
+      <LedgerBook
+        v-if="hasOther"
+        :title="other.title"
+        :subtitle="other.subtitle"
+        footer-label="STORED"
+        :capacity="other.capacity"
+        :items="other.items"
+        :categories="categoryOptions"
+        v-model:active-category-id="other.activeCategoryId"
+        v-model:selected-index="other.selectedIndex"
+        paired
+        :drag-slot="drag && drag.book === 'other' ? drag.slot : -1"
+        :drag-armed="dragArmedFor('other')"
+        :hover-slot="hover && hover.book === 'other' ? hover.slot : -1"
+        @cell-mouse-down="(i) => onCellMouseDown('other', i)"
+        @cell-mouse-enter="(i) => onCellMouseEnter('other', i)"
+        @cell-mouse-up="(i) => onCellMouseUp('other', i)"
+        @cell-dbl-click="(i) => onCellDblClick('other', i)"
+      />
+    </div>
+
+    <div v-if="hasOther" class="ledger-hint">Drag an entry from one book to the other to move it &bull; ESC closes both</div>
+
+    <div v-if="showDropZone" class="ledger-dropzone" @mouseup="onDropZoneRelease">
+      <DropItem />
+    </div>
+
+    <UsableModal
+      v-if="usableItem"
+      :active-item="usableItem"
+      @close="usableItem = null"
+      @item-action="onUsableAction"
+    />
+  </div>
+</template>
 
 <style>
 @font-face {
-  font-family: rdrlino;
-  src: url(assets/fonts/rdrlino-regular.ttf);
+  font-family: 'Playfair Display';
+  src: url('@/assets/fonts/ledger/playfair-display-variable.woff2') format('woff2');
+  font-weight: 500 900;
+  font-display: swap;
 }
 
 @font-face {
-  font-family: chinarocks;
-  src: url(assets/fonts/chinese-rocks.ttf);
+  font-family: 'Old Standard TT';
+  src: url('@/assets/fonts/ledger/old-standard-tt-regular-400.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
 }
 
-.global-background-single {
-  background-image: url(./assets/background-single.png);
-  
-  background-repeat: no-repeat;
-  background-position: center;
-  background-size: 100% 100%;
+@font-face {
+  font-family: 'Old Standard TT';
+  src: url('@/assets/fonts/ledger/old-standard-tt-regular-700.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
 }
 
-.global-background {
-  background-image: url(./assets/background.png);
-  background-repeat: no-repeat;
-  background-position: center;
-  background-size: 100% 100%;
+@font-face {
+  font-family: 'Old Standard TT';
+  src: url('@/assets/fonts/ledger/old-standard-tt-italic-400.woff2') format('woff2');
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
 }
 
-.ink-background {
-  background-image: url(./assets/inkroller.png);
-  background-repeat: no-repeat;
-  background-position: center;
-  background-size: 100% 100%;
-}
-
-#content {
-  width: 60vw;
-  height: 70vh;
+body {
+  margin: 0;
+  overflow: hidden;
 }
 
 #app {
-  font-family: rdrlino;
   touch-action: manipulation;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-.rdrlino {
-  font-family: rdrlino !important;
+.ledger-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(18, 14, 10, 0.42);
+  /* Design is authored for 1920x1080 -- scale the whole overlay to fit any
+     viewport while keeping the book's proportions. */
+  --ledger-scale: min(calc(100vw / 1920), calc(100vh / 1080));
 }
 
-.chinarocks {
-  font-family: chinarocks !important;
-}
-
-::-webkit-scrollbar {
-  display: none;
-}
-
-.ghost {
-  pointer-events: none;
+.ledger-vignette {
   position: absolute;
-  opacity: 0;
-  z-index: 99999;
+  inset: 0;
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0) 26%, rgba(0, 0, 0, 0.38) 100%);
+  pointer-events: none;
 }
 
-.scale-enter-active,
-.scale-leave-active {
-  transition: transform 0.2s ease-in-out;
+.ledger-books {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: scale(var(--ledger-scale));
 }
 
-.scale-enter-from,
-.scale-leave-to {
-  transform: scale(0.0);
+.ledger-books.paired {
+  gap: 70px;
 }
 
-.fade-enter-active,
-.fade-leave-active {
-  transition: opacity 0.1s ease-in-out;
+.ledger-hint {
+  position: absolute;
+  bottom: calc(52px * var(--ledger-scale, 1));
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-family: 'Old Standard TT', serif;
+  font-size: 16px;
+  font-style: italic;
+  color: #cbb894;
+  pointer-events: none;
 }
 
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
+.ledger-close {
+  position: absolute;
+  top: 24px;
+  right: 32px;
+  font-size: 28px;
+  color: #cbb894;
+  cursor: pointer;
+  z-index: 10;
 }
 
-.slide-left-enter-active {
-  transition: all 0.1s ease-in-out;
+.ledger-close:hover {
+  color: #f0e6d2;
 }
 
-.slide-left-leave-active {
-  transition: all 0.1s ease-in-out;
-}
-
-.slide-left-enter-from,
-.slide-left-leave-to {
-  transform: translateX(-20px);
-  z-index: -999;
-}
-
-.slide-right-enter-active {
-  transition: all 0.1s ease-in-out;
-}
-
-.slide-right-leave-active {
-  transition: all 0.1s ease-in-out;
-}
-
-.slide-right-enter-from,
-.slide-right-leave-to {
-  transform: translateX(20px);
-  z-index: -999;
+.ledger-dropzone {
+  position: absolute;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
 }
 </style>
