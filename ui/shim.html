@@ -6,7 +6,14 @@
     <title>Dev Shim</title>
   </head>
   <body>
-    <iframe src="http://localhost:8080" style="position:absolute; top:0; left:0; width: 100vw; height: 100vh; margin: 0; padding: 0" id="shimapp" frameBorder="0"></iframe>
+    <!--
+      Manual dev-only shim: point feather-inventory/fxmanifest.lua's ui_page
+      at this file (instead of ui/index.html) and run `pnpm dev` in ui/ to
+      iterate against the live Vite dev server. Swap ui_page back to
+      ui/index.html before shipping -- this file is not wired into the
+      build automatically.
+    -->
+    <iframe src="http://localhost:5173" style="position:absolute; top:0; left:0; width: 100vw; height: 100vh; margin: 0; padding: 0" id="shimapp" frameBorder="0"></iframe>
     <script>
       window.addEventListener("message", function (event) {
         let iframe = document.getElementById("shimapp").contentWindow;
