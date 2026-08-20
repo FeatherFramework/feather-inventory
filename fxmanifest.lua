@@ -6,7 +6,7 @@ lua54 "yes"
 description 'The Inventory API for the Feather Framework'
 author 'BCC Scripts'
 name 'feather-inventory'
-version '0.1.6'
+version '0.1.7'
 
 github_version_check 'true'
 github_version_type 'release'
@@ -41,7 +41,7 @@ ui_page {
 files {
   "ui/index.html",
   "ui/assets/*.*",
-  "ui/images/*.*"
+  "ui/images/items/*.*"
 }
 
 dependencies {

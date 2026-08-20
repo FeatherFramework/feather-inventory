@@ -217,8 +217,14 @@ function InventoryControllers.DeleteInventoryItems(inventory, itemId, quantity)
   MySQL.query.await(query, { inventory, itemId })
 end
 
+-- (Drop bugfix) inventory_blacklist has no `id` column at all -- its
+-- primary key is the composite (inventory_id, item_id) -- so this query
+-- always errored outright ("Unknown column 'id' in 'SELECT'"). Masked until
+-- now because every caller reached this through InventoryCanHold, which
+-- always rejected one step earlier for an unrelated reason (see
+-- InventoryCanHoldById's comment) and never actually got this far.
 function InventoryControllers.IsItemRestricted(inventory, itemId)
-  local result = MySQL.query.await("SELECT id FROM `inventory_blacklist` WHERE `inventory_id`=? AND `item_id`=?",
+  local result = MySQL.query.await("SELECT `inventory_id` FROM `inventory_blacklist` WHERE `inventory_id`=? AND `item_id`=?",
     { inventory, itemId })
   if not result[1] then
     return false
