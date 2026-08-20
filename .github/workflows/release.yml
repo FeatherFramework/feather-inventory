@@ -43,7 +43,7 @@ jobs:
         with:
           repo_token: "${{ secrets.GITHUB_TOKEN }}"
           automatic_release_tag: "${{ steps.package-version.outputs.current-version}}"
-          prerelease: false
+          prerelease: true
           title: "Release ${{ steps.package-version.outputs.current-version}}"
           files: |
             feather-inventory.zip
