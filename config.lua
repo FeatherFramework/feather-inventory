@@ -8,9 +8,15 @@ Config = {}
 Config.DevMode = false
 
 -- Opens player inventory
-Config.hotkey = "B"
+Config.hotkey = "I"
 
-Config.maxItemSlots = 41          -- maximum inventory slots (last slot is your last action key)
+-- (Steampunk ledger) The book art is a fixed 574x983 asset calibrated for
+-- an exact 5x5 grid -- unlike the old panel UI, this design has no room to
+-- grow past that without either scrolling (not part of the design) or
+-- shrinking every compartment (breaks the "pixel for pixel" fidelity the
+-- handoff calls for). 25 is no longer just a display preference, it's the
+-- book's real physical capacity now.
+Config.maxItemSlots = 25          -- maximum inventory slots
 -- Ground/Dropped item settings
 Config.Dropped = {
     GroupingRadius = 10,

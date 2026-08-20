@@ -163,8 +163,26 @@ Feather.RPC.Register('Feather:Inventory:ListAccess', function(params, res, src)
   res(InventoryAPI.ListInventoryAccess(src, params.inventoryId))
 end)
 
+-- (Debug gate) "Uncategorized" is where an item ends up when nobody's
+-- assigned it a real category yet -- useful for a server owner to notice
+-- and go fix in the DB, not something a player needs a tab for. Hidden
+-- from the returned list unless Config.DevMode is on; items in it still
+-- show up under ALL either way (filtering there is by category_id, not by
+-- whether a tab exists for it), so nothing is actually hidden from play,
+-- just from the tab row.
 Feather.RPC.Register('Feather:Inventory:GetCategories', function(params, res, src)
-  res(CategoryControllers.GetCategories())
+  local categories = CategoryControllers.GetCategories()
+  if Config.DevMode then
+    return res(categories)
+  end
+
+  local filtered = {}
+  for _, category in pairs(categories) do
+    if string.lower(category.name or '') ~= 'uncategorized' then
+      table.insert(filtered, category)
+    end
+  end
+  res(filtered)
 end)
 
 Feather.RPC.Register('Feather:Inventory:GetCharacterInfoForDisplay', function(params, res, src)

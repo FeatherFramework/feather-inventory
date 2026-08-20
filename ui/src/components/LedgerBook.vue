@@ -323,12 +323,18 @@ function tabLabelSize(count) {
   margin-top: 10px;
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  grid-auto-rows: 95px;
+  /* Fixed 5 rows, not auto-rows -- the book art is a fixed-size asset
+     calibrated for exactly 25 compartments (see Config.maxItemSlots).
+     Pinning the row count here means a misconfigured capacity overflows
+     rather than silently stretching the grid and crushing the detail
+     box/carrying line below it out of the layout. */
+  grid-template-rows: repeat(5, 95px);
+  overflow: hidden;
   gap: 0;
 }
 
 .paired .ledger-grid {
-  grid-auto-rows: 86px;
+  grid-template-rows: repeat(5, 86px);
 }
 
 .ledger-cell {

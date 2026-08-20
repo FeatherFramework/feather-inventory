@@ -132,11 +132,19 @@ function onCellMouseEnter(bookKey, slotIndex) {
 
 async function onCellMouseUp(bookKey, slotIndex) {
   const d = drag.value;
+  if (!d) {
+    clearDrag();
+    return;
+  }
+  // Resolve validity from the saved pointer `d` before clearDrag() nulls
+  // the shared drag state out from under it -- checking dragArmedFor()
+  // *after* clearing always read "no drag in progress" and silently
+  // dropped every move.
+  const armed = d.book === bookKey || hasOther.value;
+  const droppedOnSelf = d.book === bookKey && d.slot === slotIndex;
   clearDrag();
 
-  if (!d) return;
-  if (!dragArmedFor(bookKey)) return;
-  if (d.book === bookKey && d.slot === slotIndex) return; // dropped back on itself
+  if (!armed || droppedOnSelf) return;
 
   const fromBook = bookByKey(d.book);
   const toBook = bookByKey(bookKey);
