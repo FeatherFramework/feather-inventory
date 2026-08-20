@@ -43,9 +43,10 @@ Feather.RPC.Register("Feather:Inventory:GetGroundUID", function(params, res, src
         return res(nil)
     end
 
-    InventoryAPI.GrantTemporaryAccess(src, groundInventoryId, Config.Access.TemporaryGrantTTL)
-    print(("[DEBUG-GROUND] GetGroundUID: src=%s ground.id=%s inventory.id=%s inventory.uuid=%s -- grant issued"):format(
-        tostring(src), tostring(params.id), tostring(groundInventoryId), tostring(groundInventoryUUID)))
+    -- (Public-access simplification) Ground inventories are `is_public = true`,
+    -- and IsAuthorizedForOwnedInventory now grants access on that flag alone --
+    -- the proximity check above is the only gate that actually matters here.
+    -- No temporary grant needed for the caller to open what this returns.
     return res(groundInventoryUUID)
 end)
 

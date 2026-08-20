@@ -329,7 +329,21 @@ function IsAuthorizedForOwnedInventory(src, callerCharacterId, inventoryId)
         return true
     end
 
-    if isPublic and hasTemp then
+    -- (Public-access simplification) `is_public` used to still require a
+    -- short-lived temp grant on top -- meaningful for a resource that wants
+    -- to disclose one specific inventory to one specific player for a
+    -- moment, but ground piles have no privacy concern at all: there's
+    -- nothing to gate beyond "were you near it," which GetGroundUID already
+    -- checks server-side before a client can even learn the UUID at all.
+    -- Public now means public -- no additional expiring grant required.
+    if isPublic then
+        return true
+    end
+
+    -- Kept for non-public disclosed-UUID cases a future resource might
+    -- still want (see InventoryAPI.GrantTemporaryAccess's doc comment) --
+    -- just no longer required for is_public=true inventories specifically.
+    if hasTemp then
         return true
     end
 
