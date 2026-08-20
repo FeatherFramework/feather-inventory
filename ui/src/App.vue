@@ -4,6 +4,7 @@ import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 import '@/assets/tailwind.css';
 import LedgerBook from '@/components/LedgerBook.vue';
 import ContextMenu from '@/components/ContextMenu.vue';
+import ItemCountModal from '@/components/ItemCountModal.vue';
 
 const visible = ref(false);
 const devmode = ref(false);
@@ -102,6 +103,7 @@ const closeApp = () => {
   drag.value = null;
   hover.value = null;
   contextMenu.value = null;
+  quantityPrompt.value = null;
   api.post('Feather:Inventory:NuiCloseInventory', {}).catch((e) => console.log(e.message));
 };
 
@@ -239,11 +241,22 @@ function onContextUse() {
   api.post('Feather:Inventory:UseItem', { itemId: item.id, itemName: item.name }).catch((e) => console.log(e.message));
 }
 
+// Drop/Give prompt for a quantity first when the compartment holds more
+// than one unit -- a single item (or a non-stackable one, which can only
+// ever hold one) skips the modal and just acts, per your call.
+const quantityPrompt = ref(null); // { action: 'drop' | 'give', book, items, itemName, max } | null
+
 function onContextGive() {
   const { items } = contextStack();
   contextMenu.value = null;
   if (items.length === 0) return;
-  api.post('Feather:Inventory:GiveItem', { item: items[0] }).catch((e) => console.log(e.message));
+
+  if (items.length > 1) {
+    quantityPrompt.value = { action: 'give', book: null, items, itemName: items[0].display_name, max: items.length };
+    return;
+  }
+
+  performGive(items);
 }
 
 function onContextDrop() {
@@ -251,6 +264,28 @@ function onContextDrop() {
   contextMenu.value = null;
   if (!book || items.length === 0) return;
 
+  if (items.length > 1) {
+    quantityPrompt.value = { action: 'drop', book, items, itemName: items[0].display_name, max: items.length };
+    return;
+  }
+
+  performDrop(book, items);
+}
+
+function onQuantityConfirm(quantity) {
+  const prompt = quantityPrompt.value;
+  quantityPrompt.value = null;
+  if (!prompt) return;
+
+  const chosen = prompt.items.slice(0, quantity);
+  if (prompt.action === 'drop') {
+    performDrop(prompt.book, chosen);
+  } else {
+    performGive(chosen);
+  }
+}
+
+function performDrop(book, items) {
   api
     .post('Feather:Inventory:DropItems', { items: items.map((i) => i.id) })
     .then(({ data }) => {
@@ -261,6 +296,21 @@ function onContextDrop() {
       if (data?.inv?.sourceItems) book.items = data.inv.sourceItems;
     })
     .catch((e) => console.log(e.message));
+}
+
+// Feather:Inventory:GiveItem only ever takes one item per call (it re-
+// resolves "whoever's standing in front of you" fresh each time on the Lua
+// side) -- giving several units of a stack is just that same call repeated
+// in order, not a new server-side batch path.
+async function performGive(items) {
+  for (const item of items) {
+    try {
+      await api.post('Feather:Inventory:GiveItem', { item });
+    } catch (e) {
+      console.log(e.message);
+      break;
+    }
+  }
 }
 
 const contextCanUse = computed(() => !!contextStack().items[0]?.usable);
@@ -325,6 +375,15 @@ const contextCanUse = computed(() => !!contextStack().items[0]?.usable);
       @give="onContextGive"
       @drop="onContextDrop"
       @close="contextMenu = null"
+    />
+
+    <ItemCountModal
+      v-if="quantityPrompt"
+      :item-name="quantityPrompt.itemName"
+      :action-label="quantityPrompt.action === 'drop' ? 'Drop' : 'Give'"
+      :max="quantityPrompt.max"
+      @confirm="onQuantityConfirm"
+      @cancel="quantityPrompt = null"
     />
   </div>
 </template>
