@@ -20,6 +20,10 @@ if type(Config.Dropped.PromptViewDistance) ~= 'number' or Config.Dropped.PromptV
   error('Your max drop view distance must be a number greater than 1.')
 end
 
+if type(Config.Dropped.LoadDistance) ~= 'number' or Config.Dropped.LoadDistance < Config.Dropped.PromptViewDistance then
+  error('Config.Dropped.LoadDistance must be a number greater than or equal to PromptViewDistance.')
+end
+
 if not Config.Dropped.Item then
   Config.Dropped.Item = 'p_dis_strongboxsm01x'
 end

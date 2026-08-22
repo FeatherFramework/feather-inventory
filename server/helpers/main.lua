@@ -26,3 +26,15 @@ Boolean = {
 function TableContains(haystack, needle)
   return haystack[needle] ~= nil
 end
+
+-- (§10.1 debug cleanup) Replaces the scattered raw print("[DEBUG-GROUND] ...")
+-- calls that were left in inventory_access.lua/inventory.lua/ground.lua from
+-- building the robbery/ACL rewrite -- same idea as those, but gated behind
+-- Config.Debug (default false) instead of always printing to the server
+-- console, and using a consistent tag rather than a hardcoded one.
+function DebugPrint(tag, fmt, ...)
+  if not Config.Debug then
+    return
+  end
+  print(('[%s] %s'):format(tag, fmt:format(...)))
+end

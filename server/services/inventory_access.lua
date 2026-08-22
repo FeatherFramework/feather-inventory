@@ -112,6 +112,24 @@ function IsWithinRobberyDistance(src, targetSrc)
     return IsWithinDistance(x1, y1, z1, x2, y2, z2, Config.Access.RobberyDistance)
 end
 
+---
+-- Is Within Give Distance
+--
+-- Same shape as IsWithinRobberyDistance -- see its comment for the
+-- server-cached-position caveat -- bound to Config.Access.GiveDistance
+-- instead. Used by GiveItem (server/services/callbacks.lua), which
+-- previously had no server-side distance check at all.
+--
+-- @param src Caller's player source
+-- @param targetSrc Target player's source
+-- @return True if within Config.Access.GiveDistance
+--
+function IsWithinGiveDistance(src, targetSrc)
+    local x1, y1, z1 = GetCharacterPosition(src)
+    local x2, y2, z2 = GetCharacterPosition(targetSrc)
+    return IsWithinDistance(x1, y1, z1, x2, y2, z2, Config.Access.GiveDistance)
+end
+
 ------------------------------------------------------------------
 -- Owned/shared inventory ACL (storage, saddlebags, job lockers, ...)
 ------------------------------------------------------------------
@@ -289,12 +307,14 @@ InventoryAPI.HasTemporaryAccess = function(src, inventoryId)
     local grants = TemporaryGrants[tostring(src)]
     local expiresAt = grants and grants[tostring(inventoryId)]
     local now = GetGameTimer()
-    local keys = {}
-    if grants then
-        for k in pairs(grants) do table.insert(keys, k) end
+    if Config.Debug then
+        local keys = {}
+        if grants then
+            for k in pairs(grants) do table.insert(keys, k) end
+        end
+        DebugPrint('DEBUG-ACCESS', 'HasTemporaryAccess: src=%s inventoryId=%s expiresAt=%s now=%s grantKeysForSrc=[%s]',
+            tostring(src), tostring(inventoryId), tostring(expiresAt), tostring(now), table.concat(keys, ', '))
     end
-    print(("[DEBUG-GROUND] HasTemporaryAccess: src=%s inventoryId=%s expiresAt=%s now=%s grantKeysForSrc=[%s]"):format(
-        tostring(src), tostring(inventoryId), tostring(expiresAt), tostring(now), table.concat(keys, ', ')))
     return expiresAt ~= nil and expiresAt > now
 end
 
@@ -318,8 +338,8 @@ function IsAuthorizedForOwnedInventory(src, callerCharacterId, inventoryId)
     local ownerCharacterId, isPublic = InventoryAPI.GetInventoryOwnerAndVisibility(inventoryId)
     local hasGrant = InventoryAPI.HasInventoryAccessGrant(callerCharacterId, inventoryId)
     local hasTemp = InventoryAPI.HasTemporaryAccess(src, inventoryId)
-    print(("[DEBUG-GROUND] IsAuthorizedForOwnedInventory: src=%s callerCharacterId=%s inventoryId=%s owner=%s isPublic=%s hasAccessGrant=%s hasTemporaryAccess=%s"):format(
-        tostring(src), tostring(callerCharacterId), tostring(inventoryId), tostring(ownerCharacterId), tostring(isPublic), tostring(hasGrant), tostring(hasTemp)))
+    DebugPrint('DEBUG-ACCESS', 'IsAuthorizedForOwnedInventory: src=%s callerCharacterId=%s inventoryId=%s owner=%s isPublic=%s hasAccessGrant=%s hasTemporaryAccess=%s',
+        tostring(src), tostring(callerCharacterId), tostring(inventoryId), tostring(ownerCharacterId), tostring(isPublic), tostring(hasGrant), tostring(hasTemp))
 
     if ownerCharacterId and callerCharacterId and tostring(ownerCharacterId) == tostring(callerCharacterId) then
         return true

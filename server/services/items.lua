@@ -102,8 +102,8 @@ function ItemsAPI.GrantItem(itemName, quantity, inventoryId)
 end
 
 -- Grants `quantity` of `itemName` to an inventory, enforcing per-item max
--- quantity/stack-size limits (weight is not yet implemented, see
--- config.lua). Fires feather-inventory:ItemAdded once per unit granted.
+-- quantity/stack-size and weight limits. Fires feather-inventory:ItemAdded
+-- once per unit granted.
 ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   quantity = tonumber(quantity)
   if not quantity or quantity < 1 or quantity % 1 ~= 0 then
@@ -114,7 +114,7 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
     }
   end
 
-  local itemId, max_quantity, _, max_stack_size = ItemControllers.GetItemByName(itemName)
+  local itemId, max_quantity, item_weight, max_stack_size = ItemControllers.GetItemByName(itemName)
   if not itemId then
     warn('Invalid itemName. Please make sure it is in the items table in your database.')
     return {
@@ -122,8 +122,6 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
       message = "Invalid itemName. Please make sure it is in the items table in your database."
     }
   end
-
-  --TODO: Add a check for weight (this will be supported at another date. V1 will only support slots and stack sizes)
 
   local ItemCount = ItemsAPI.GetItemCount(itemName, inventoryId)
 
@@ -140,7 +138,7 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   end
 
 
-  local inventory, _, ignore_item_limit = nil, nil, nil
+  local inventory, maxWeight, ignore_item_limit = nil, nil, nil
   if tonumber(inventoryId) then
     local player = Feather.Character.GetCharacter({ src = inventoryId })
     local character = player and player.char
@@ -149,10 +147,10 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
     -- "Invalid inventory ID" rejection below, same as every other resolved-
     -- character branch in this file.
     if character then
-      inventory, _, ignore_item_limit, _ = InventoryControllers.GetInventoryByCharacter(character.id)
+      inventory, maxWeight, ignore_item_limit, _ = InventoryControllers.GetInventoryByCharacter(character.id)
     end
   else
-    inventory, _, ignore_item_limit, _ = InventoryControllers.GetInventoryById(inventoryId)
+    inventory, maxWeight, ignore_item_limit, _ = InventoryControllers.GetInventoryById(inventoryId)
   end
 
   -- Check to make sure this doesnt exceed the max quantity for this item.
@@ -170,6 +168,21 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
     return {
       error = true,
       message = "Invalid inventory ID."
+    }
+  end
+
+  -- (§10.1 weight parity) GrantItem and every transfer path
+  -- (MoveInventoryItems, via InventoryCanHoldById) already enforce this --
+  -- AddItem was the one remaining grant path that could push an inventory
+  -- over its weight limit. Unconditional like the other two, not gated by
+  -- ignore_item_limit (that flag only exempts quantity/stack-size limits,
+  -- see InventoryCanHold/InventoryCanHoldById above it).
+  local addedWeight = (tonumber(item_weight) or 0) * quantity
+  local weightLimit = tonumber(maxWeight) or tonumber(Config.maxWeight)
+  if weightLimit and InventoryControllers.GetInventoryTotalWeight(inventory) + addedWeight > weightLimit then
+    return {
+      error = true,
+      message = "Max Weight Exceeded."
     }
   end
 

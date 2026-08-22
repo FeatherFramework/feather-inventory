@@ -349,10 +349,10 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
       -- resource disclosed this UUID after checking its own proximity/
       -- consent condition.
       local uuidId, _, uuidIgnoreLimits, uuidName = InventoryControllers.GetInventoryById(otherInventoryId)
-      print(("[DEBUG-GROUND] InternalOpenInventory: src=%s requested uuid=%s -- resolved inventory.id=%s"):format(
-        tostring(src), tostring(otherInventoryId), tostring(uuidId)))
+      DebugPrint('DEBUG-GROUND', 'InternalOpenInventory: src=%s requested uuid=%s -- resolved inventory.id=%s',
+        tostring(src), tostring(otherInventoryId), tostring(uuidId))
       if uuidId and not IsAuthorizedForOwnedInventory(src, character.id, uuidId) then
-        print(("[DEBUG-GROUND] InternalOpenInventory: src=%s DENIED for inventory.id=%s"):format(tostring(src), tostring(uuidId)))
+        DebugPrint('DEBUG-GROUND', 'InternalOpenInventory: src=%s DENIED for inventory.id=%s', tostring(src), tostring(uuidId))
         Feather.Notify.RightNotify(src, 'You do not have access to this inventory.', 3000)
       elseif uuidId then
         resolvedId, resolvedIgnoreLimits, resolvedName = uuidId, uuidIgnoreLimits, uuidName
