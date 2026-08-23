@@ -69,11 +69,17 @@ Note: `config.lua`'s current comment on `Config.maxItemSlots` ("25 is no longer 
 
 ## 6. Residual issues found in the current code (not yet tracked elsewhere)
 
-**Found 2026-08-21, partially fixed 2026-08-21:** `Feather:Inventory:MoveItem` (the ledger's drag-and-drop RPC, `server/services/callbacks.lua`) called `InventoryControllers.MoveSlotItems` directly — raw `UPDATE inventory_items` statements with no weight/capacity check — while every other movement path (`UpdateInventory`, `GiveItem`, `DropItemsOnGround`) routes through `MoveInventoryItems` → `InventoryCanHoldById` first.
+**Found 2026-08-21, partially fixed 2026-08-21, fully closed 2026-08-23:** `Feather:Inventory:MoveItem` (the ledger's drag-and-drop RPC, `server/services/callbacks.lua`) called `InventoryControllers.MoveSlotItems` directly — raw `UPDATE inventory_items` statements with no weight/capacity check — while every other movement path (`UpdateInventory`, `GiveItem`, `DropItemsOnGround`) routes through `MoveInventoryItems` → `InventoryCanHoldById` first.
 
-Resolved for the common case: dragging an item into an **empty** slot of a different inventory now calls `InventoryCanHoldById` before the move, same as every other path, rejecting (with a notify) if the destination can't hold it. This closes the wide-open case — any drag onto free space in another inventory previously had zero enforcement.
+The 2026-08-21 pass could only close the empty-destination half, by reusing `InventoryCanHoldById`. The occupied-slot swap was left deliberately open because that helper is addition-only: its "add this on top of the inventory's current total" model double-counts the stack simultaneously leaving `fromInventory` to make room for the swap, and bolting it onto swaps would have produced *false rejections* rather than merely weak ones.
 
-**Deliberately left open:** dragging onto an **occupied** slot in a *different* inventory (a swap) is still unchecked. `InventoryCanHoldById`'s "add this on top of the inventory's current total" math would double-count the item simultaneously leaving `fromInventory` to make room for the swap — correctly validating a swap needs a net-delta calculation (post-swap totals on both sides: `fromInventory` loses the moving stack's weight but gains the occupant's, and vice versa for `toInventory`), not a bolt-on reuse of a helper built for pure additions. Scoped down deliberately rather than shipping subtly-wrong swap math under time pressure — see the comment at the fix site in `callbacks.lua`. Narrower exposure than the empty-slot case (requires the attacker to specifically target an already-occupied slot in someone else's inventory), but still real and worth closing properly in a future session with more room to get the net-delta math right and test it.
+**Now closed.** `InventoryAPI.EvaluateSlotMove` (`server/services/inventory.lua`) replaces it with real net-delta math — `(current − leaving) + arriving` — evaluated for **both** inventories. Three things fell out of doing it properly:
+
+- The **swap's return leg was entirely unchecked**, and that was the more serious half. Even the empty-slot fix only ever validated the destination; nothing verified that what came *back* to the source inventory was affordable to it. A near-full inventory could receive an arbitrarily heavy occupant stack.
+- Slot capacity is deliberately *not* re-checked here, unlike a grant: `MoveItem` targets one specific compartment index already bounds-checked against capacity, so no new compartment is ever claimed beyond the one named. Weight, per-item quantity, and the blacklist are the real constraints.
+- The empty-destination case is no longer special-cased at all — it is the degenerate "nothing is leaving" form of the same calculation, so both paths now share one code path instead of two divergent ones.
+
+Verified by simulation across four cases: a swap at the weight limit trading equal weights is correctly **allowed** (the addition-only model wrongly rejected it), a genuinely overloading swap is rejected on the destination side, a swap whose return leg overloads the source is rejected on the source side (previously allowed), and an empty destination degrades to the pure-addition result.
 
 **Found 2026-08-23, fixed 2026-08-23: the resource carried four mutually-inconsistent definitions of "full".** Surfaced by a reported bug — an apple with `max_quantity=100` and `max_stack_size=20` refused the 21st apple in the whole inventory. Root cause was not one bug but a systematic conflation of *stack size* (a per-compartment placement property) with *quantity limit* (an inventory-wide acceptance limit), plus two independent arithmetic errors:
 
@@ -131,7 +137,7 @@ This is deliberately a first-class section, not an appendix to the weapons work.
 ### 10.1 Finish what's already started
 
 - ~~**Unify the capacity model (§6).**~~ **Done.** One `EvaluateInventoryAcceptance` is now the only definition of "can this inventory accept N of this", replacing four inconsistent ones. Fixes the reported "can't hold more than 20 apples" bug at its root rather than at the one call site that surfaced it.
-- ~~**`MoveItem` weight/capacity bypass (§6).**~~ **Partially fixed** — empty-destination-slot case closed; occupied-slot swap across inventories deliberately still open, see §6 for why.
+- ~~**`MoveItem` weight/capacity bypass (§6).**~~ **Done.** Both halves closed — `EvaluateSlotMove`'s net-delta math covers the occupied-slot swap and subsumes the empty-slot case, and it also closed the swap's return leg, which no version of this check had ever validated.
 - **Unblock the robbery system.** As §6 describes, this is entirely inventory-side complete and blocked on one `feather-core` capability (`Feather.Character.HasStatus`). Raising this with the `feather-core` owner is higher-value than almost anything else in this plan — a fully-built feature sitting inert is the most wasteful possible state for it to be in.
 - ~~**`AddItem` weight parity.**~~ **Done.**
 - ~~**`GiveItem` distance check.**~~ **Done.**
@@ -237,7 +243,7 @@ Two tracks. The `INV-W*` track matches `DEPENDENCY_SUPPORT_PLAN.md` §4.5 exactl
 - [x] `GrantItem` now respects the per-inventory blacklist (was skipped entirely)
 - [x] `AddItem` no longer reports success on a partial grant
 - [x] `MoveItem` weight/capacity bypass fixed for empty-destination-slot case (§6, found 2026-08-21)
-- [ ] `MoveItem` swap-into-occupied-slot-across-inventories still needs net-delta capacity math (§6)
+- [x] `MoveItem` swap-into-occupied-slot-across-inventories closed via `EvaluateSlotMove`'s net-delta math (§6, 2026-08-23) — also closed the previously-unvalidated return leg
 - [ ] Robbery system unblocked (cross-resource ask filed with `feather-core`)
 - [x] `AddItem` weight check added
 - [x] `GiveItem` server-side distance check added

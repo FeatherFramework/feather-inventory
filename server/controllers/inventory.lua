@@ -172,6 +172,27 @@ function InventoryControllers.GetItemStackCounts(inventory, itemId)
     { inventory, itemId })
 end
 
+-- (Swap capacity math) What one compartment actually holds, grouped by item
+-- definition: name, unit count, and the per-unit weight/quantity limit needed
+-- to reason about moving the whole compartment somewhere else. GetItemsInSlot
+-- returns bare row ids, which is enough to *move* a stack but not enough to
+-- decide whether the destination can afford it.
+--
+-- Grouped rather than assumed single-item: a compartment holds one item type
+-- by construction (GetJoinableSlot only ever joins matching items), but
+-- nothing in the schema enforces that, and a mixed slot should be costed
+-- correctly rather than silently mis-costed off its first row.
+function InventoryControllers.GetSlotItemBreakdown(inventory, slot)
+  return MySQL.query.await([[
+    SELECT `items`.`id` AS `item_id`, `items`.`name`, `items`.`weight`,
+           `items`.`max_quantity`, COUNT(*) AS `count`
+    FROM `inventory_items`
+    INNER JOIN `items` ON `items`.`id` = `inventory_items`.`item_id`
+    WHERE `inventory_items`.`inventory_id`=? AND `inventory_items`.`slot_index`=?
+    GROUP BY `items`.`id`, `items`.`name`, `items`.`weight`, `items`.`max_quantity`;
+  ]], { inventory, slot })
+end
+
 -- (Capacity model) Number of distinct compartments in use, regardless of what
 -- or how much is in them. Note this counts *slots*, not units -- an inventory
 -- holding 20 apples in one compartment occupies 1 slot, not 20. Conflating

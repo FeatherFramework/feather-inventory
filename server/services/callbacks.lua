@@ -156,33 +156,26 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
     })
   end
 
-  -- (§6/§10.1 MoveItem weight/capacity bypass) Every other movement path
-  -- (UpdateInventory, GiveItem, DropItemsOnGround) enforces capacity/weight/
-  -- restricted-item limits via MoveInventoryItems -> InventoryCanHoldById
-  -- (INV-14); this drag-and-drop path never did. Only the empty-destination
-  -- case is checked here -- a swap into an already-occupied slot in a
-  -- *different* inventory is deliberately left unchecked for now.
-  -- InventoryCanHoldById's "add this on top of the inventory's current
-  -- total" math would double-count the item that's simultaneously leaving
-  -- fromInventory to make room for the swap; doing that correctly needs a
-  -- net-delta calculation (post-swap totals on both sides), not a bolt-on
-  -- reuse of a helper built for pure additions. Scoped down deliberately --
-  -- see MASTER_PLAN.md §6/§10.1 -- rather than shipping subtly-wrong swap
-  -- math under time pressure. The empty-slot case is also the wide-open,
-  -- high-frequency one: any drag onto free space in another inventory
-  -- previously had zero enforcement at all.
-  if tostring(fromInventory) ~= tostring(toInventory) then
-    local occupantRows = InventoryControllers.GetItemsInSlot(toInventory, toSlot)
-    if #occupantRows == 0 then
-      local movingRows = InventoryControllers.GetItemsInSlot(fromInventory, fromSlot)
-      local canHoldTarget = InventoryAPI.InventoryCanHoldById({ { item = movingItem.name, quantity = #movingRows } }, toInventory)
-      if not canHoldTarget or canHoldTarget.status == false then
-        local rejectMessage = (canHoldTarget and canHoldTarget.message) or 'Target inventory cannot hold this item.'
-        warn('Rejected MoveItem: src ' .. src .. ' -- target inventory ' .. tostring(toInventory) .. ' cannot hold item ' .. tostring(movingItem.name))
-        Feather.Notify.RightNotify(src, rejectMessage, 3000)
-        return res({ error = true, message = rejectMessage })
-      end
-    end
+  -- (§6/§10.1 MoveItem weight/capacity bypass -- now closed for both cases)
+  -- Every other movement path (UpdateInventory, GiveItem, DropItemsOnGround)
+  -- enforces weight/quantity/restricted-item limits via MoveInventoryItems ->
+  -- InventoryCanHoldById (INV-14); this drag-and-drop path never did.
+  --
+  -- The first pass could only close the empty-destination half, because it
+  -- reused InventoryCanHoldById -- an addition-only check, which double-counts
+  -- the stack simultaneously leaving fromInventory to make room for a swap.
+  -- EvaluateSlotMove replaces it with real net-delta math evaluated on both
+  -- inventories ((current - leaving) + arriving), which closes the swap case
+  -- and subsumes the empty-slot one as the degenerate "nothing is leaving"
+  -- form of the same calculation.
+  local canMove = InventoryAPI.EvaluateSlotMove(fromInventory, fromSlot, toInventory, toSlot)
+  if not canMove or canMove.status == false then
+    local rejectMessage = (canMove and canMove.message) or 'Target inventory cannot hold this item.'
+    warn('Rejected MoveItem: src ' .. src .. ' -- ' .. tostring(rejectMessage) ..
+      ' (from inventory ' .. tostring(fromInventory) .. ' slot ' .. tostring(fromSlot) ..
+      ' to inventory ' .. tostring(toInventory) .. ' slot ' .. tostring(toSlot) .. ')')
+    Feather.Notify.RightNotify(src, rejectMessage, 3000)
+    return res({ error = true, message = rejectMessage })
   end
 
   InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory, toSlot)

@@ -275,6 +275,122 @@ end
 InventoryAPI.EvaluateInventoryAcceptance = EvaluateInventoryAcceptance
 
 ---
+-- Evaluate one side of a slot move: `inventory` gives up `leaving` and
+-- receives `arriving`, both as GetSlotItemBreakdown rows.
+--
+-- The net-delta part is the whole point. Checking `arriving` alone against
+-- the inventory's current totals double-counts, because the items in
+-- `leaving` are vacating that same inventory in the same operation -- an
+-- inventory at its weight limit can always accept a swap for something no
+-- heavier, but an addition-only check rejects it.
+--
+-- @return { status = boolean, code = string?, message = string }
+--
+local function EvaluateSlotMoveSide(inventory, maxWeight, ignoreItemLimit, arriving, leaving)
+  local ignoreLimits = Boolean[ignoreItemLimit] == true
+
+  local leavingCountByItem = {}
+  local leavingWeight = 0
+  for _, row in pairs(leaving) do
+    local count = tonumber(row.count) or 0
+    local key = tostring(row.item_id)
+    leavingCountByItem[key] = (leavingCountByItem[key] or 0) + count
+    leavingWeight = leavingWeight + ((tonumber(row.weight) or 0) * count)
+  end
+
+  local arrivingWeight = 0
+  for _, row in pairs(arriving) do
+    local count = tonumber(row.count) or 0
+
+    if InventoryControllers.IsItemRestricted(inventory, row.item_id) then
+      return { status = false, code = 'item_restricted', message = 'Item is restricted.' }
+    end
+
+    if not ignoreLimits then
+      -- Subtract any units of this same item that are leaving in this
+      -- operation before adding what's arriving -- swapping one stack of
+      -- apples for another must not read as doubling the apple count.
+      local current = InventoryControllers.InventoryItemCount(inventory, row.item_id)
+      local alsoLeaving = leavingCountByItem[tostring(row.item_id)] or 0
+      if (current - alsoLeaving + count) > (tonumber(row.max_quantity) or 0) then
+        return { status = false, code = 'item_limit', message = 'Max Quantity Exceeded.' }
+      end
+    end
+
+    arrivingWeight = arrivingWeight + ((tonumber(row.weight) or 0) * count)
+  end
+
+  local weightLimit = tonumber(maxWeight) or tonumber(Config.maxWeight)
+  if weightLimit then
+    local projected = InventoryControllers.GetInventoryTotalWeight(inventory) - leavingWeight + arrivingWeight
+    if projected > weightLimit then
+      return { status = false, code = 'weight_limit', message = 'Max Weight Exceeded.' }
+    end
+  end
+
+  return { status = true, message = '' }
+end
+
+---
+-- Evaluate Slot Move
+--
+-- (§6 MoveItem bypass, second half) Whether the ledger's drag-and-drop may
+-- move the whole compartment at (fromInventory, fromSlot) to
+-- (toInventory, toSlot), swapping with whatever is already there.
+--
+-- Handles both the empty-destination and swap cases through the same
+-- net-delta math, which is what made the swap case tractable at all. The
+-- previous fix could only close the empty-slot half: it reused
+-- InventoryCanHoldById, whose "add this on top of the current total" model
+-- double-counts the stack simultaneously leaving to make room for the swap,
+-- so the occupied case was left deliberately unchecked rather than shipped
+-- with wrong math. Expressing both sides as (current - leaving + arriving)
+-- makes the empty case fall out for free -- it is just a move whose
+-- `leaving` side happens to be empty.
+--
+-- Slot *capacity* is deliberately not re-checked here: unlike a grant,
+-- this targets one specific compartment index that the caller has already
+-- bounds-checked against capacity, so no new compartment is ever claimed
+-- beyond the one named. Weight, per-item quantity, and the blacklist are
+-- the real constraints, and each is evaluated for both inventories --
+-- an item leaving A for B has to be affordable to B *and* whatever comes
+-- back has to be affordable to A.
+--
+-- @param fromInventory Raw inventory.id the stack currently lives in
+-- @param fromSlot Its compartment index
+-- @param toInventory Raw inventory.id being moved into
+-- @param toSlot Destination compartment index
+-- @return { status = boolean, code = string?, message = string }
+--
+InventoryAPI.EvaluateSlotMove = function(fromInventory, fromSlot, toInventory, toSlot)
+  -- Same-inventory rearrangement changes nothing about what that inventory
+  -- holds in total -- no weight, quantity, or restriction can differ.
+  if tostring(fromInventory) == tostring(toInventory) then
+    return { status = true, message = '' }
+  end
+
+  local fromId, fromMaxWeight, fromIgnoreLimit = InventoryControllers.GetInventoryById(fromInventory, 'id')
+  local toId, toMaxWeight, toIgnoreLimit = InventoryControllers.GetInventoryById(toInventory, 'id')
+  if not fromId or not toId then
+    warn('Invalid inventory ID.')
+    return { status = false, code = 'invalid_inventory', message = 'Inventory does not exist.' }
+  end
+
+  local moving = InventoryControllers.GetSlotItemBreakdown(fromInventory, fromSlot)
+  local occupant = InventoryControllers.GetSlotItemBreakdown(toInventory, toSlot)
+
+  local destination = EvaluateSlotMoveSide(toInventory, toMaxWeight, toIgnoreLimit, moving, occupant)
+  if destination.status == false then
+    return destination
+  end
+
+  -- The swap's return leg. Skipping this is how an occupied-slot swap could
+  -- push the *source* inventory over its own limits with the occupant it
+  -- receives back, even when the destination side was perfectly fine.
+  return EvaluateSlotMoveSide(fromInventory, fromMaxWeight, fromIgnoreLimit, occupant, moving)
+end
+
+---
 -- Can Inventory Hold items
 --
 --
