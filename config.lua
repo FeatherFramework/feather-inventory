@@ -47,7 +47,19 @@ Config.Dropped = {
 }
 
 
-Config.maxWeight = 120000         -- Default inventory weight limit in grams (120 kg).
+-- Default inventory weight limit, in POUNDS. Overridable per inventory via
+-- RegisterInventory's maxWeight parameter (`inventory.max_weight`).
+--
+-- Was 120000, documented as grams -- but the ledger has always rendered this
+-- line with an "lb." suffix, so the two never agreed, and 120000 of anything
+-- meant the limit was unreachable in practice. Pounds is the unit that
+-- actually gets displayed, and 125 lb is a defensible load for a person on
+-- foot in 1901.
+--
+-- NOTE: `items.weight` is an INTEGER column, so the smallest expressible
+-- weight is 1 lb. That sets the granularity of everything below -- there is
+-- no half-pound item without a schema change.
+Config.maxWeight = 125
 -- Config.hotbarLimit = 6
 
 -- (INV-11/INV-12/INV-23) Access control for opening an inventory that isn't
