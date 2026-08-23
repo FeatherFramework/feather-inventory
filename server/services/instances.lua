@@ -141,9 +141,9 @@ function InstancesAPI.ReadMetadata(instanceId)
 
     local document
     if row.metadata ~= nil and row.metadata ~= '' then
-        local decoded, err = pcall(json.decode, row.metadata)
-        if decoded and type(err) == 'table' then
-            document = err
+        local parsed, decoded = pcall(json.decode, row.metadata)
+        if parsed and type(decoded) == 'table' then
+            document = decoded
         else
             -- A row whose JSON will not parse is a real problem, but refusing
             -- to read it would strand the instance entirely. Report it and
@@ -373,7 +373,7 @@ function InstancesAPI.GetCapabilities()
             metadataRevision = true,    -- INV-W1: compare-and-set
             instanceReadModel = true,   -- INV-W1: normalized reads
             resultEnvelope = true,      -- INV-W1: shared { ok, value|error }
-            transactions = false,       -- INV-W2
+            transactions = true,        -- INV-W2: optimistic, revision-guarded
             movementGuards = false,     -- INV-W3
             postCommitEvents = false,   -- INV-W3
         }

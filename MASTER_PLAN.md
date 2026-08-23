@@ -247,10 +247,16 @@ Two tracks. The `INV-W*` track matches `DEPENDENCY_SUPPORT_PLAN.md` §4.5 exactl
 
 Also migrated `condition` (§10.3) onto the document, so it inherits compare-and-set — two callers wearing the same item concurrently can no longer clobber one another, which the previous one-key-at-a-time flat write allowed.
 
-### `INV-W2` — Transactions and concurrency
-- Implement `Inventory.Transaction(context, fn)` with deterministic multi-item row locking and revision-based compare-and-set.
-- Route capacity/slot/quantity/metadata/movement changes through one commit path.
-- **Exit gate:** simultaneous updates to one item yield one commit and one explicit conflict.
+### `INV-W2` — Transactions and concurrency — **DONE 2026-08-23**
+
+**A constraint reshaped this phase, and it is worth stating before the outcome.** `oxmysql` exposes `MySQL.transaction.await(queries) -> boolean`: an *array* of statements, atomic, returning only success/failure. There is no interactive transaction — no way to hold one connection open, `SELECT ... FOR UPDATE`, run Lua against the result, and write inside that same transaction. **The plan's literal "deterministic multi-item row locking" is therefore not achievable against this dependency**, and implementing something called a lock that does not lock would be worse than not having one. This is exactly the `oxmysql` capability validation `DEPENDENCY_SUPPORT_PLAN` §12 asks for, resolved: *row locking is unavailable; optimistic concurrency is*.
+
+- ~~Implement `Inventory.Transaction(context, fn)`.~~ Read → validate → commit, where the read phase records each instance's `metadata_revision`, the validate phase is pure Lua with no side effects, and the commit phase submits one atomic batch. Retries the whole closure on conflict (bounded at 3) — re-reading is the point, since the caller's decision was made against state that has since moved.
+- **The guard is the load-bearing piece.** A CAS `UPDATE ... WHERE revision = ?` that matches nothing does *not* error — it affects zero rows — and the batch API reports no per-statement affected counts, so a stale write would commit silently beside its siblings and leave partial state. The commit batch is therefore led by a guard statement that re-checks every recorded revision and deliberately provokes `ER_SUBQUERY_NO_1_ROW` when any has moved, aborting the batch.
+- ~~Add idempotency records.~~ Bounded in-memory cache (500 entries, 60s TTL). Not a table: the record only needs to outlive a request's retry window, and persisting it would mean schema plus cleanup for something worthless after a restart. Bounded deliberately — an unbounded cache keyed by caller-supplied strings is a memory-exhaustion vector.
+- **Exit gate — verified against MariaDB 12.3, not asserted:** two transactions both read revision 0; the first committed and advanced it; the second's guard raised `ERROR 1242` and **its write did not land**. One commit, one explicit conflict.
+
+**Honest limitation:** this is optimistic, not pessimistic. Contending transactions do not queue — one wins and the other is told `CONFLICT`. That satisfies the exit gate and is safe, but it is not a lock, and callers with long validate phases will see more conflicts than a locking implementation would. Closing that properly needs either an `oxmysql` interactive-transaction capability or a stored routine, neither of which exists today.
 
 ### `INV-W3` — Movement guards and events
 - Add the pre-move/destroy guard registry and the structured post-commit event set.

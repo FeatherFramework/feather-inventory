@@ -6,6 +6,9 @@ function StartAPI()
   -- (INV-W1) Item-instance contract layer -- instance_mode, versioned
   -- metadata documents, normalized reads, capability query.
   inventoryServerAPI.Instances = InstancesAPI
+  -- (INV-W2) Transaction runner. Also surfaced as Inventory.Transaction,
+  -- the interface name DEPENDENCY_SUPPORT_PLAN §4.4 specifies.
+  inventoryServerAPI.Transaction = TransactionAPI.Transaction
 
   exports('initiate', function()
     return inventoryServerAPI
