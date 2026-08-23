@@ -50,6 +50,12 @@ end
 -- Config default -- same shape as GetInventoryCapacity above. Needed by the
 -- client payload because the ledger's carrying line was rendering
 -- "<weight> / <capacity> lb.", comparing total weight against the SLOT count.
+--
+-- A stored value of 0 means NO WEIGHT LIMIT, and is returned as-is. NULL
+-- cannot carry that meaning because it already means "use the Config
+-- default". Ground piles register as 0: nothing is doing the carrying, so
+-- weight is meaningless for a heap on the floor, while slot and per-item
+-- quantity limits still apply to it.
 function InventoryControllers.GetInventoryWeightLimit(inventory)
   local result = MySQL.query.await('SELECT `max_weight` FROM `inventory` WHERE `id`=? LIMIT 1;', { inventory })[1]
   local configured = result and tonumber(result.max_weight)

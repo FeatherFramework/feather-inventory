@@ -117,10 +117,20 @@ InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItem
 
   -- Inventory exists. Check Max Weight and Ignore Item Limits. Return Inventory UUID
   if inventory ~= nil and inventory[1] then
-    -- Max Weight and ignore items Update Check
-    if (tonumber(inventory[1].max_weight) and tonumber(inventory[1].max_weight) ~= maxWeight) or Boolean[inventory[1].ignore_item_limit] ~= ignoreItemLimits then
-      query = 'UPDATE `inventory` SET `max_weight`=?, `ignore_item_limit`=? WHERE `' .. foreignKey .. '`=?'
-      MySQL.query.await(query, { tonumber(inventory[1].max_weight), ignoreItemLimits, id })
+    -- (Re-register update bug) This previously wrote `inventory[1].max_weight`
+    -- -- the value already in the database -- rather than the `maxWeight`
+    -- argument, so re-registering an inventory could never actually change
+    -- its weight limit; the UPDATE set the column to itself. Rewritten to
+    -- write the passed value, and only when one was explicitly passed, which
+    -- matches the ownerCharacterId/isPublic/maxSlots rule below: omitting an
+    -- argument must not silently reset a stored setting.
+    if maxWeight ~= nil then
+      MySQL.query.await('UPDATE `inventory` SET `max_weight`=? WHERE `id`=?;',
+        { tonumber(maxWeight), inventory[1].id })
+    end
+    if ignoreItemLimits ~= nil then
+      MySQL.query.await('UPDATE `inventory` SET `ignore_item_limit`=? WHERE `id`=?;',
+        { ignoreItemLimits and 1 or 0, inventory[1].id })
     end
 
     if restrictedItems then
@@ -275,8 +285,13 @@ local function EvaluateInventoryAcceptance(inventory, maxWeight, ignoreItemLimit
     addedWeight = addedWeight + ((tonumber(itemWeight) or 0) * quantity)
   end
 
+  -- A limit of 0 means "no weight limit" -- see GetInventoryWeightLimit.
+  -- Used by ground piles: a heap on the floor has nothing doing the
+  -- carrying, so weight is meaningless there, while slot and per-item
+  -- quantity limits still apply.
   local weightLimit = tonumber(maxWeight) or tonumber(Config.maxWeight)
-  if weightLimit and (InventoryControllers.GetInventoryTotalWeight(inventory) + addedWeight) > weightLimit then
+  if weightLimit and weightLimit > 0
+      and (InventoryControllers.GetInventoryTotalWeight(inventory) + addedWeight) > weightLimit then
     return { status = false, code = 'weight_limit', message = 'Max Weight Exceeded.' }
   end
 
@@ -333,8 +348,9 @@ local function EvaluateSlotMoveSide(inventory, maxWeight, ignoreItemLimit, arriv
     arrivingWeight = arrivingWeight + ((tonumber(row.weight) or 0) * count)
   end
 
+  -- 0 means unlimited, same convention as EvaluateInventoryAcceptance.
   local weightLimit = tonumber(maxWeight) or tonumber(Config.maxWeight)
-  if weightLimit then
+  if weightLimit and weightLimit > 0 then
     local projected = InventoryControllers.GetInventoryTotalWeight(inventory) - leavingWeight + arrivingWeight
     if projected > weightLimit then
       return { status = false, code = 'weight_limit', message = 'Max Weight Exceeded.' }

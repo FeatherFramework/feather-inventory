@@ -574,7 +574,11 @@ ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z)
   -- after GetGroundUID (server/services/ground.lua) has verified they're
   -- actually standing near it and issued a short-lived grant -- see
   -- InventoryAPI.GrantTemporaryAccess / IsAuthorizedForOwnedInventory.
-  local _, groundInventoryID = InventoryAPI.RegisterInventory('ground', groundID, 'Ground', nil, nil, nil, nil, true)
+  -- maxWeight = 0 means "no weight limit" (see GetInventoryWeightLimit). A
+  -- heap on the floor has nothing doing the carrying, so a weight cap on it
+  -- is meaningless -- but slot capacity and per-item quantity limits still
+  -- apply, which is why only the weight argument is zeroed here.
+  local _, groundInventoryID = InventoryAPI.RegisterInventory('ground', groundID, 'Ground', nil, 0, nil, nil, true)
   local updateinv = InventoryControllers.MoveInventoryItems(inventoryId, groundInventoryID, items)
 
   -- This always reported `error = false` even when MoveInventoryItems

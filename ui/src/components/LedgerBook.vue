@@ -87,6 +87,11 @@ const detail = computed(() => {
   };
 });
 
+// A limit of 0 means unlimited (ground piles register that way) -- show the
+// weight carried but no "/ limit", rather than rendering "/ 0 lb.", which
+// reads as a container that can hold nothing.
+const hasWeightLimit = computed(() => Number(props.maxWeight) > 0);
+
 const carrying = computed(() => {
   const lb = props.items.reduce((total, item) => total + (Number(item.weight) || 0), 0);
   return lb.toFixed(1);
@@ -198,7 +203,7 @@ function tabLabelSize(count) {
 
       <div class="ledger-carrying">
         <img src="@/assets/ledger/carry-arrow-left.png" class="carry-arrow" />
-        <div class="ledger-carrying-text">{{ t(footerLabel) }}&nbsp;&nbsp;{{ carrying }}&#8195;/&#8195;{{ maxWeight }} lb.</div>
+        <div class="ledger-carrying-text">{{ t(footerLabel) }}&nbsp;&nbsp;{{ carrying }}<span v-if="hasWeightLimit">&#8195;/&#8195;{{ maxWeight }}</span> lb.</div>
         <img src="@/assets/ledger/carry-arrow-right.png" class="carry-arrow" />
       </div>
     </div>
