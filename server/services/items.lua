@@ -42,25 +42,22 @@ function ItemsAPI.GrantItem(itemName, quantity, inventoryId)
     return { error = true, code = 'invalid_inventory', message = 'Inventory does not exist.' }
   end
 
-  local currentItemCount = InventoryControllers.InventoryItemCount(inventory, definition.id)
-  local totalItemCount = InventoryControllers.GetInventoryTotalItemCounts(inventory)
-  totalItemCount = totalItemCount[1] and tonumber(totalItemCount[1].count) or 0
-  if totalItemCount + quantity > (tonumber(Config.maxItemSlots) or math.huge) then
-    return { error = true, code = 'inventory_full', message = 'Inventory has no available slots.' }
-  end
-
-  if tonumber(ignoreItemLimit) ~= 1 then
-    local maximum = math.min(tonumber(definition.max_quantity) or 0,
-      tonumber(definition.max_stack_size) or 0)
-    if maximum < 1 or currentItemCount + quantity > maximum then
-      return { error = true, code = 'item_limit', message = 'Item quantity limit would be exceeded.' }
-    end
-  end
-
-  local addedWeight = (tonumber(definition.weight) or 0) * quantity
-  local weightLimit = tonumber(maxWeight) or tonumber(Config.maxWeight)
-  if weightLimit and InventoryControllers.GetInventoryTotalWeight(inventory) + addedWeight > weightLimit then
-    return { error = true, code = 'weight_limit', message = 'Inventory weight limit would be exceeded.' }
+  -- (Capacity model unification) Was three separate checks here, two of them
+  -- wrong in the same way AddItem's were -- see EvaluateInventoryAcceptance
+  -- (server/services/inventory.lua). The slot check counted item *units*
+  -- against Config.maxItemSlots, so 25 apples stacked into 2 compartments
+  -- reported a full 25-slot book; the quantity check used
+  -- math.min(max_quantity, max_stack_size), capping an item at its
+  -- per-compartment stack size no matter how much the inventory was actually
+  -- allowed to hold.
+  local acceptance = InventoryAPI.EvaluateInventoryAcceptance(inventory, maxWeight, ignoreItemLimit,
+    { { item = definition.name, quantity = quantity } })
+  if not acceptance or acceptance.status == false then
+    return {
+      error = true,
+      code = (acceptance and acceptance.code) or 'inventory_full',
+      message = (acceptance and acceptance.message) or 'Inventory cannot hold these items.'
+    }
   end
 
   -- Steampunk ledger: same slot-assignment as AddItem below -- join an
@@ -101,9 +98,11 @@ function ItemsAPI.GrantItem(itemName, quantity, inventoryId)
   }
 end
 
--- Grants `quantity` of `itemName` to an inventory, enforcing per-item max
--- quantity/stack-size and weight limits. Fires feather-inventory:ItemAdded
--- once per unit granted.
+-- Grants `quantity` of `itemName` to an inventory, enforcing the per-item
+-- quantity cap, slot capacity, and weight limit (see
+-- EvaluateInventoryAcceptance). Fires feather-inventory:ItemAdded once per
+-- unit granted. `max_stack_size` governs only how many compartments those
+-- units are spread across, never how many the inventory may hold.
 ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   quantity = tonumber(quantity)
   if not quantity or quantity < 1 or quantity % 1 ~= 0 then
@@ -114,7 +113,9 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
     }
   end
 
-  local itemId, max_quantity, item_weight, max_stack_size = ItemControllers.GetItemByName(itemName)
+  -- max_quantity/weight are read by EvaluateInventoryAcceptance itself now;
+  -- only the id and stack size are needed here, for slot placement below.
+  local itemId, _, _, max_stack_size = ItemControllers.GetItemByName(itemName)
   if not itemId then
     warn('Invalid itemName. Please make sure it is in the items table in your database.')
     return {
@@ -122,21 +123,9 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
       message = "Invalid itemName. Please make sure it is in the items table in your database."
     }
   end
-
-  local ItemCount = ItemsAPI.GetItemCount(itemName, inventoryId)
-
-  -- Check to make sure this doesnt exceed the amount of slots available.
-  -- (Tier 1 audit sweep) Was `(ItemCount + quantity) / max_stack_size >
-  -- max_stack_size`, which requires ItemCount+quantity > max_stack_size^2
-  -- to ever reject -- far more permissive than the stated "max stack size"
-  -- limit.
-  if (ItemCount + quantity) > max_stack_size then
-    return {
-      error = true,
-      message = "Max slots reached"
-    }
-  end
-
+  -- Same normalization GrantItem and EvaluateInventoryAcceptance apply -- the
+  -- placement loop below compares against this, so a nil would crash it.
+  max_stack_size = math.max(tonumber(max_stack_size) or 1, 1)
 
   local inventory, maxWeight, ignore_item_limit = nil, nil, nil
   if tonumber(inventoryId) then
@@ -153,16 +142,6 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
     inventory, maxWeight, ignore_item_limit, _ = InventoryControllers.GetInventoryById(inventoryId)
   end
 
-  -- Check to make sure this doesnt exceed the max quantity for this item.
-  -- (was >=, which rejected exactly reaching the max -- every seeded weapon
-  -- has max_quantity=1, so granting even a single one always failed)
-  if ItemCount + quantity > max_quantity and ignore_item_limit == 0 then
-    return {
-      error = true,
-      message = "Too Many Items in Inventory"
-    }
-  end
-
   if not inventory then
     warn('Invalid inventory ID.')
     return {
@@ -171,18 +150,20 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
     }
   end
 
-  -- (§10.1 weight parity) GrantItem and every transfer path
-  -- (MoveInventoryItems, via InventoryCanHoldById) already enforce this --
-  -- AddItem was the one remaining grant path that could push an inventory
-  -- over its weight limit. Unconditional like the other two, not gated by
-  -- ignore_item_limit (that flag only exempts quantity/stack-size limits,
-  -- see InventoryCanHold/InventoryCanHoldById above it).
-  local addedWeight = (tonumber(item_weight) or 0) * quantity
-  local weightLimit = tonumber(maxWeight) or tonumber(Config.maxWeight)
-  if weightLimit and InventoryControllers.GetInventoryTotalWeight(inventory) + addedWeight > weightLimit then
+  -- (Capacity model unification) Quantity, slot, and weight limits are now
+  -- one decision made in one place -- see EvaluateInventoryAcceptance
+  -- (server/services/inventory.lua) for what each of the three checks this
+  -- replaces was actually getting wrong. The headline one: the slot check
+  -- here compared this inventory's total count of the item against
+  -- `max_stack_size` (the per-compartment cap), so an apple with
+  -- max_quantity=100 and max_stack_size=20 refused the 21st apple in the
+  -- whole book rather than starting a second stack.
+  local acceptance = InventoryAPI.EvaluateInventoryAcceptance(inventory, maxWeight, ignore_item_limit,
+    { { item = itemName, quantity = quantity } })
+  if not acceptance or acceptance.status == false then
     return {
       error = true,
-      message = "Max Weight Exceeded."
+      message = (acceptance and acceptance.message) or 'Inventory cannot hold these items.'
     }
   end
 
@@ -204,8 +185,9 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   -- race with another grant -- guarded rather than trusted.
   local currentSlot = InventoryControllers.GetJoinableSlot(inventory, itemId, max_stack_size)
   local currentSlotCount = currentSlot ~= nil and #InventoryControllers.GetItemsInSlot(inventory, currentSlot) or 0
+  local granted = 0
 
-  for count = 1, quantity do
+  for _ = 1, quantity do
     if currentSlot == nil or currentSlotCount >= max_stack_size then
       currentSlot = InventoryControllers.GetFreeSlot(inventory, tonumber(Config.maxItemSlots) or 0)
       currentSlotCount = 0
@@ -217,6 +199,7 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
 
     local item = InventoryControllers.CreateInventoryItem(inventory, itemId, currentSlot)
     currentSlotCount = currentSlotCount + 1
+    granted = granted + 1
 
     if metadata ~= nil then
       for k, v in pairs(metadata) do
@@ -225,12 +208,27 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
     end
 
     TriggerEvent('feather-inventory:ItemAdded', itemId, 1, inventory)
+  end
 
-    count = count + 1
+  -- (Capacity model unification) The loop above can still come up short if
+  -- another grant raced us between the acceptance check and here. That used
+  -- to `break` and then unconditionally report `{ error = false }` -- a
+  -- partial grant indistinguishable from a complete one, which any caller
+  -- doing "charge the player, then AddItem" would silently under-deliver on.
+  -- Report what actually landed instead.
+  if granted < quantity then
+    return {
+      error = true,
+      message = 'Inventory has no available slots.',
+      granted = granted,
+      requested = quantity
+    }
   end
 
   return {
-    error = false
+    error = false,
+    granted = granted,
+    requested = quantity
   }
 end
 

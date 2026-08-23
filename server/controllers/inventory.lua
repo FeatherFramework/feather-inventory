@@ -162,6 +162,30 @@ function InventoryControllers.GetItemsInSlot(inventory, slot)
     { inventory, slot })
 end
 
+-- (Capacity model) How many units of `itemId` sit in each compartment that
+-- already holds it. GetJoinableSlot answers "is there *a* stack with room"
+-- for placement; this answers "how much room do *all* of them have", which
+-- is what deciding whether N more units fit actually requires.
+function InventoryControllers.GetItemStackCounts(inventory, itemId)
+  return MySQL.query.await(
+    'SELECT `slot_index`, COUNT(*) AS `count` FROM `inventory_items` WHERE `inventory_id`=? AND `item_id`=? AND `slot_index` IS NOT NULL GROUP BY `slot_index`;',
+    { inventory, itemId })
+end
+
+-- (Capacity model) Number of distinct compartments in use, regardless of what
+-- or how much is in them. Note this counts *slots*, not units -- an inventory
+-- holding 20 apples in one compartment occupies 1 slot, not 20. Conflating
+-- those two is what made GrantItem reject grants into a nearly-empty book.
+function InventoryControllers.GetOccupiedSlotCount(inventory)
+  local result = MySQL.query.await(
+    'SELECT COUNT(DISTINCT `slot_index`) AS `count` FROM `inventory_items` WHERE `inventory_id`=? AND `slot_index` IS NOT NULL;',
+    { inventory })
+  if not result[1] or not result[1].count then
+    return 0
+  end
+  return tonumber(result[1].count) or 0
+end
+
 -- Steampunk ledger drag-and-drop: moves every row in (fromInventory, fromSlot)
 -- to (toInventory, toSlot). If toSlot is already occupied, swaps -- the
 -- occupant's rows move to (fromInventory, fromSlot) instead of being

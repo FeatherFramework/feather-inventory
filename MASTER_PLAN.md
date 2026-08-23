@@ -41,7 +41,7 @@ This plan starts from all of the above as given. What's left is real but narrowe
 ## 5. Current architecture (as-built)
 
 ```text
-UI (Vue3 + Pinia) ── "steampunk ledger": LedgerBook.vue (grid) / ContextMenu.vue (Use/Give/Drop) / ItemCountModal.vue (partial qty)
+UI (Vue3, local reactive() state -- no Pinia) ── "steampunk ledger": LedgerBook.vue (grid) / ContextMenu.vue (Use/Give/Drop) / ItemCountModal.vue (partial qty)
        │  NUI callback
        ▼
 client/services/nuicallbacks.lua  (thin forward, no logic)
@@ -74,6 +74,18 @@ Note: `config.lua`'s current comment on `Config.maxItemSlots` ("25 is no longer 
 Resolved for the common case: dragging an item into an **empty** slot of a different inventory now calls `InventoryCanHoldById` before the move, same as every other path, rejecting (with a notify) if the destination can't hold it. This closes the wide-open case — any drag onto free space in another inventory previously had zero enforcement.
 
 **Deliberately left open:** dragging onto an **occupied** slot in a *different* inventory (a swap) is still unchecked. `InventoryCanHoldById`'s "add this on top of the inventory's current total" math would double-count the item simultaneously leaving `fromInventory` to make room for the swap — correctly validating a swap needs a net-delta calculation (post-swap totals on both sides: `fromInventory` loses the moving stack's weight but gains the occupant's, and vice versa for `toInventory`), not a bolt-on reuse of a helper built for pure additions. Scoped down deliberately rather than shipping subtly-wrong swap math under time pressure — see the comment at the fix site in `callbacks.lua`. Narrower exposure than the empty-slot case (requires the attacker to specifically target an already-occupied slot in someone else's inventory), but still real and worth closing properly in a future session with more room to get the net-delta math right and test it.
+
+**Found 2026-08-23, fixed 2026-08-23: the resource carried four mutually-inconsistent definitions of "full".** Surfaced by a reported bug — an apple with `max_quantity=100` and `max_stack_size=20` refused the 21st apple in the whole inventory. Root cause was not one bug but a systematic conflation of *stack size* (a per-compartment placement property) with *quantity limit* (an inventory-wide acceptance limit), plus two independent arithmetic errors:
+
+- `AddItem` compared the inventory-wide count of an item against `max_stack_size` — the reported bug.
+- `GrantItem` used `math.min(max_quantity, max_stack_size)`, the same conflation by a different route. This is the path `feather-admin`'s give-item flow calls, which is how it was hit.
+- `GrantItem` also compared total unit *count* against `Config.maxItemSlots`, treating each unit as consuming its own compartment — 25 apples stacked into 2 slots reported a full 25-slot book.
+- `InventoryCanHold`/`ById` had the quantity check right but summed weight without multiplying by quantity, so moving 10 apples only ever counted one apple's weight. This partly undercut §2's "weight is actually enforced on every transfer path" claim — it was enforced, but under-counted on every multi-unit move.
+- The same `ignore_item_limit` column was read three different ways (`== 0`, `tonumber(x) ~= 1`, `Boolean[x]`). All three happen to work because the column is `tinyint(4)` and comes back a number — but `is_public` is `tinyint(1)` and comes back a real boolean, which is exactly how that flag silently read as `false` for every public inventory until `Boolean` gained `[true]`/`[false]` entries. Same latent trap, one column-width change away.
+
+All five now route through one `EvaluateInventoryAcceptance(inventory, maxWeight, ignoreItemLimit, items)` in `server/services/inventory.lua`, which is the sole definition of whether an inventory can accept N of something. `InventoryCanHold`/`InventoryCanHoldById` are thin wrappers over it; `AddItem`/`GrantItem` call it directly. Two behaviour changes fell out of the consolidation: `GrantItem` now respects the per-inventory blacklist (it previously skipped `IsItemRestricted` entirely, so an admin could grant an item into an inventory explicitly barred from holding it — this adds one new error code, `item_restricted`, and a matching `feather-admin` locale key), and `AddItem` no longer reports success on a partial grant when it runs out of slots mid-loop.
+
+This is also the prerequisite for §10.4: `GetFreeSlot(inventory, capacity)` and the acceptance check now read capacity from one place, so making it per-inventory is a change to one helper rather than to four divergent call sites.
 
 - ~~**`ItemsAPI.AddItem` doesn't enforce weight.**~~ **Fixed.** `AddItem` now resolves the inventory's `maxWeight` and the item's weight and rejects before granting, same unconditional-of-`ignore_item_limit` pattern as `GrantItem`/`InventoryCanHoldById`.
 - ~~**`GiveItem` has no server-side distance check between giver and recipient.**~~ **Fixed.** `Config.Access.GiveDistance` + `IsWithinGiveDistance` (same shape as `IsWithinRobberyDistance`, separate config value since giving is consensual, not forced-search) now gate the RPC.
@@ -118,6 +130,7 @@ This is deliberately a first-class section, not an appendix to the weapons work.
 
 ### 10.1 Finish what's already started
 
+- ~~**Unify the capacity model (§6).**~~ **Done.** One `EvaluateInventoryAcceptance` is now the only definition of "can this inventory accept N of this", replacing four inconsistent ones. Fixes the reported "can't hold more than 20 apples" bug at its root rather than at the one call site that surfaced it.
 - ~~**`MoveItem` weight/capacity bypass (§6).**~~ **Partially fixed** — empty-destination-slot case closed; occupied-slot swap across inventories deliberately still open, see §6 for why.
 - **Unblock the robbery system.** As §6 describes, this is entirely inventory-side complete and blocked on one `feather-core` capability (`Feather.Character.HasStatus`). Raising this with the `feather-core` owner is higher-value than almost anything else in this plan — a fully-built feature sitting inert is the most wasteful possible state for it to be in.
 - ~~**`AddItem` weight parity.**~~ **Done.**
@@ -131,7 +144,7 @@ This is deliberately a first-class section, not an appendix to the weapons work.
 - ~~**Ground item LOD**~~ **Fixed.** Turned out worse than "no culling" — the old `UpdateGroundLocations` handler unconditionally despawned and respawned *every* pile on the map for *every* online player on *every single* drop/pickup/empty event anywhere on the server, not just once at load. Rewrote `GroundItems` from an array to an id-keyed table, reconciled in place on updates (only piles that actually appeared/disappeared touch their entity), and added a 1s-tick LOD thread that spawns/despawns each pile's prop based on the player's own live distance (`Config.Dropped.LoadDistance`, new, validated `>= PromptViewDistance` in `errors.lua`). The pickup-prompt loop's `ipairs`-over-array logic and unguarded `item.entity:GetObj()` had to move to `pairs` + a nil-entity guard to match the new keying.
 - **Hotbar** — still no server or UI implementation. §10.4's scrollable-grid decision gives this a cleaner answer than before: the hotbar can be the always-visible first page of compartments rather than a wholly separate strip, once scrolling exists as a concept in the UI at all.
 - **Locale migration** — server/UI strings still hardcoded.
-- **Frontend state management** — Vue3 + Pinia is present as a dependency; worth checking whether the ledger UI's current `reactive()`-based local state (see `App.vue`) has actually been migrated into Pinia stores yet, or whether that TODO is still open despite the library being available.
+- **Frontend state management** — checked 2026-08-23: Pinia is **not** a dependency and is not referenced anywhere in `ui/src`. It was dropped during the Vite migration, so this item is "adopt a store layer if the ledger's `reactive()`-based local state in `App.vue` outgrows it", not "finish a half-done migration". No evidence it has outgrown it yet.
 - **Shift+drag bulk transfer/drop** — not confirmed done; the quantity modal covers "choose a partial amount," but a shift-modifier that skips the modal and acts on the whole stack isn't visible in what's been built so far.
 
 ### 10.3 New ideas
@@ -220,6 +233,9 @@ Two tracks. The `INV-W*` track matches `DEPENDENCY_SUPPORT_PLAN.md` §4.5 exactl
 - [ ] Restart leaves no in-memory lock as persistent authority
 
 **Inventory-native:**
+- [x] Capacity model unified behind one `EvaluateInventoryAcceptance` (§6, found/fixed 2026-08-23) — fixes the stack-size/quantity-limit conflation in `AddItem` and `GrantItem`, the unit-count-as-slot-count check in `GrantItem`, and the quantity-less weight sum in `InventoryCanHold`/`ById`
+- [x] `GrantItem` now respects the per-inventory blacklist (was skipped entirely)
+- [x] `AddItem` no longer reports success on a partial grant
 - [x] `MoveItem` weight/capacity bypass fixed for empty-destination-slot case (§6, found 2026-08-21)
 - [ ] `MoveItem` swap-into-occupied-slot-across-inventories still needs net-delta capacity math (§6)
 - [ ] Robbery system unblocked (cross-resource ask filed with `feather-core`)
