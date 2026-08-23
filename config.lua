@@ -25,9 +25,13 @@ Config.hotkey = "I"
 -- The book art is still a fixed 574x983 asset calibrated for a 5x5 page, and
 -- that hasn't changed -- what changed is that the compartment grid inside it
 -- scrolls (the surrounding chrome stays pinned), so capacity is no longer
--- bounded by what fits on one visible page. 25 remains the sensible default
--- because it's exactly one page with no scrolling.
-Config.maxItemSlots = 25          -- default inventory slots, overridable per inventory
+-- bounded by what fits on one visible page.
+--
+-- 40 is 8 rows at 5 columns, so a default inventory shows one full page and
+-- scrolls to reach the remaining 3 rows. (25 would be exactly one page and
+-- never scroll -- fine, but it leaves the scrolling path untested in normal
+-- play, and makes the default book smaller than the design now supports.)
+Config.maxItemSlots = 40          -- default inventory slots, overridable per inventory
 -- Ground/Dropped item settings
 Config.Dropped = {
     GroupingRadius = 10,
