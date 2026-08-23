@@ -13,6 +13,9 @@ function StartAPI()
   -- events. This is how feather-weapons forces an authoritative unequip
   -- before an equipped item is allowed to move.
   inventoryServerAPI.Guards = GuardsAPI
+  -- (INV-W4) Operational surface: transaction counters for contention
+  -- monitoring, and the access-mode decision function.
+  inventoryServerAPI.Diagnostics = { GetTransactionMetrics = TransactionAPI.GetMetrics }
 
   exports('initiate', function()
     return inventoryServerAPI

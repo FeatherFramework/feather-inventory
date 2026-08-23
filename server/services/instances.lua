@@ -376,6 +376,9 @@ function InstancesAPI.GetCapabilities()
             transactions = true,        -- INV-W2: optimistic, revision-guarded
             movementGuards = true,      -- INV-W3: pre-move/destroy veto registry
             postCommitEvents = true,    -- INV-W3: structured, internal, post-commit
+            accessModes = true,         -- INV-W4: read/insert/remove/manage
+            metadataSizeLimit = true,   -- INV-W4: bounded documents
+            transactionMetrics = true,  -- INV-W4: contention counters
         }
     }
 end

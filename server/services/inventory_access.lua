@@ -334,6 +334,77 @@ end)
 -- @param inventoryId Raw inventory.id being requested (UUID already resolved)
 -- @return True if src may open this inventory right now
 --
+------------------------------------------------------------------
+-- Access modes (INV-W4)
+------------------------------------------------------------------
+
+-- (INV-W4) DEPENDENCY_SUPPORT_PLAN §4.4 asks for a generic
+-- `CanAccessInventory(source, inventoryId, action, context)` distinguishing
+-- read, insert, remove, manage, and temporary world pickup -- so a consumer
+-- can ask the real question ("may this player take something OUT of here?")
+-- instead of the blunt one this resource has been answering
+-- ("is this inventory accessible at all?").
+--
+-- The modes are deliberately NOT all distinct today. Ground piles are the
+-- clearest case: anyone standing near one may read it, take from it and put
+-- into it, but nobody may manage its access list because it has no owner.
+-- Modelling that honestly is better than inventing five separate permission
+-- bits that all currently resolve the same way and would rot out of sync.
+InventoryAPI.AccessModes = {
+    READ = 'read',       -- see contents
+    INSERT = 'insert',   -- put something in
+    REMOVE = 'remove',   -- take something out
+    MANAGE = 'manage',   -- grant/revoke access, change visibility
+}
+
+---
+-- Can Access Inventory
+--
+-- @param src Caller's player source
+-- @param inventoryId Raw inventory.id
+-- @param action One of InventoryAPI.AccessModes (defaults to READ)
+-- @param context Optional { reason, correlationId } for diagnostics
+-- @return Result envelope; Ok(true) when permitted
+--
+InventoryAPI.CanAccessInventory = function(src, inventoryId, action, context)
+    action = action or InventoryAPI.AccessModes.READ
+    context = context or {}
+
+    if not src or not inventoryId then
+        return Result.Err(Result.Codes.INVALID_INPUT, 'Source and inventory id are required.',
+            nil, context.correlationId)
+    end
+
+    -- MANAGE is the one mode that genuinely differs: it is owner/admin only,
+    -- and is never granted by proximity, a share, or public visibility. A
+    -- ground pile is readable and lootable by anyone near it, and manageable
+    -- by nobody.
+    if action == InventoryAPI.AccessModes.MANAGE then
+        local ownerCharacterId = InventoryAPI.GetInventoryOwner(inventoryId)
+        if not ownerCharacterId then
+            return Result.Err(Result.Codes.DENIED, 'This inventory has no owner and cannot be managed.',
+                { action = action }, context.correlationId)
+        end
+        if not IsOwnerOrAdmin(src, ownerCharacterId) then
+            return Result.Err(Result.Codes.DENIED, 'You do not own this inventory.',
+                { action = action }, context.correlationId)
+        end
+        return Result.Ok(true, context.correlationId)
+    end
+
+    -- READ/INSERT/REMOVE all currently resolve through the same live
+    -- accessibility check, which already re-verifies proximity and status for
+    -- a robbery target on every call rather than trusting an open lock
+    -- (INV-11/INV-23). Re-checked here rather than cached, so a mutation
+    -- arriving late cannot ride an authorization that was true a minute ago.
+    if not InventoryAPI.IsInventoryAccessibleBySrc(src, inventoryId) then
+        return Result.Err(Result.Codes.DENIED, 'You do not have access to that inventory.',
+            { action = action }, context.correlationId)
+    end
+
+    return Result.Ok(true, context.correlationId)
+end
+
 function IsAuthorizedForOwnedInventory(src, callerCharacterId, inventoryId)
     local ownerCharacterId, isPublic = InventoryAPI.GetInventoryOwnerAndVisibility(inventoryId)
     local hasGrant = InventoryAPI.HasInventoryAccessGrant(callerCharacterId, inventoryId)

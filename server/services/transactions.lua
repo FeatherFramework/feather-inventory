@@ -42,6 +42,34 @@ TransactionAPI = {}
 local MAX_ATTEMPTS = 3
 
 ------------------------------------------------------------------
+-- Metrics (INV-W4)
+------------------------------------------------------------------
+--
+-- Counters, not a log. The question worth answering operationally is "is
+-- this system contending?", and a rate answers it where individual lines do
+-- not. Conflicts are expected under optimistic concurrency -- what matters
+-- is whether `retriesExhausted` is climbing, because that is a caller
+-- actually losing work rather than merely retrying.
+local Metrics = {
+    started = 0,
+    committed = 0,
+    conflicts = 0,
+    retriesExhausted = 0,
+    bodyErrors = 0,
+    idempotentHits = 0,
+}
+
+function TransactionAPI.GetMetrics()
+    -- Copied, not returned by reference -- a caller must not be able to
+    -- reset the counters by mutating what it was handed.
+    local snapshot = {}
+    for key, value in pairs(Metrics) do
+        snapshot[key] = value
+    end
+    return snapshot
+end
+
+------------------------------------------------------------------
 -- Idempotency
 ------------------------------------------------------------------
 --
@@ -263,8 +291,11 @@ function TransactionAPI.Transaction(context, fn)
 
     local cached = IdempotencyGet(context.idempotencyKey)
     if cached then
+        Metrics.idempotentHits = Metrics.idempotentHits + 1
         return cached
     end
+
+    Metrics.started = Metrics.started + 1
 
     local lastConflict
     for attempt = 1, MAX_ATTEMPTS do
@@ -276,6 +307,11 @@ function TransactionAPI.Transaction(context, fn)
         -- nothing reaches the database until commit.
         local succeeded, outcome = pcall(fn, tx)
         if not succeeded then
+            Metrics.bodyErrors = Metrics.bodyErrors + 1
+            -- (INV-W4 diagnostics) Correlation id included so this line can be
+            -- tied back to the originating request rather than floating free.
+            warn(('Transaction body errored (correlationId=%s, reason=%s): %s'):format(
+                tostring(context.correlationId), tostring(context.reason), tostring(outcome)))
             return Result.Err(Result.Codes.INTERNAL, 'Transaction body errored: ' .. tostring(outcome),
                 nil, context.correlationId)
         end
@@ -331,6 +367,7 @@ function TransactionAPI.Transaction(context, fn)
             end
             GuardsAPI.EmitTransactionCommitted(context, { writes = #tx.writes })
 
+            Metrics.committed = Metrics.committed + 1
             local result = Result.Ok(outcome, context.correlationId)
             IdempotencyPut(context.idempotencyKey, result)
             return result
@@ -340,8 +377,15 @@ function TransactionAPI.Transaction(context, fn)
         -- committed against a row we had read. Retry the WHOLE closure --
         -- re-reading is the point, since the caller's decision was made
         -- against state that has since changed.
+        Metrics.conflicts = Metrics.conflicts + 1
         lastConflict = attempt
+        DebugPrint('INV-W2', 'Transaction conflict on attempt %d (correlationId=%s)',
+            attempt, tostring(context.correlationId))
     end
+
+    Metrics.retriesExhausted = Metrics.retriesExhausted + 1
+    warn(('Transaction exhausted %d attempts (correlationId=%s, reason=%s)'):format(
+        MAX_ATTEMPTS, tostring(context.correlationId), tostring(context.reason)))
 
     return Result.Err(Result.Codes.CONFLICT,
         ('Transaction contended and was retried %d times without committing.'):format(MAX_ATTEMPTS),

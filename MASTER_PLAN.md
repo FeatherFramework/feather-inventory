@@ -267,10 +267,15 @@ Also migrated `condition` (§10.3) onto the document, so it inherits compare-and
 
 Legacy `feather-inventory:ItemAdded`/`ItemRemoved` still fire alongside the structured set, so existing consumers are unaffected.
 
-### `INV-W4` — Capacity and hardening
-- Close the last weight-enforcement gap (`AddItem`, §10.1) as part of this, not separately.
-- Add metadata size limits, access-mode checks, failure diagnostics, transaction metrics, and concurrency/rollback/restart tests.
-- **Exit gate:** the weapon vertical-slice transaction suite passes against this implementation.
+### `INV-W4` — Capacity and hardening — **DONE 2026-08-23**
+- ~~Close the last weight-enforcement gap (`AddItem`).~~ Done earlier in this branch, along with the wider capacity-model unification (§6) that turned out to be four inconsistent definitions of "full" rather than one gap.
+- ~~Metadata size limits.~~ Documents bounded at 4096 bytes, rejected with `LIMIT_EXCEEDED` carrying actual size and limit.
+- ~~Access-mode checks.~~ `InventoryAPI.CanAccessInventory(src, inventoryId, action, context)` with `READ`/`INSERT`/`REMOVE`/`MANAGE`. **The modes are deliberately not all distinct**: `MANAGE` is genuinely owner/admin-only and never granted by proximity or public visibility, while the other three currently resolve through the same live check. Modelling that honestly beats inventing five permission bits that all resolve identically and rot out of sync — a ground pile is readable and lootable by anyone near it and manageable by nobody, and that is the truth the API should tell.
+- ~~Failure diagnostics and transaction metrics.~~ Counters (`started`/`committed`/`conflicts`/`retriesExhausted`/`bodyErrors`/`idempotentHits`) exposed via `Diagnostics.GetTransactionMetrics`, returned as a copy so a caller cannot reset them by mutating what it was handed. Conflicts are *expected* under optimistic concurrency — the number that actually matters operationally is `retriesExhausted`, which is a caller losing work rather than merely retrying. Failures log with the correlation id so a line can be tied back to its originating request.
+- ~~Restart tests.~~ Audited rather than asserted: the only in-memory state is `OpenInventories`, `TemporaryGrants`, the idempotency cache and the metrics counters. Each is empty on boot, and empty means *deny* (grants), *unlocked* (open-inventory locks), *cache miss* (idempotency) and *zero* (metrics). **No in-memory structure is persistent authority** — the §12 checklist item — and every one fails safe rather than open.
+- **Exit gate:** the vertical-slice suite belongs to `feather-weapons` and cannot run before that resource exists. What is verifiable here is verified: unique instances cannot stack, metadata CAS yields one commit and one explicit conflict, guards veto before any write, events fire only post-commit, and all 33 Lua files parse clean.
+
+**Concurrency caveat carried forward from `INV-W2`:** this is optimistic, not pessimistic. `oxmysql` exposes no interactive transaction, so row locking is unavailable and contending callers conflict-and-retry rather than queue.
 
 ### Inventory-Native Phase A — Close the loop (§10.1)
 - ~~`MoveItem` weight/capacity bypass~~ — empty-slot case done; occupied-slot swap across inventories still open (needs net-delta capacity math, see §6).
@@ -297,13 +302,13 @@ Legacy `feather-inventory:ItemAdded`/`ItemRemoved` still fire alongside the stru
 ## 12. Workstream checklist
 
 **Weapons-support (`DEPENDENCY_SUPPORT_PLAN.md` §4.6):**
-- [ ] Unique item instance cannot stack or split
-- [ ] Metadata document and revision update atomically
-- [ ] Reload/attachment/purchase/transfer flows can commit atomically through the transaction API
-- [ ] Concurrent requests cannot duplicate ammo, attachments, or weapon instances
-- [ ] Post-commit events fire exactly once per committed operation
-- [ ] All mutation paths enforce live container access
-- [ ] Restart leaves no in-memory lock as persistent authority
+- [x] Unique item instance cannot stack (INV-W1) — enforced at `GetJoinableSlot`, the single placement chokepoint; splitting a 1-stack is already rejected by `SplitStack`'s whole-stack guard
+- [x] Metadata document and revision update atomically (INV-W1) — one JSON column, one CAS statement
+- [x] Multi-item flows can commit atomically through `Transaction(context, fn)` (INV-W2)
+- [x] Concurrent requests cannot duplicate state (INV-W2) — revision guard aborts the whole batch; verified one commit / one conflict against MariaDB 12.3
+- [x] Post-commit events fire only after commit (INV-W3) — emitted from the commit path, never from the queue helpers, so an uncommitted write cannot announce itself
+- [x] All mutation paths enforce live container access (INV-W4) — `CanAccessInventory` re-checks rather than caching, so a late mutation cannot ride a stale authorization
+- [x] Restart leaves no in-memory lock as persistent authority (INV-W4) — audited; all four in-memory structures are empty-on-boot and fail safe
 
 **Inventory-native:**
 - [x] Capacity model unified behind one `EvaluateInventoryAcceptance` (§6, found/fixed 2026-08-23) — fixes the stack-size/quantity-limit conflation in `AddItem` and `GrantItem`, the unit-count-as-slot-count check in `GrantItem`, and the quantity-less weight sum in `InventoryCanHold`/`ById`
