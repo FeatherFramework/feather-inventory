@@ -3,6 +3,36 @@ function IsTable(var)
 end
 
 ---
+-- Sync Own Position
+--
+-- (Distance-check staleness) Pushes this player's current position to the
+-- server immediately, before an action the server gates on distance.
+--
+-- Every proximity check in this resource -- ground drop, ground pickup,
+-- GiveItem, robbery -- compares against feather-core's server-cached
+-- character.x/y/z, which is only refreshed every Config.PositionSync (20s by
+-- default). Without this the server can be deciding from a position up to
+-- twenty seconds old, which surfaces as an action failing with "You are too
+-- far away" while standing right on top of the target, then succeeding a few
+-- attempts later once a sync tick happens to land.
+--
+-- This does NOT weaken server authority: the server still decides, using its
+-- own stored value. It just isn't deciding from stale data.
+--
+-- Same call shape feather-core's own position-sync loop uses
+-- (client/services/character.lua's startPositionSync) -- the raw vector3,
+-- since the server side unpacks exactly that.
+--
+-- LIMITATION: this only refreshes the CALLER's position. A two-party check
+-- (GiveItem, robbery) still compares against the other player's cached
+-- position, which this client cannot refresh. It halves the staleness rather
+-- than eliminating it.
+--
+function SyncOwnPosition()
+  Feather.RPC.CallAsync("UpdatePlayerCoords", GetEntityCoords(PlayerPedId(), true, true))
+end
+
+---
 -- Translate
 --
 -- (§10.2 locale migration) Client-side counterpart of the server helper in

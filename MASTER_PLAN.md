@@ -81,6 +81,12 @@ The 2026-08-21 pass could only close the empty-destination half, by reusing `Inv
 
 Verified by simulation across four cases: a swap at the weight limit trading equal weights is correctly **allowed** (the addition-only model wrongly rejected it), a genuinely overloading swap is rejected on the destination side, a swap whose return leg overloads the source is rejected on the source side (previously allowed), and an empty destination degrades to the pure-addition result.
 
+**Found 2026-08-23 (in-game testing), fixed 2026-08-23: ground pickup failed two or three times before succeeding.** `GetGroundUID` gates on the server's cached `character.x/y/z`, refreshed only every `Config.PositionSync` (feather-core, 20s). Walking to a pile and pressing the prompt rejected with "You are too far away" until a sync tick happened to land, which reads as a flaky prompt rather than a stale-position problem.
+
+The tell that this was *missed* rather than considered: the drop half of this exact flow already carried the fix, and the pickup half did not. All distance-gated client actions now route through one `SyncOwnPosition()` helper — ground drop, ground pickup, and `GiveItem` (latent, same class, not yet reported). Server authority is unchanged; the server still decides, just not from twenty-second-old data.
+
+Known limitation, recorded rather than papered over: a two-party check (`GiveItem`, robbery) still compares against the *other* player's cached position, which the calling client cannot refresh. This halves the staleness rather than eliminating it. Properly fixing it needs either a shorter `Config.PositionSync` in feather-core or a server-side "ask that client for its position" round-trip — both outside this resource.
+
 **Found 2026-08-23 (in-game testing), fixed 2026-08-23: three separate stacking bugs.**
 
 - **`GrantItem` could blow straight past `max_stack_size`.** Its placement loop builds one batched `INSERT` executed only after the loop ends, but called `GetFreeSlot` per unit — a *database* read, which the pending batch is invisible to. Every call returned the same free compartment, so every unit past the first full stack piled into one slot: granting 100 apples with `max_stack_size = 20` produced a single compartment holding 78. Now claims against a local set seeded once from the DB and marked as the loop consumes it. `AddItem` was never affected — it writes each row as it goes, so its lookups do see prior placements.
