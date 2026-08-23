@@ -63,9 +63,9 @@ Public surface today, exported via `exports['feather-inventory'].initiate()`:
 - RPCs additive since the last version of this plan: `Feather:Inventory:MoveItem` (slot drag/swap), `Feather:Inventory:SplitStack` (peel part of a stack into a free compartment, same inventory), `Feather:Inventory:GrantAccess`/`RevokeAccess`/`SetPublic`/`ListAccess`
 - Events: `feather-inventory:ItemAdded`, `feather-inventory:ItemRemoved` (unchanged contract, still what `feather-weapons` listens to)
 
-Schema additions since the last version of this plan: `inventory.owner_character_id`, `inventory.is_public`, `inventory_items.slot_index`, the `inventory_access` table — all self-migrated at startup the same way `RegisterForeignKey` always has (`SHOW COLUMNS` + conditional `ALTER TABLE`), never touching `feather-recipe`'s own migration. `inventory.max_slots` (§10.4) is the next one in this lineage, once the scrollable-grid work lands.
+Schema additions since the last version of this plan: `inventory.owner_character_id`, `inventory.is_public`, `inventory_items.slot_index`, `inventory.max_slots`, the `inventory_access` table — all self-migrated at startup the same way `RegisterForeignKey` always has (`SHOW COLUMNS` + conditional `ALTER TABLE`), never touching `feather-recipe`'s own migration.
 
-Note: `config.lua`'s current comment on `Config.maxItemSlots` ("25 is no longer just a display preference, it's the book's real physical capacity now") describes the *pre-scroll* state and is superseded by §10.4's decision — worth updating that comment as part of implementing it, so it doesn't mislead the next person reading the config.
+`Config.maxItemSlots` is now the *default* capacity rather than a global physical limit — `config.lua`'s comment was updated alongside §10.4 so it no longer describes the pre-scroll state.
 
 ## 6. Residual issues found in the current code (not yet tracked elsewhere)
 
@@ -166,11 +166,19 @@ Grounded in what's already built (slot-based ledger, generic custom-inventory AP
 - **A generic admin inventory-inspection export.** `feather-admin`'s own dependency-plan section (`DEPENDENCY_SUPPORT_PLAN.md` §7) wants weapon-specific admin tooling; underneath that, inventory itself should expose a read (and permission-gated write) path for "show me this online character's inventory contents" independent of whether weapons exists at all — useful for support/moderation on day one.
 - **Sound/haptic feedback on pickup/drop/use.** Matches the "immersive" framing in the README's own pitch; currently unclear whether this exists — worth a quick audit before treating it as new work.
 
-### 10.4 Per-inventory capacity — resolved direction: scrollable grid, static chrome
+### 10.4 Per-inventory capacity — ~~resolved direction~~ **shipped 2026-08-23**: scrollable grid, static chrome
 
 Earlier drafts of this plan flagged "per-inventory slot count override" as blocked by the ledger's fixed 574×983 book art. Decision: keep the book frame, header, category tabs, and footer exactly as they are (fixed-size, no redesign) and make only the compartment grid inside that frame a scrollable region. This resolves the capacity problem without a second art asset per size tier and without abandoning the ledger's visual identity — README's own "Add Inventory specific slot counts" backlog item (§10.2) is this, not a separate piece of work.
 
-What this actually takes:
+**Delivered.** The grid *region* is pinned to exactly one page's height (475px, 430px paired) with `overflow-y: auto` and `grid-auto-rows`; the chrome around it never moves. Capacity below one page deliberately leaves the rest of the page blank rather than shrinking the region — the art underneath doesn't resize either way. Scrollbar is styled thin/ink-on-parchment so it doesn't read as a browser widget sitting on an 1899 ledger.
+
+Server side, `inventory.max_slots` (nullable, `NULL` = use the Config default, so no data migration was needed) is resolved through one `InventoryControllers.GetInventoryCapacity`, and every allocation and bounds check now goes through it: `EvaluateInventoryAcceptance`, both grant paths' `GetFreeSlot` loops (hoisted out of the loop, since capacity is a DB read now), `MoveInventoryItems`' target-slot assignment, `SplitStack`'s free-slot lookup, and `MoveItem`'s upper bound. That last one moved *after* the access checks rather than sitting with the cheap shape validation, so an unauthorized caller can't probe an arbitrary inventory's size.
+
+`RegisterInventory` gained a 9th `maxSlots` parameter, written only when explicitly passed — omitting it on a re-register must not silently reset a container that was already given a custom size back to the default, same rule the `ownerCharacterId`/`isPublic` flags already follow.
+
+Verified: the migration applies to the dev schema and is idempotent, `NULL` and explicit values both round-trip, both `RegisterInventory` INSERT paths execute with correct column alignment (checked in a transaction and rolled back), and the UI builds and lints clean.
+
+What this took:
 
 - **Frontend (`LedgerBook.vue`).** Wrap the grid cells in a scroll container sized to show one page's worth of compartments (still reads as "a page of the book") with `overflow-y: auto` for additional rows beyond that; the book-frame image, title/subtitle, category tabs, and footer label stay outside the scroll container and don't move. Drag-and-drop, hover highlighting, and the context menu need to keep working against scrolled-out-of-view slots (drop targets below the fold), not just visible ones.
 - **Config/schema.** `Config.maxItemSlots` stops being the single number that *is* the grid's physical capacity and goes back to being a default. Capacity becomes a real per-inventory value the same way `maxWeight`/`ignoreItemLimits` already are — `RegisterInventory` gains a capacity parameter, self-migrated the same way `owner_character_id`/`is_public`/`slot_index` were (a nullable `inventory.max_slots` column, `SHOW COLUMNS` + conditional `ALTER TABLE`, falling back to `Config.maxItemSlots` when null).
@@ -213,7 +221,7 @@ Two tracks. The `INV-W*` track matches `DEPENDENCY_SUPPORT_PLAN.md` §4.5 exactl
 - **Exit gate:** every currently-built inventory feature is actually reachable and consistent with the patterns the rest of the resource follows.
 
 ### Inventory-Native Phase B — README backlog (§10.2)
-- Scrollable grid + per-inventory capacity (§10.4) — do this first in this phase, since it directly resolves README's "Add Inventory specific slot counts" item and unblocks a cleaner hotbar design.
+- ~~Scrollable grid + per-inventory capacity (§10.4)~~ — **done.** This also resolves README's "Add Inventory specific slot counts" item, and unblocks the hotbar design (it can now be the always-visible first page rather than a separate strip).
 - ~~Ground LOD~~ — done.
 - Hotbar (as the always-visible first page, per §10.4), locale migration, confirmed Pinia migration, shift+drag-all — still open.
 - **Exit gate:** README's "Next Major version improvements" list is empty or explicitly re-scoped.
@@ -250,7 +258,7 @@ Two tracks. The `INV-W*` track matches `DEPENDENCY_SUPPORT_PLAN.md` §4.5 exactl
 - [x] Split-stack action shipped (§10.1, 2026-08-23) — same-inventory only, server-enforced cap, UI build + lint verified
 - [x] Rejection reasons confirmed surfaced in UI
 - [x] Debug prints replaced with gated logger
-- [ ] Scrollable grid + per-inventory capacity shipped (static chrome, scrolling compartments, `RegisterInventory` capacity param, per-book client payload)
+- [x] Scrollable grid + per-inventory capacity shipped (§10.4, 2026-08-23) — static chrome, scrolling compartments, `inventory.max_slots` self-migration, `RegisterInventory` capacity param, per-book client payload, all six server-side capacity call sites routed through one resolver
 - [x] Ground LOD shipped
 - [ ] Hotbar (as always-visible first page) / locale / Pinia / shift-drag-all (README backlog)
 - [ ] Condition/durability convention documented and shared with weapons

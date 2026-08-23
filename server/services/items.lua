@@ -65,12 +65,15 @@ function ItemsAPI.GrantItem(itemName, quantity, inventoryId)
   local maxStackSize = tonumber(definition.max_stack_size) or 1
   local currentSlot = InventoryControllers.GetJoinableSlot(inventory, definition.id, maxStackSize)
   local currentSlotCount = currentSlot ~= nil and #InventoryControllers.GetItemsInSlot(inventory, currentSlot) or 0
+  -- (§10.4) Hoisted out of the loop -- per-inventory capacity is a DB read
+  -- now, and it can't change while this grant is being assembled.
+  local capacity = InventoryControllers.GetInventoryCapacity(inventory)
 
   local placeholders = {}
   local values = {}
   for index = 1, quantity do
     if currentSlot == nil or currentSlotCount >= maxStackSize then
-      currentSlot = InventoryControllers.GetFreeSlot(inventory, tonumber(Config.maxItemSlots) or 0)
+      currentSlot = InventoryControllers.GetFreeSlot(inventory, capacity)
       currentSlotCount = 0
       if currentSlot == nil then
         return { error = true, code = 'inventory_full', message = 'Inventory has no available slots.' }
@@ -185,11 +188,13 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   -- race with another grant -- guarded rather than trusted.
   local currentSlot = InventoryControllers.GetJoinableSlot(inventory, itemId, max_stack_size)
   local currentSlotCount = currentSlot ~= nil and #InventoryControllers.GetItemsInSlot(inventory, currentSlot) or 0
+  -- (§10.4) Hoisted out of the loop, same as GrantItem above.
+  local capacity = InventoryControllers.GetInventoryCapacity(inventory)
   local granted = 0
 
   for _ = 1, quantity do
     if currentSlot == nil or currentSlotCount >= max_stack_size then
-      currentSlot = InventoryControllers.GetFreeSlot(inventory, tonumber(Config.maxItemSlots) or 0)
+      currentSlot = InventoryControllers.GetFreeSlot(inventory, capacity)
       currentSlotCount = 0
       if currentSlot == nil then
         warn('AddItem: ran out of free slots granting ' .. itemName .. ' to inventory ' .. tostring(inventory))

@@ -119,9 +119,8 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
   local itemId = tonumber(params.itemId)
   local toInventory = params.toInventory
   local toSlot = tonumber(params.toSlot)
-  local capacity = tonumber(Config.maxItemSlots) or 0
 
-  if not itemId or not toInventory or toSlot == nil or toSlot < 0 or toSlot >= capacity then
+  if not itemId or not toInventory or toSlot == nil or toSlot < 0 then
     return res({ error = true, message = 'Invalid move.' })
   end
 
@@ -143,6 +142,16 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
     warn('Rejected MoveItem: src ' .. src .. ' does not have access to target inventory ' .. tostring(toInventory))
     Feather.Notify.RightNotify(src, 'You do not have access to that inventory.', 3000)
     return res({ error = true, message = 'You do not have access to that inventory.' })
+  end
+
+  -- (§10.4) The upper bound is the destination inventory's own capacity, not
+  -- one global constant -- a 60-slot wagon must accept slot 40 while a
+  -- 25-slot book must still reject it. Checked after the access checks
+  -- rather than alongside the cheap shape validation above, so an
+  -- unauthorized caller can't probe an arbitrary inventory's size.
+  local capacity = InventoryControllers.GetInventoryCapacity(toInventory)
+  if toSlot >= capacity then
+    return res({ error = true, message = 'Invalid move.' })
   end
 
   if fromSlot == nil then
@@ -240,7 +249,7 @@ Feather.RPC.Register('Feather:Inventory:SplitStack', function(params, res, src)
     return res({ error = true, message = 'Choose fewer than the whole stack.' })
   end
 
-  local freeSlot = InventoryControllers.GetFreeSlot(inventory, tonumber(Config.maxItemSlots) or 0)
+  local freeSlot = InventoryControllers.GetFreeSlot(inventory, InventoryControllers.GetInventoryCapacity(inventory))
   if freeSlot == nil then
     Feather.Notify.RightNotify(src, 'No free compartment to split into.', 3000)
     return res({ error = true, message = 'No free compartment to split into.' })

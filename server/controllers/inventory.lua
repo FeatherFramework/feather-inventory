@@ -31,6 +31,21 @@ function InventoryControllers.GetInventoryLocationById(id)
   return result.location
 end
 
+-- (§10.4 per-inventory capacity) How many compartments this inventory has.
+-- `max_slots` is nullable and means "unset" rather than "zero", so a NULL
+-- falls back to the Config default -- that's what keeps every pre-existing
+-- inventory behaving exactly as before without a data migration.
+--
+-- Everything that allocates or bounds-checks a slot must resolve capacity
+-- through here rather than reading Config.maxItemSlots directly, or a
+-- larger container silently gets the default size at one call site and its
+-- real size at another.
+function InventoryControllers.GetInventoryCapacity(inventory)
+  local result = MySQL.query.await('SELECT `max_slots` FROM `inventory` WHERE `id`=? LIMIT 1;', { inventory })[1]
+  local configured = result and tonumber(result.max_slots)
+  return configured or tonumber(Config.maxItemSlots) or 0
+end
+
 function InventoryControllers.GetCustomInventoryById(key, id)
   local field = key..'_id'
   local result = MySQL.query.await('SELECT `id`, `uuid`, `max_weight`, `ignore_item_limit` FROM `inventory` WHERE `'..field..'` = ? LIMIT 1;', { id })[1]
@@ -371,6 +386,10 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
     end
   end
 
+  -- (§10.4) Resolved once rather than per item -- capacity is a per-inventory
+  -- database read now, and it cannot change midway through this loop.
+  local targetCapacity = InventoryControllers.GetInventoryCapacity(targetInventory)
+
   for _, item in pairs(items) do
     local id = nil
     if type(item) == 'table' then
@@ -394,7 +413,7 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
       local itemDefId = ItemControllers.GetItemByName(existingItem.name)
       local targetSlot = InventoryControllers.GetJoinableSlot(targetInventory, itemDefId, existingItem.max_stack_size)
       if targetSlot == nil then
-        targetSlot = InventoryControllers.GetFreeSlot(targetInventory, tonumber(Config.maxItemSlots) or 0)
+        targetSlot = InventoryControllers.GetFreeSlot(targetInventory, targetCapacity)
       end
 
       MySQL.query.await('UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=? WHERE `id`=?;', { targetInventory, targetSlot, id })

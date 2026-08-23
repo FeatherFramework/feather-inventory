@@ -82,9 +82,14 @@ end
 -- @param isPublic (INV-11/INV-12) If true, any src holding a valid temporary access grant
 --   (InventoryAPI.GrantTemporaryAccess) may open this inventory, in addition to the owner/ACL.
 --   Ignored (treated as false) on update if not explicitly passed, same as the other flags below.
+-- @param maxSlots (§10.4) How many compartments this inventory has. Leave nil to use
+--   Config.maxItemSlots -- capacity is a per-inventory property now, so a wagon or a
+--   storage chest can be genuinely bigger than a player's own book rather than every
+--   container in the world sharing one global size. The ledger UI scrolls to whatever
+--   this is, so it is not bounded by what fits on one visible page.
 -- @return Inventory UUID for accessing the inventory later (can be saved in your database table)
 --
-InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItemLimits, maxWeight, restrictedItems, ownerCharacterId, isPublic)
+InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItemLimits, maxWeight, restrictedItems, ownerCharacterId, isPublic, maxSlots)
   if not tableName or not id then
     warn(
       'All parameters are required!')
@@ -128,13 +133,19 @@ InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItem
     if isPublic ~= nil then
       MySQL.query.await('UPDATE `inventory` SET `is_public`=? WHERE `id`=?;', { isPublic and 1 or 0, inventory[1].id })
     end
+    -- Only written when explicitly passed, same as the two flags above --
+    -- omitting it on a re-register must not silently reset a container that
+    -- was already given a custom size back to the Config default.
+    if maxSlots ~= nil then
+      MySQL.query.await('UPDATE `inventory` SET `max_slots`=? WHERE `id`=?;', { tonumber(maxSlots), inventory[1].id })
+    end
 
     return inventory[1].uuid, inventory[1].id
   end
 
   -- Create new inventory
-  query = 'INSERT INTO `inventory` (' .. foreignKey .. ', location, name, max_weight, ignore_item_limit, owner_character_id, is_public) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *;'
-  inventory = MySQL.query.await(query, { id, tableName, displayName or 'storage', maxWeight or nil, ignoreItemLimits or false, ownerCharacterId or nil, isPublic and 1 or 0 })
+  query = 'INSERT INTO `inventory` (' .. foreignKey .. ', location, name, max_weight, ignore_item_limit, owner_character_id, is_public, max_slots) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *;'
+  inventory = MySQL.query.await(query, { id, tableName, displayName or 'storage', maxWeight or nil, ignoreItemLimits or false, ownerCharacterId or nil, isPublic and 1 or 0, maxSlots and tonumber(maxSlots) or nil })
 
   if not inventory or not inventory[1] then
     return nil
@@ -202,7 +213,9 @@ end
 -- @return { status = boolean, message = string }
 --
 local function EvaluateInventoryAcceptance(inventory, maxWeight, ignoreItemLimit, items)
-  local capacity = tonumber(Config.maxItemSlots) or 0
+  -- (§10.4) Per-inventory, not the global Config default -- a storage wagon
+  -- registered with a larger capacity must be measured against its own size.
+  local capacity = InventoryControllers.GetInventoryCapacity(inventory)
   local freeSlots = capacity - InventoryControllers.GetOccupiedSlotCount(inventory)
   -- Normalized through the Boolean lookup rather than `== 0`/`tonumber(x) ~= 1`
   -- -- this column has been read three different ways across this file,
@@ -557,10 +570,16 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
     inventory = inventory,
     inventoryItems = inventoryItems,
     inventoryIgnoreLimits = inventoryIgnoreLimits,
+    -- (§10.4) Each book carries its own capacity. The client used to send one
+    -- global Config.maxItemSlots for both, which made a large storage chest
+    -- render as the same size as the player's own book -- and, worse, let the
+    -- UI offer slots the server would then reject as out of range.
+    inventoryMaxSlots = InventoryControllers.GetInventoryCapacity(inventory),
     otherName = otherName,
     otherInventory = otherInventory,
     otherInventoryItems = otherInventoryItems,
-    otherInventoryIgnoreLimits = otherInventoryIgnoreLimits
+    otherInventoryIgnoreLimits = otherInventoryIgnoreLimits,
+    otherInventoryMaxSlots = otherInventory and InventoryControllers.GetInventoryCapacity(otherInventory) or nil
   }
 end
 

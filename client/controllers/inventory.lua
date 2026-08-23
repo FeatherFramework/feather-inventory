@@ -45,7 +45,15 @@ InventoryAction.Open = function(otherInventoryId, target)
       otherIgnoreLimits = results.otherInventoryIgnoreLimits,
       otherName = results.otherName,
       maxWeight = Config.maxWeight,
-      maxSlots = Config.maxItemSlots, -- TODO: Make this customizable
+      -- (§10.4) Per-book capacity, resolved server-side from each inventory's
+      -- own max_slots (falling back to Config.maxItemSlots when unset). This
+      -- was one global Config value for both books, which meant a large
+      -- storage container rendered at the player book's size. `maxSlots` is
+      -- kept as a fallback for the player book so an older server that
+      -- doesn't send the new field still renders something sane.
+      maxSlots = Config.maxItemSlots,
+      playerMaxSlots = results.inventoryMaxSlots,
+      otherMaxSlots = results.otherInventoryMaxSlots,
       categories = Feather.RPC.CallAsync('Feather:Inventory:GetCategories', {}),
       player = {
         dollars = player_display.dollars,

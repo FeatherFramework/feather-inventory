@@ -151,30 +151,32 @@ function tabLabelSize(count) {
 
       <div class="ledger-rule"></div>
 
-      <div class="ledger-grid">
-        <div
-          v-for="cell in cells"
-          :key="cell.index"
-          class="ledger-cell"
-          :style="{ background: cellBg(cell) }"
-          :class="{ selected: cell.index === selectedIndex && cell.repItem }"
-          @mousedown.left.prevent="emit('cellMouseDown', cell.index)"
-          @mouseup.left="emit('cellMouseUp', cell.index)"
-          @mouseenter="emit('cellMouseEnter', cell.index)"
-          @dblclick="emit('cellDblClick', cell.index)"
-          @contextmenu.prevent="(event) => emit('cellContextMenu', cell.index, event)"
-        >
-          <div class="ledger-cell-icon">
-            <img
-              v-if="cell.repItem"
-              :src="iconSrc(cell.repItem.name)"
-              class="ink"
-              draggable="false"
-              @error="onIconError"
-            />
+      <div class="ledger-grid-viewport">
+        <div class="ledger-grid">
+          <div
+            v-for="cell in cells"
+            :key="cell.index"
+            class="ledger-cell"
+            :style="{ background: cellBg(cell) }"
+            :class="{ selected: cell.index === selectedIndex && cell.repItem }"
+            @mousedown.left.prevent="emit('cellMouseDown', cell.index)"
+            @mouseup.left="emit('cellMouseUp', cell.index)"
+            @mouseenter="emit('cellMouseEnter', cell.index)"
+            @dblclick="emit('cellDblClick', cell.index)"
+            @contextmenu.prevent="(event) => emit('cellContextMenu', cell.index, event)"
+          >
+            <div class="ledger-cell-icon">
+              <img
+                v-if="cell.repItem"
+                :src="iconSrc(cell.repItem.name)"
+                class="ink"
+                draggable="false"
+                @error="onIconError"
+              />
+            </div>
+            <div v-if="cell.repItem" class="ledger-cell-qty">&times;{{ cell.qty }}</div>
+            <div v-if="cell.index === selectedIndex && cell.repItem" class="ledger-pointer"></div>
           </div>
-          <div v-if="cell.repItem" class="ledger-cell-qty">&times;{{ cell.qty }}</div>
-          <div v-if="cell.index === selectedIndex && cell.repItem" class="ledger-pointer"></div>
         </div>
       </div>
 
@@ -338,22 +340,60 @@ function tabLabelSize(count) {
   width: 54px;
 }
 
-.ledger-grid {
+/* (§10.4 scrollable grid) The book art is a fixed-size asset calibrated for
+   one page of exactly 5x5 compartments, and the chrome around it (header,
+   tabs, detail box, carrying line) is positioned against that. So the grid
+   REGION stays pinned to exactly one page's height no matter what the
+   inventory's capacity is -- only its contents scroll. A 60-slot wagon
+   scrolls; it does not stretch the page and push the detail box out of the
+   layout, which is what an auto-sized grid would do.
+
+   Capacity below one page (a small pouch) deliberately leaves the remaining
+   page area blank rather than shrinking the region, for the same reason:
+   the art underneath doesn't resize. */
+.ledger-grid-viewport {
   margin-top: 10px;
+  height: 475px; /* 5 rows x 95px */
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* Thin ink-on-parchment scrollbar -- the default chrome one reads as a
+     browser widget sitting on top of a 1899 ledger. */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(43, 32, 19, 0.45) transparent;
+}
+
+.paired .ledger-grid-viewport {
+  height: 430px; /* 5 rows x 86px */
+}
+
+.ledger-grid-viewport::-webkit-scrollbar {
+  width: 6px;
+}
+
+.ledger-grid-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ledger-grid-viewport::-webkit-scrollbar-thumb {
+  background: rgba(43, 32, 19, 0.4);
+  border-radius: 3px;
+}
+
+.ledger-grid-viewport::-webkit-scrollbar-thumb:hover {
+  background: rgba(43, 32, 19, 0.65);
+}
+
+.ledger-grid {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  /* Fixed 5 rows, not auto-rows -- the book art is a fixed-size asset
-     calibrated for exactly 25 compartments (see Config.maxItemSlots).
-     Pinning the row count here means a misconfigured capacity overflows
-     rather than silently stretching the grid and crushing the detail
-     box/carrying line below it out of the layout. */
-  grid-template-rows: repeat(5, 95px);
-  overflow: hidden;
+  /* auto-rows, not a pinned row count -- rows beyond the first page are
+     reachable by scrolling the viewport above rather than being clipped. */
+  grid-auto-rows: 95px;
   gap: 0;
 }
 
 .paired .ledger-grid {
-  grid-template-rows: repeat(5, 86px);
+  grid-auto-rows: 86px;
 }
 
 .ledger-cell {

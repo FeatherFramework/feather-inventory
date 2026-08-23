@@ -59,7 +59,9 @@ const onMessage = (event) => {
 
   player.title = 'PERSONAL EFFECTS';
   player.subtitle = data.player?.characterName || '';
-  player.capacity = Number(data.maxSlots) || 0;
+  // Each book has its own capacity now -- fall back to the old global
+  // maxSlots so a server that predates the per-book fields still renders.
+  player.capacity = Number(data.playerMaxSlots) || Number(data.maxSlots) || 0;
   player.inventoryId = data.playerInventory;
   player.ignoreLimits = data.playerIgnoreLimits || 0;
   player.items = data.playerItems || [];
@@ -69,7 +71,7 @@ const onMessage = (event) => {
   if (data.otherItems != null) {
     other.title = String(data.otherName || 'STORAGE').toUpperCase();
     other.subtitle = '';
-    other.capacity = Number(data.maxSlots) || 0;
+    other.capacity = Number(data.otherMaxSlots) || Number(data.maxSlots) || 0;
     other.inventoryId = data.otherInventory;
     other.ignoreLimits = data.otherIgnoreLimits || 0;
     other.items = data.otherItems;

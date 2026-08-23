@@ -16,13 +16,18 @@ Config.Debug = false
 -- Opens player inventory
 Config.hotkey = "I"
 
--- (Steampunk ledger) The book art is a fixed 574x983 asset calibrated for
--- an exact 5x5 grid -- unlike the old panel UI, this design has no room to
--- grow past that without either scrolling (not part of the design) or
--- shrinking every compartment (breaks the "pixel for pixel" fidelity the
--- handoff calls for). 25 is no longer just a display preference, it's the
--- book's real physical capacity now.
-Config.maxItemSlots = 25          -- maximum inventory slots
+-- (§10.4) The DEFAULT compartment count, used by any inventory that doesn't
+-- register a capacity of its own. Capacity is per-inventory now
+-- (`inventory.max_slots`, nullable -- see RegisterInventory's maxSlots
+-- parameter), so a storage wagon can be genuinely larger than a player's
+-- book instead of every container in the world sharing this one number.
+--
+-- The book art is still a fixed 574x983 asset calibrated for a 5x5 page, and
+-- that hasn't changed -- what changed is that the compartment grid inside it
+-- scrolls (the surrounding chrome stays pinned), so capacity is no longer
+-- bounded by what fits on one visible page. 25 remains the sensible default
+-- because it's exactly one page with no scrolling.
+Config.maxItemSlots = 25          -- default inventory slots, overridable per inventory
 -- Ground/Dropped item settings
 Config.Dropped = {
     GroupingRadius = 10,
