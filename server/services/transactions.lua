@@ -61,11 +61,19 @@ end
 -- Idempotency
 ------------------------------------------------------------------
 --
--- Bounded in-memory cache. The record only has to outlive the retry window of
--- the request that created it; persisting it would mean a schema plus a
--- cleanup job for something worthless after a restart. Bounded because an
--- unbounded cache keyed by caller-supplied strings is a memory-exhaustion
--- vector.
+-- Bounded in-memory cache, with a limitation worth stating rather than
+-- discovering:
+--
+-- IN-MEMORY IDEMPOTENCY DOES NOT SURVIVE A RESTART. A request retried across
+-- a resource or server restart will find no record and WILL execute again.
+-- For a reload or a repair that is acceptable -- the operation is cheap to
+-- repeat and the state is re-derived anyway. For anything ECONOMIC (a
+-- purchase, a payout, anything a player is charged for) it is not, and such a
+-- caller needs a persisted idempotency record it owns, keyed on its own
+-- domain, rather than relying on this cache.
+--
+-- Bounded because an unbounded cache keyed by caller-supplied strings is a
+-- memory-exhaustion vector.
 local IdempotencyCache = {}
 local IdempotencyOrder = {}
 local MAX_IDEMPOTENCY_ENTRIES = 500
@@ -109,7 +117,11 @@ end
 local function RunInTransaction(body)
     local bodyResult, bodyError
 
-    local committed = MySQL.startTransaction(function(query)
+    -- (Weapons review #1) pcall returns (executed, value). Reading only the
+    -- first is how a transaction that returned false WITHOUT raising gets
+    -- treated as success -- post-commit events emitted for a rollback. Both
+    -- are captured, and `executed` is checked before `committed` is trusted.
+    local executed, committed = pcall(MySQL.startTransaction, function(query)
         local ok, result = pcall(body, query)
         if not ok then
             bodyError = tostring(result)
@@ -125,6 +137,12 @@ local function RunInTransaction(body)
         return true
     end)
 
+    if not executed then
+        -- startTransaction itself failed (connection lost, upstream change in
+        -- the experimental API). Nothing committed.
+        return false, nil, tostring(committed)
+    end
+
     return committed == true, bodyResult, bodyError
 end
 
@@ -137,6 +155,32 @@ Tx.__index = Tx
 
 local function NewTx(query, context)
     return setmetatable({ query = query, context = context or {} }, Tx)
+end
+
+---
+-- Require Access
+--
+-- (Weapons review) When the context names an `actorSource`, every mutating
+-- operation asserts that actor's live access to the inventory it touches --
+-- rather than trusting that whoever built the transaction checked beforehand.
+-- A context with no actorSource is a trusted server-side operation (a
+-- scripted payout, an admin grant) and is not gated.
+--
+-- Asserted per operation rather than once per transaction, because a
+-- transaction can touch several inventories and access to one is not access
+-- to another.
+--
+function Tx:RequireAccess(inventoryId, action)
+    local src = self.context.actorSource
+    if not src then
+        return nil
+    end
+
+    local decision = InventoryAPI.CanAccessInventory(src, inventoryId, action, self.context)
+    if not Result.IsOk(decision) then
+        return decision
+    end
+    return nil
 end
 
 ---
@@ -155,7 +199,7 @@ function Tx:GetItemForUpdate(instanceId)
 
     local rows = self.query([[
         SELECT ii.`id`, ii.`inventory_id`, ii.`slot_index`, ii.`item_id`,
-               ii.`metadata`, ii.`metadata_revision`,
+               ii.`metadata`, ii.`metadata_revision`, ii.`row_revision`,
                i.`name`, i.`display_name`, i.`weight`, i.`type`,
                i.`max_quantity`, i.`max_stack_size`, i.`instance_mode`
         FROM `inventory_items` ii
@@ -181,6 +225,10 @@ function Tx:GetItemForUpdate(instanceId)
         inventoryId = tonumber(row.inventory_id),
         slot = row.slot_index ~= nil and tonumber(row.slot_index) or nil,
         metadata = document,
+        -- `revision` is the general instance revision and the one a
+        -- compare-and-set should carry: it moves for metadata writes AND
+        -- moves. metadataRevision is the narrower "did the document change".
+        revision = tonumber(row.row_revision) or 0,
         metadataRevision = tonumber(row.metadata_revision) or 0,
         definition = {
             id = tonumber(row.item_id),
@@ -220,6 +268,9 @@ function Tx:RemoveQuantity(inventoryId, definitionId, quantity)
     if wanted < 1 then
         return Result.Err(Result.Codes.INVALID_INPUT, 'Quantity must be at least 1.')
     end
+
+    local denied = self:RequireAccess(inventoryId, InventoryAPI.AccessModes.REMOVE)
+    if denied then return denied end
 
     local rows = self.query(
         'SELECT `id` FROM `inventory_items` WHERE `inventory_id`=? AND `item_id`=? ORDER BY `id` LIMIT ' ..
@@ -268,6 +319,9 @@ function Tx:AddQuantity(inventoryId, definitionId, quantity, metadata)
     if wanted < 1 then
         return Result.Err(Result.Codes.INVALID_INPUT, 'Quantity must be at least 1.')
     end
+
+    local denied = self:RequireAccess(inventoryId, InventoryAPI.AccessModes.INSERT)
+    if denied then return denied end
 
     local defRows = self.query(
         'SELECT `name`, `max_stack_size`, `instance_mode` FROM `items` WHERE `id`=? LIMIT 1;', { definitionId })
@@ -355,6 +409,47 @@ function Tx:AddQuantity(inventoryId, definitionId, quantity, metadata)
 end
 
 ---
+-- Create Instance
+--
+-- (Weapons review) Atomic creation of ONE unique instance with its complete
+-- initial metadata -- the production equivalent of a `CreateInstance` the
+-- review found missing. Returns the new instance id and its revision, so the
+-- caller can immediately compare-and-set against it without a second read.
+--
+-- Refuses a `stack` definition on purpose: creating a single identified
+-- instance is a unique-item operation, and silently creating one unit of a
+-- stackable definition would produce something whose identity the caller
+-- cannot rely on. Use AddQuantity for stackables.
+--
+function Tx:CreateInstance(inventoryId, definitionId, metadata)
+    local defRows = self.query(
+        'SELECT `instance_mode` FROM `items` WHERE `id`=? LIMIT 1;', { definitionId })
+    local def = defRows and defRows[1]
+    if not def then
+        return Result.Err(Result.Codes.NOT_FOUND, 'Item definition does not exist.')
+    end
+    if def.instance_mode ~= 'unique' then
+        return Result.Err(Result.Codes.UNSUPPORTED,
+            'CreateInstance is for unique definitions; use AddQuantity for stackables.',
+            { instanceMode = def.instance_mode })
+    end
+
+    local added = self:AddQuantity(inventoryId, definitionId, 1, metadata)
+    if not Result.IsOk(added) then
+        return added
+    end
+
+    local instanceId = added.value[1]
+    local rows = self.query(
+        'SELECT `row_revision` FROM `inventory_items` WHERE `id`=? LIMIT 1;', { instanceId })
+
+    return Result.Ok({
+        instanceId = instanceId,
+        revision = tonumber(rows and rows[1] and rows[1].row_revision) or 0,
+    })
+end
+
+---
 -- Set Metadata
 --
 -- Replaces the document and bumps the revision. `expectedRevision` makes it a
@@ -373,24 +468,32 @@ function Tx:SetMetadata(instanceId, document, expectedRevision)
             { size = #encoded, limit = 4096 })
     end
 
+    -- (Weapons review #3) Compared against row_revision, not
+    -- metadata_revision: the caller is asserting "nothing about this instance
+    -- has changed since I read it", and a MOVE is such a change even though
+    -- it leaves the document untouched.
     if expectedRevision ~= nil then
         local current = self.query(
-            'SELECT `metadata_revision` FROM `inventory_items` WHERE `id`=? FOR UPDATE;', { id })
-        local actual = current and current[1] and tonumber(current[1].metadata_revision)
+            'SELECT `row_revision` FROM `inventory_items` WHERE `id`=? FOR UPDATE;', { id })
+        local actual = current and current[1] and tonumber(current[1].row_revision)
         if actual == nil then
             return Result.Err(Result.Codes.NOT_FOUND, 'Item instance does not exist.')
         end
         if actual ~= tonumber(expectedRevision) then
-            return Result.Err(Result.Codes.CONFLICT, 'Metadata revision has moved since it was read.',
+            return Result.Err(Result.Codes.CONFLICT, 'Instance revision has moved since it was read.',
                 { expected = tonumber(expectedRevision), actual = actual })
         end
     end
 
-    self.query('UPDATE `inventory_items` SET `metadata`=?, `metadata_revision`=`metadata_revision`+1 WHERE `id`=?;',
-        { encoded, id })
+    self.query([[
+        UPDATE `inventory_items`
+        SET `metadata`=?, `metadata_revision`=`metadata_revision`+1, `row_revision`=`row_revision`+1
+        WHERE `id`=?;
+    ]], { encoded, id })
 
-    local updated = self.query('SELECT `metadata_revision` FROM `inventory_items` WHERE `id`=? LIMIT 1;', { id })
-    local revision = updated and updated[1] and tonumber(updated[1].metadata_revision)
+    local updated = self.query(
+        'SELECT `metadata_revision`, `row_revision` FROM `inventory_items` WHERE `id`=? LIMIT 1;', { id })
+    local revision = updated and updated[1] and tonumber(updated[1].row_revision)
 
     self.metadataChanged = self.metadataChanged or {}
     self.metadataChanged[#self.metadataChanged + 1] = { instanceId = id, revision = revision }
@@ -415,18 +518,30 @@ function Tx:MoveInstance(instanceId, toInventoryId, toSlot)
         return Result.Err(Result.Codes.DENIED, reason or 'Move blocked by a guard.')
     end
 
-    local rows = self.query('SELECT `inventory_id` FROM `inventory_items` WHERE `id`=? FOR UPDATE;', { id })
-    local from = rows and rows[1] and tonumber(rows[1].inventory_id)
-    if not from then
+    local rows = self.query(
+        'SELECT `inventory_id`, `item_id`, `row_revision` FROM `inventory_items` WHERE `id`=? FOR UPDATE;', { id })
+    local row = rows and rows[1]
+    if not row then
         return Result.Err(Result.Codes.NOT_FOUND, 'Item instance does not exist.')
     end
+    local from = tonumber(row.inventory_id)
 
-    self.query('UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=? WHERE `id`=?;',
-        { toInventoryId, toSlot, id })
+    -- (Weapons review #3) A move bumps row_revision, so a concurrent
+    -- compare-and-set holding a pre-move revision correctly conflicts.
+    self.query([[
+        UPDATE `inventory_items`
+        SET `inventory_id`=?, `slot_index`=?, `row_revision`=`row_revision`+1
+        WHERE `id`=?;
+    ]], { toInventoryId, toSlot, id })
 
     self.moved = self.moved or {}
-    self.moved[#self.moved + 1] =
-        { instanceId = id, fromInventoryId = from, toInventoryId = toInventoryId }
+    self.moved[#self.moved + 1] = {
+        instanceId = id,
+        fromInventoryId = from,
+        toInventoryId = toInventoryId,
+        definitionId = tonumber(row.item_id),
+        revision = (tonumber(row.row_revision) or 0) + 1,
+    }
 
     return Result.Ok(true)
 end
@@ -506,7 +621,8 @@ function TransactionAPI.Transaction(context, fn)
             TriggerEvent('feather-inventory:ItemAdded', entry.instanceId, 1, entry.inventoryId)
         end
         for _, entry in ipairs(handle.moved or {}) do
-            GuardsAPI.EmitItemMoved(entry.instanceId, entry.fromInventoryId, entry.toInventoryId, context)
+            GuardsAPI.EmitItemMoved(entry.instanceId, entry.fromInventoryId, entry.toInventoryId, context,
+                { definitionId = entry.definitionId, revision = entry.revision })
             if tostring(entry.fromInventoryId) ~= tostring(entry.toInventoryId) then
                 TriggerEvent('feather-inventory:ItemRemoved', entry.instanceId, 1, entry.fromInventoryId)
                 TriggerEvent('feather-inventory:ItemAdded', entry.instanceId, 1, entry.toInventoryId)

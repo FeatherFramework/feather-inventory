@@ -80,9 +80,56 @@ if Config.DevMode then
             not Result.IsOk(stale) and stale.error.code == Result.Codes.CONFLICT,
             stale.error and stale.error.code)
 
-        -- 4. Clean up after ourselves.
+        -- 4. Ammo DELETED mid-flight must conflict, not silently succeed.
+        --    (Review #2) Simulated by deleting the row, then attempting a CAS
+        --    against the revision read before it vanished.
+        local ghost
+        InventoryAPI.Transaction({ reason = 'smoketest_seed_ghost' }, function(tx)
+            local added = tx:AddQuantity(inventory, definition.id, 1)
+            if Result.IsOk(added) then ghost = added.value[1] end
+            return true
+        end)
+        InventoryControllers.DeleteInventoryItem(ghost)
+        local deleted = InventoryAPI.Transaction({ reason = 'smoketest_deleted' }, function(tx)
+            return tx:SetMetadata(ghost, { ammo = 1 }, 0)
+        end)
+        report('deleted row conflicts',
+            not Result.IsOk(deleted) and deleted.error.code == Result.Codes.NOT_FOUND,
+            deleted.error and deleted.error.code)
+
+        -- 5. Ammo MOVED mid-flight must conflict. (Review #3) row_revision has
+        --    to move for a move, or a stale CAS would still pass and consume
+        --    ammunition from its new owner.
+        local mover
+        InventoryAPI.Transaction({ reason = 'smoketest_seed_move' }, function(tx)
+            local added = tx:AddQuantity(inventory, definition.id, 1)
+            if Result.IsOk(added) then mover = added.value[1] end
+            return true
+        end)
+        local beforeMove = InstancesAPI.GetInstance(mover)
+        local staleRevision = Result.IsOk(beforeMove) and beforeMove.value.revision or 0
+        InventoryAPI.Transaction({ reason = 'smoketest_do_move' }, function(tx)
+            return tx:MoveInstance(mover, inventory, 24)
+        end)
+        local movedConflict = InventoryAPI.Transaction({ reason = 'smoketest_moved' }, function(tx)
+            return tx:SetMetadata(mover, { ammo = 0 }, staleRevision)
+        end)
+        report('moved row conflicts (row_revision)',
+            not Result.IsOk(movedConflict) and movedConflict.error.code == Result.Codes.CONFLICT,
+            movedConflict.error and movedConflict.error.code)
+
+        -- 6. Legacy removal must respect a destroy guard. (Review #4)
+        GuardsAPI.RegisterDestroyGuard('smoketest_veto', function()
+            return false, 'smoketest veto'
+        end)
+        local vetoed = ItemsAPI.RemoveItemById(mover)
+        GuardsAPI.UnregisterDestroyGuard('smoketest_veto')
+        report('legacy removal respects guard', vetoed.error == true, vetoed.message)
+
+        -- Clean up everything this test created.
         InventoryAPI.Transaction({ reason = 'smoketest_cleanup' }, function(tx)
-            return tx:RemoveQuantity(inventory, definition.id, 1)
+            tx:RemoveQuantity(inventory, definition.id, 2)
+            return true
         end)
         print('[InvTxSmokeTest] done')
     end, true)

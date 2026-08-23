@@ -155,11 +155,20 @@ function GuardsAPI.EmitItemCreated(instanceId, definitionId, inventoryId, contex
     })
 end
 
-function GuardsAPI.EmitItemMoved(instanceId, fromInventoryId, toInventoryId, context)
+function GuardsAPI.EmitItemMoved(instanceId, fromInventoryId, toInventoryId, context, extra)
+    -- (Weapons review) `extra` carries definitionId/revision where the caller
+    -- knows them. The transaction path previously passed nil for both, so a
+    -- consumer had to re-query to learn what had just moved.
+    extra = extra or {}
     Emit(GuardsAPI.Events.ItemMoved, {
+        operation = 'move',
         instanceId = instanceId,
+        definitionId = extra.definitionId,
+        revision = extra.revision,
         fromInventoryId = fromInventoryId,
         toInventoryId = toInventoryId,
+        actorSource = context and context.actorSource,
+        actorCharacterId = context and context.actorCharacterId,
         correlationId = context and context.correlationId,
         reason = context and context.reason,
     })

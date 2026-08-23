@@ -60,6 +60,24 @@ local function EnsureInstanceSchema()
             ADD COLUMN `metadata_revision` INT UNSIGNED NOT NULL DEFAULT 0;
         ]])
     end
+
+    -- (Weapons review #3) A GENERAL instance revision, bumped by any change
+    -- to the row -- metadata writes, moves, slot changes.
+    --
+    -- metadata_revision alone was insufficient and the review is right about
+    -- why: a caller could read ammunition, another request could MOVE that
+    -- ammunition to a different inventory without touching metadata, and the
+    -- first caller's compare-and-set would still pass -- then delete the ammo
+    -- from its new owner. Movement is a state change the revision has to see.
+    --
+    -- Kept separate from metadata_revision rather than replacing it, so a
+    -- consumer that genuinely only cares whether the DOCUMENT changed can
+    -- still ask that narrower question.
+    columns = MySQL.query.await("SHOW COLUMNS FROM `inventory_items` LIKE 'row_revision';")
+    if #columns < 1 then
+        MySQL.query.await(
+            "ALTER TABLE `inventory_items` ADD COLUMN `row_revision` INT UNSIGNED NOT NULL DEFAULT 0;")
+    end
 end
 
 CreateThread(function()
@@ -280,7 +298,7 @@ function InstancesAPI.GetInstance(instanceId)
     end
 
     local row = MySQL.query.await([[
-        SELECT ii.`id`, ii.`inventory_id`, ii.`slot_index`, ii.`metadata_revision`,
+        SELECT ii.`id`, ii.`inventory_id`, ii.`slot_index`, ii.`metadata_revision`, ii.`row_revision`,
                i.`id` AS `definition_id`, i.`name`, i.`display_name`, i.`description`,
                i.`weight`, i.`usable`, i.`type`, i.`category_id`,
                i.`max_quantity`, i.`max_stack_size`, i.`instance_mode`
@@ -303,6 +321,7 @@ function InstancesAPI.GetInstance(instanceId)
         inventoryId = tonumber(row.inventory_id),
         slot = row.slot_index ~= nil and tonumber(row.slot_index) or nil,
         metadata = metadata.value.document,
+        revision = tonumber(row.row_revision) or 0,
         metadataRevision = metadata.value.revision,
         definition = {
             id = tonumber(row.definition_id),

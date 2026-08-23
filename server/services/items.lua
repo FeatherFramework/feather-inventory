@@ -335,7 +335,26 @@ ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
   -- while RemoveItemById fired the same event with an instance id.
   local doomed = InventoryControllers.GetInstanceIdsForRemoval(inventory, itemId, quantity)
 
-  InventoryControllers.DeleteInventoryItems(inventory, itemId, quantity)
+  -- (Weapons review #4) Every public removal path asks the destroy guards
+  -- first. This previously called the raw delete, so an equipped weapon could
+  -- be removed through a legacy API with no chance for weapons to veto or
+  -- unequip -- the guard registry existed but only the new paths used it.
+  -- All-or-nothing: a partial removal because one unit was vetoed would be
+  -- worse than refusing the whole request.
+  for _, instanceId in ipairs(doomed) do
+    local allowed, reason = GuardsAPI.CanDestroyInstance(instanceId, { reason = 'remove_by_name' })
+    if not allowed then
+      return {
+        error = true,
+        code = 'denied',
+        message = reason or 'Removal blocked by a guard.'
+      }
+    end
+  end
+
+  for _, instanceId in ipairs(doomed) do
+    InventoryControllers.DeleteInventoryItem(instanceId)
+  end
 
   for _, instanceId in ipairs(doomed) do
     TriggerEvent('feather-inventory:ItemRemoved', instanceId, 1, inventory)
@@ -358,9 +377,22 @@ ItemsAPI.RemoveItemById = function(id)
       message = "Item not available."
     }
   end
+  -- (Weapons review #4) Guarded, like every other removal path. An equipped
+  -- weapon must not be destroyable through a legacy API without weapons
+  -- getting a chance to veto or unequip first.
+  local allowed, reason = GuardsAPI.CanDestroyInstance(item.id, { reason = 'remove_by_id' })
+  if not allowed then
+    return {
+      error = true,
+      code = 'denied',
+      message = reason or 'Removal blocked by a guard.'
+    }
+  end
+
   InventoryControllers.DeleteInventoryItem(item.id)
 
   TriggerEvent('feather-inventory:ItemRemoved', item.id, 1, item.inventory_id)
+  GuardsAPI.EmitItemDestroyed(item.id, item.item_id, item.inventory_id, { reason = 'remove_by_id' })
   return {
     error = false,
   }
