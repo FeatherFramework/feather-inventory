@@ -94,6 +94,35 @@ local function IsWithinDistance(x1, y1, z1, x2, y2, z2, maxDistance)
 end
 
 ---
+-- Is Within Ground Pickup Distance
+--
+-- (Weapons review #9) A ground pile's UUID never expires, so proving you were
+-- near it once is not proof you are near it now. `is_public` is enough to
+-- READ a pile; taking from one additionally requires live proximity, checked
+-- at open and again on every mutation via CanAccessInventory.
+--
+-- @param src Caller's player source
+-- @param inventoryId Raw inventory.id of the ground pile
+-- @return True if the caller is currently within pickup range of that pile
+--
+function IsWithinGroundPickupDistance(src, inventoryId)
+    local groundId = GroundControllers.GetGroundID(inventoryId)
+    if not groundId then
+        return false
+    end
+
+    local groundX, groundY, groundZ = GroundControllers.GetGroundById(groundId)
+    if not groundX then
+        return false
+    end
+
+    local x, y, z = GetCharacterPosition(src)
+    -- Same buffer GetGroundUID uses, for the position-sync staleness window.
+    return IsWithinDistance(x, y, z, tonumber(groundX), tonumber(groundY), tonumber(groundZ),
+        Config.Dropped.PromptViewDistance + 1.0)
+end
+
+---
 -- Is Within Robbery Distance
 --
 -- True if src is currently near the character behind targetSrc's ped, per
@@ -399,6 +428,18 @@ InventoryAPI.CanAccessInventory = function(src, inventoryId, action, context)
     -- arriving late cannot ride an authorization that was true a minute ago.
     if not InventoryAPI.IsInventoryAccessibleBySrc(src, inventoryId) then
         return Result.Err(Result.Codes.DENIED, 'You do not have access to that inventory.',
+            { action = action }, context.correlationId)
+    end
+
+    -- (Weapons review #9) Taking from or adding to a ground pile requires
+    -- being near it at THIS moment. Re-checked per call rather than cached,
+    -- so a mutation arriving late cannot ride proximity that has since ended
+    -- -- the "revalidate inside the mutation" point. READ is exempt: seeing
+    -- a pile you walked away from is harmless.
+    if action ~= InventoryAPI.AccessModes.READ
+        and InventoryControllers.GetInventoryLocationById(inventoryId) == 'ground'
+        and not IsWithinGroundPickupDistance(src, inventoryId) then
+        return Result.Err(Result.Codes.DENIED, 'You are too far away.',
             { action = action }, context.correlationId)
     end
 

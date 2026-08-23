@@ -16,6 +16,17 @@ function StartAPI()
   -- (INV-W4) Operational surface: transaction counters for contention
   -- monitoring, and the access-mode decision function.
   inventoryServerAPI.Diagnostics = { GetTransactionMetrics = TransactionAPI.GetMetrics }
+  -- (Weapons review #5) Persisted equipment slots -- generic
+  -- character/slot/instance storage, survives restarts.
+  inventoryServerAPI.Equipment = EquipmentAPI
+
+  -- (Weapons review #10) The provider surface feather-weapons' adapter
+  -- expects, exposed at the top level under exactly those names so the
+  -- adapter needs no translation layer.
+  inventoryServerAPI.GetCapabilities = InstancesAPI.GetCapabilities
+  inventoryServerAPI.GetItemForCharacter = InstancesAPI.GetItemForCharacter
+  inventoryServerAPI.GetEquippedForCharacter = EquipmentAPI.GetEquippedForCharacter
+  inventoryServerAPI.SetEquippedForCharacter = EquipmentAPI.SetEquippedForCharacter
 
   exports('initiate', function()
     return inventoryServerAPI

@@ -112,18 +112,32 @@ function ItemsAPI.GrantItem(itemName, quantity, inventoryId)
     values[#values + 1] = currentSlot
     currentSlotCount = currentSlotCount + 1
   end
-  local succeeded, insertId = pcall(MySQL.insert.await,
-    ('INSERT INTO inventory_items (inventory_id, item_id, slot_index) VALUES %s'):format(table.concat(placeholders, ', ')), values)
-  if not succeeded or insertId == nil then
+  -- (Weapons review #8) RETURNING `id` so the real instance ids are known.
+  -- This previously fired ItemAdded with `definition.id` while the movement
+  -- paths fired it with an inventory_items.id -- the same event carrying two
+  -- different kinds of identifier depending on which route produced it, so a
+  -- consumer could not tell what it had been handed. Every path now emits an
+  -- INSTANCE id.
+  local succeeded, inserted = pcall(MySQL.query.await,
+    ('INSERT INTO inventory_items (inventory_id, item_id, slot_index) VALUES %s RETURNING `id`;')
+    :format(table.concat(placeholders, ', ')), values)
+  if not succeeded or type(inserted) ~= 'table' or #inserted == 0 then
     return { error = true, code = 'database_error', message = 'Items could not be granted.' }
   end
 
-  TriggerEvent('feather-inventory:ItemAdded', definition.id, quantity, inventory)
+  local instanceIds = {}
+  for index, row in ipairs(inserted) do
+    instanceIds[index] = tonumber(row.id)
+    TriggerEvent('feather-inventory:ItemAdded', tonumber(row.id), 1, inventory)
+    GuardsAPI.EmitItemCreated(tonumber(row.id), definition.id, inventory, { reason = 'grant' })
+  end
+
   return {
     error = false,
     itemName = definition.name,
     displayName = definition.display_name,
-    quantity = quantity
+    quantity = quantity,
+    instanceIds = instanceIds
   }
 end
 
@@ -229,17 +243,17 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
       end
     end
 
-    local item = InventoryControllers.CreateInventoryItem(inventory, itemId, currentSlot)
+    -- (Weapons review #4) Metadata goes in with the INSERT rather than being
+    -- written key-by-key afterwards, so the instance is never briefly visible
+    -- without the state that defines it.
+    local item = InventoryControllers.CreateInventoryItem(inventory, itemId, currentSlot, metadata)
     currentSlotCount = currentSlotCount + 1
     granted = granted + 1
 
-    if metadata ~= nil then
-      for k, v in pairs(metadata) do
-        InventoryControllers.SetMetadata(item[1].id, k, v)
-      end
-    end
-
-    TriggerEvent('feather-inventory:ItemAdded', itemId, 1, inventory)
+    -- (Weapons review #8) `itemId` here is the DEFINITION id from
+    -- GetItemByName; the instance is item[1].id. Emitting the definition
+    -- was the inconsistency the review caught.
+    TriggerEvent('feather-inventory:ItemAdded', item[1].id, 1, inventory)
   end
 
   -- (Capacity model unification) The loop above can still come up short if
@@ -315,11 +329,42 @@ ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
   -- every call. Every caller of this exported function -- crafting
   -- ingredient consumption, ammo use, anything built on RemoveItemByName --
   -- was broken.
-  InventoryControllers.DeleteInventoryItems(inventory, itemId, quantity)
-  
-  TriggerEvent('feather-inventory:ItemRemoved', itemId, quantity, inventoryId)
+  -- (Weapons review #8) Resolve which instances are going before deleting
+  -- them, so the removal events name the rows that actually left rather than
+  -- the definition. Previously this fired ItemRemoved with a definition id
+  -- while RemoveItemById fired the same event with an instance id.
+  local doomed = InventoryControllers.GetInstanceIdsForRemoval(inventory, itemId, quantity)
+
+  -- (Weapons review #4) Every public removal path asks the destroy guards
+  -- first. This previously called the raw delete, so an equipped weapon could
+  -- be removed through a legacy API with no chance for weapons to veto or
+  -- unequip -- the guard registry existed but only the new paths used it.
+  -- All-or-nothing: a partial removal because one unit was vetoed would be
+  -- worse than refusing the whole request.
+  for _, instanceId in ipairs(doomed) do
+    local allowed, reason = GuardsAPI.CanDestroyInstance(instanceId, { reason = 'remove_by_name' })
+    if not allowed then
+      return {
+        error = true,
+        code = 'denied',
+        message = reason or 'Removal blocked by a guard.'
+      }
+    end
+  end
+
+  for _, instanceId in ipairs(doomed) do
+    InventoryControllers.DeleteInventoryItem(instanceId)
+  end
+
+  for _, instanceId in ipairs(doomed) do
+    TriggerEvent('feather-inventory:ItemRemoved', instanceId, 1, inventory)
+    GuardsAPI.EmitItemDestroyed(instanceId, itemId, inventory, { reason = 'remove_by_name' })
+  end
+
   return {
-    error = false
+    error = false,
+    removed = #doomed,
+    instanceIds = doomed
   }
 end
 
@@ -332,9 +377,22 @@ ItemsAPI.RemoveItemById = function(id)
       message = "Item not available."
     }
   end
+  -- (Weapons review #4) Guarded, like every other removal path. An equipped
+  -- weapon must not be destroyable through a legacy API without weapons
+  -- getting a chance to veto or unequip first.
+  local allowed, reason = GuardsAPI.CanDestroyInstance(item.id, { reason = 'remove_by_id' })
+  if not allowed then
+    return {
+      error = true,
+      code = 'denied',
+      message = reason or 'Removal blocked by a guard.'
+    }
+  end
+
   InventoryControllers.DeleteInventoryItem(item.id)
 
   TriggerEvent('feather-inventory:ItemRemoved', item.id, 1, item.inventory_id)
+  GuardsAPI.EmitItemDestroyed(item.id, item.item_id, item.inventory_id, { reason = 'remove_by_id' })
   return {
     error = false,
   }
@@ -358,11 +416,17 @@ ItemsAPI.SetMetadata = function(item, metadata)
     }
   end
 
-  for k, v in pairs(metadata) do
-    InventoryControllers.SetMetadata(item, k, v)
+  -- (Weapons review #2) Routed through the versioned document. The flat
+  -- item_metadata table is no longer written or read by this resource --
+  -- nothing consumed it, and a per-key write has no atomicity or revision.
+  local written = InstancesAPI.MergeMetadata(item, metadata)
+  if not Result.IsOk(written) then
+    return { error = true, code = written.error.code, message = written.error.message }
   end
+
   return {
-    error = false
+    error = false,
+    metadataRevision = written.value.revision
   }
 end
 
@@ -370,7 +434,7 @@ end
 -- Condition / durability (§10.3)
 ------------------------------------------------------------------
 --
--- A generic per-instance wear value on top of item_metadata. This resource
+-- A generic per-instance wear value in the versioned metadata document. This resource
 -- owns the convention only -- key, range, clamping, validation, display --
 -- and none of the policy. When an item wears, by how much, and what a worn
 -- item then does are all questions for whichever resource models that
@@ -379,10 +443,8 @@ end
 -- nothing can render a wear indicator for all of them.
 --
 -- Storage-agnostic by design. `condition` is a single small integer, so it
--- sits in the current flat item_metadata table unchanged, and will survive
--- INV-W1's move to a versioned metadata document without the convention
--- itself changing -- which is why MASTER_PLAN sequences this alongside that
--- work rather than after it.
+-- lives in the versioned metadata document, so it inherits compare-and-set
+-- and atomic writes without the convention itself changing.
 
 local function ConditionKey()
   return (Config.Condition and Config.Condition.Key) or 'condition'
@@ -399,10 +461,7 @@ end
 -- @return Integer 0..Max, or nil if this instance has no condition recorded
 --
 ItemsAPI.GetCondition = function(itemId)
-  -- (INV-W1) Reads through the versioned metadata document, which
-  -- transparently falls back to the legacy flat item_metadata rows for
-  -- instances written before that migration -- so this behaves identically
-  -- either side of it.
+  -- (INV-W1) Reads through the versioned metadata document.
   local metadata = InstancesAPI.ReadMetadata(tonumber(itemId))
   if not Result.IsOk(metadata) then
     return nil

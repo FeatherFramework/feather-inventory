@@ -92,7 +92,7 @@ function InventoryControllers.InventoryItemCount(inventory, itemId)
 end
 
 function InventoryControllers.GetInventoryItemById(id)
-  local result = MySQL.query.await('SELECT `inventory_items`.`id`, `inventory_items`.`updated_at`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, COALESCE(`inventory_items`.`metadata`, JSON_OBJECTAGG(`item_metadata`.`key`, `item_metadata`.`value`)) AS `item_metadata`, `inventory_items`.`inventory_id` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` LEFT JOIN `item_metadata` ON `item_metadata`.`inventory_items_id` = `inventory_items`.`id` WHERE `inventory_items`.`id`=? GROUP BY `inventory_items`.`metadata`, `inventory_items`.`id`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size` LIMIT 1;', { id })[1]
+  local result = MySQL.query.await('SELECT `inventory_items`.`id`, `inventory_items`.`updated_at`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, `inventory_items`.`metadata` AS `item_metadata`, `inventory_items`.`inventory_id` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` WHERE `inventory_items`.`id`=? GROUP BY `inventory_items`.`metadata`, `inventory_items`.`id`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size` LIMIT 1;', { id })[1]
 
   if result == nil then
     return false
@@ -124,7 +124,7 @@ function InventoryControllers.GetInventoryTotalWeight(inventory)
 end
 
 function InventoryControllers.GetInventoryItems(inventory)
-  local items = MySQL.query.await( 'SELECT `inventory_items`.`id`, `inventory_items`.`updated_at`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, COALESCE(`inventory_items`.`metadata`, JSON_OBJECTAGG(`item_metadata`.`key`, `item_metadata`.`value`)) AS `item_metadata` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` LEFT JOIN `item_metadata` ON `item_metadata`.`inventory_items_id` = `inventory_items`.`id` WHERE `inventory_items`.`inventory_id` = ? GROUP BY `inventory_items`.`metadata`, `inventory_items`.`id`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`;', { inventory })
+  local items = MySQL.query.await( 'SELECT `inventory_items`.`id`, `inventory_items`.`updated_at`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, `inventory_items`.`metadata` AS `item_metadata` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` WHERE `inventory_items`.`inventory_id` = ? GROUP BY `inventory_items`.`metadata`, `inventory_items`.`id`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`;', { inventory })
   for key, value in pairs(items) do
     if value["item_metadata"] and value["item_metadata"] ~= nil then
       items[key]["item_metadata"] = json.decode(value["item_metadata"])
@@ -150,9 +150,18 @@ function InventoryControllers.GetInventoryTotalItemCounts(inventory)
 end
 
 
-function InventoryControllers.CreateInventoryItem(inventory, itemId, slotIndex)
-  local created = MySQL.query.await('INSERT INTO `inventory_items` (`inventory_id`, `item_id`, `slot_index`) VALUES (?, ?, ?) RETURNING *;',
-    { inventory, itemId, slotIndex })
+-- (Weapons review #4) `metadata` is written in the SAME INSERT that creates
+-- the row. Previously the row was created and metadata written afterwards,
+-- key by key, so a failure between the two left an item that existed without
+-- the state that defines it -- a weapon with no ammo count or serial.
+function InventoryControllers.CreateInventoryItem(inventory, itemId, slotIndex, metadata)
+  local encoded = nil
+  if type(metadata) == 'table' and next(metadata) ~= nil then
+    encoded = json.encode(metadata)
+  end
+
+  local created = MySQL.query.await('INSERT INTO `inventory_items` (`inventory_id`, `item_id`, `slot_index`, `metadata`) VALUES (?, ?, ?, ?) RETURNING *;',
+    { inventory, itemId, slotIndex, encoded })
 
   -- (INV-W3) Post-commit: the row exists by the time this fires.
   if created and created[1] then
@@ -310,49 +319,90 @@ end
 -- Dragging is always all-or-nothing; peeling part of a stack off is the
 -- explicit Split action instead (SplitSlotItems below, driven by the
 -- context menu's quantity prompt).
+-- Steampunk ledger drag-and-drop: moves every row in (fromInventory, fromSlot)
+-- to (toInventory, toSlot). If toSlot is already occupied, swaps -- the
+-- occupant's rows move to (fromInventory, fromSlot) instead of being
+-- displaced silently.
+--
+-- (Weapons review #7) Now ATOMIC. This used to issue N independent UPDATEs:
+-- first relocating the occupant to the source slot, then the moving stack to
+-- the target. A failure between those two loops left the occupant already
+-- moved and the moving stack not -- BOTH stacks in the source compartment and
+-- the target empty. Nothing is lost, but the placement is corrupt and no
+-- retry repairs it. One transaction makes it all-or-nothing, and the rows are
+-- locked so a concurrent move cannot interleave with the swap.
+--
+-- Guards run BEFORE the transaction opens, deliberately. A guard is arbitrary
+-- consumer code; if it reads inventory_items it does so on a different
+-- connection, which would block on the locks this transaction holds -- the
+-- transaction would be waiting on itself. Asking first costs a tiny window
+-- and avoids a self-deadlock.
 function InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory, toSlot)
-  local moving = InventoryControllers.GetItemsInSlot(fromInventory, fromSlot)
-  local occupant = InventoryControllers.GetItemsInSlot(toInventory, toSlot)
+  local crossInventory = tostring(fromInventory) ~= tostring(toInventory)
 
-  -- (INV-W3) Only a move that actually changes inventory is guarded --
-  -- rearranging compartments within one book is not a movement anything
-  -- outside this resource can meaningfully veto, and asking would make every
-  -- drag pay for a guard lookup.
-  if tostring(fromInventory) ~= tostring(toInventory) then
-    for _, row in pairs(moving) do
+  if crossInventory then
+    for _, row in pairs(InventoryControllers.GetItemsInSlot(fromInventory, fromSlot)) do
       if not GuardsAPI.CanMoveInstance(row.id, { reason = 'slot_move' }) then
         return false
       end
     end
-    for _, row in pairs(occupant) do
+    for _, row in pairs(InventoryControllers.GetItemsInSlot(toInventory, toSlot)) do
       if not GuardsAPI.CanMoveInstance(row.id, { reason = 'slot_swap' }) then
         return false
       end
     end
   end
 
-  if #occupant > 0 then
-    for _, row in pairs(occupant) do
-      MySQL.query.await('UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=? WHERE `id`=?;',
+  local movedRows, occupantRows = {}, {}
+
+  local executed, committed = pcall(MySQL.startTransaction, function(query)
+    -- Locked in a stable order (source slot, then target) so two transfers
+    -- swapping the same pair of compartments in opposite directions queue
+    -- rather than deadlocking.
+    local moving = query(
+      'SELECT `id` FROM `inventory_items` WHERE `inventory_id`=? AND `slot_index`=? ORDER BY `id` FOR UPDATE;',
+      { fromInventory, fromSlot })
+    local occupant = query(
+      'SELECT `id` FROM `inventory_items` WHERE `inventory_id`=? AND `slot_index`=? ORDER BY `id` FOR UPDATE;',
+      { toInventory, toSlot })
+
+    if not moving or #moving == 0 then
+      return false
+    end
+
+    local revisionBump = crossInventory and ', `row_revision`=`row_revision`+1' or ''
+
+    for _, row in ipairs(occupant or {}) do
+      query('UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=?' .. revisionBump .. ' WHERE `id`=?;',
         { fromInventory, fromSlot, row.id })
+      occupantRows[#occupantRows + 1] = tonumber(row.id)
+    end
+
+    for _, row in ipairs(moving) do
+      query('UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=?' .. revisionBump .. ' WHERE `id`=?;',
+        { toInventory, toSlot, row.id })
+      movedRows[#movedRows + 1] = tonumber(row.id)
+    end
+
+    return true
+  end)
+
+  if not executed or committed ~= true then
+    return false
+  end
+
+  -- Post-commit only, and only when the item actually changed inventory --
+  -- rearranging compartments within one book is not a movement.
+  if crossInventory then
+    for _, id in ipairs(movedRows) do
+      GuardsAPI.EmitItemMoved(id, fromInventory, toInventory, { reason = 'slot_move' })
+    end
+    for _, id in ipairs(occupantRows) do
+      GuardsAPI.EmitItemMoved(id, toInventory, fromInventory, { reason = 'slot_swap' })
     end
   end
 
-  for _, row in pairs(moving) do
-    MySQL.query.await('UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=? WHERE `id`=?;',
-      { toInventory, toSlot, row.id })
-  end
-
-  if tostring(fromInventory) ~= tostring(toInventory) then
-    for _, row in pairs(moving) do
-      GuardsAPI.EmitItemMoved(row.id, fromInventory, toInventory, { reason = 'slot_move' })
-    end
-    for _, row in pairs(occupant) do
-      GuardsAPI.EmitItemMoved(row.id, toInventory, fromInventory, { reason = 'slot_swap' })
-    end
-  end
-
-  return #moving > 0
+  return #movedRows > 0
 end
 
 -- (§10.1 split stack) The partial form of MoveSlotItems: peels `quantity`
@@ -380,15 +430,12 @@ function InventoryControllers.SplitSlotItems(inventory, fromSlot, toSlot, quanti
   return moved
 end
 
-function InventoryControllers.GetMetadata(itemId)
-  return MySQL.query.await('SELECT `key`, `value` FROM `item_metadata` WHERE `inventory_items_id`=?', itemId)
-end
-
-function InventoryControllers.SetMetadata(item, key, value)
-  MySQL.query.await(
-    'INSERT INTO `item_metadata` (`inventory_items_id`, `key`, `value`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `value`=?;',
-    { item, key, value, value })
-end
+-- (Weapons review #2) The flat `item_metadata` accessors are gone. Nothing
+-- consumed that table, and a per-key write has neither atomicity nor a
+-- revision, which is exactly what the versioned document on
+-- `inventory_items.metadata` provides. The table itself is left in place
+-- rather than dropped -- an unused table is harmless, and dropping data is
+-- not this migration's business.
 
 -- (INV-W3) Destroy guard + post-commit event. Same chokepoint reasoning as
 -- the move path: guarding here covers every removal route rather than
@@ -411,6 +458,25 @@ function InventoryControllers.DeleteInventoryItem(id)
   -- (INV-08) `LIMIT;` with no number is a SQL syntax error -- this deletes
   -- by unique `id` already, so no LIMIT clause is needed at all.
   MySQL.query.await('DELETE FROM `inventory_items` WHERE `id`=?;', { id })
+end
+
+-- (Weapons review #8) Which instance rows a quantity-based removal will
+-- actually delete. DeleteInventoryItems removes by LIMIT, so without this
+-- the caller has no idea which rows went and can only name the definition
+-- in its removal event. Ordered by id so it matches LIMIT's default order.
+function InventoryControllers.GetInstanceIdsForRemoval(inventory, itemId, quantity)
+  local safeQuantity = math.floor(tonumber(quantity) or 0)
+  if safeQuantity < 1 then
+    return {}
+  end
+  local rows = MySQL.query.await(
+    'SELECT `id` FROM `inventory_items` WHERE `inventory_id`=? AND `item_id`=? ORDER BY `id` LIMIT ' .. safeQuantity .. ';',
+    { inventory, itemId })
+  local ids = {}
+  for _, row in ipairs(rows or {}) do
+    ids[#ids + 1] = tonumber(row.id)
+  end
+  return ids
 end
 
 -- (INV-08) `quantity` was concatenated straight into the query string --
@@ -465,6 +531,127 @@ function InventoryControllers.UpdateRestrictedItems(inventory, items)
   end
 end
 
+
+------------------------------------------------------------------
+-- In-transaction capacity evaluation (Weapons review #7)
+------------------------------------------------------------------
+--
+-- EvaluateInventoryAcceptance and friends use MySQL.query.await, which runs
+-- on a DIFFERENT connection from an open transaction. Calling one while
+-- holding row locks blocks on those locks forever -- the transaction would be
+-- waiting on itself. So an in-transaction capacity check has to be expressed
+-- against the transaction's own `query` function, which is what this is.
+--
+-- Same rules as EvaluateInventoryAcceptance: blacklist, per-item quantity
+-- cap, slot capacity accounting for stacking, and weight. Kept deliberately
+-- close to it in shape so the two stay comparable when either changes.
+--
+-- @param query The transaction-bound query function
+-- @param inventory Raw inventory.id
+-- @param checkItems { { item = name, quantity = n }, ... }
+-- @return true, or false plus a code and message
+--
+local function AcceptanceInTransaction(query, inventory, checkItems)
+  local invRows = query(
+    'SELECT `max_weight`, `ignore_item_limit`, `max_slots` FROM `inventory` WHERE `id`=? FOR UPDATE;',
+    { inventory })
+  local inv = invRows and invRows[1]
+  if not inv then
+    return false, 'invalid_inventory', 'Inventory does not exist.'
+  end
+
+  local ignoreLimits = Boolean[inv.ignore_item_limit] == true
+  local capacity = tonumber(inv.max_slots) or tonumber(Config.maxItemSlots) or 0
+  local weightLimit = tonumber(inv.max_weight) or tonumber(Config.maxWeight) or 0
+
+  -- Lock every occupied compartment so a concurrent transfer cannot claim the
+  -- same free slots between this read and our writes. This lock is the entire
+  -- reason two concurrent transfers can no longer both pass the pre-check.
+  local occupiedRows = query([[
+    SELECT `slot_index`, `item_id`, COUNT(*) AS `count`
+    FROM `inventory_items`
+    WHERE `inventory_id`=? AND `slot_index` IS NOT NULL
+    GROUP BY `slot_index`, `item_id` FOR UPDATE;
+  ]], { inventory })
+
+  local occupied, stackRoom = {}, {}
+  for _, row in ipairs(occupiedRows or {}) do
+    occupied[tonumber(row.slot_index)] = true
+    local key = tostring(row.item_id)
+    stackRoom[key] = stackRoom[key] or {}
+    table.insert(stackRoom[key], tonumber(row.count) or 0)
+  end
+
+  local freeSlots = 0
+  for index = 0, capacity - 1 do
+    if not occupied[index] then
+      freeSlots = freeSlots + 1
+    end
+  end
+
+  local totalWeightRows = query(
+    'SELECT COALESCE(SUM(i.`weight`), 0) AS `weight` FROM `inventory_items` ii INNER JOIN `items` i ON i.`id`=ii.`item_id` WHERE ii.`inventory_id`=?;',
+    { inventory })
+  local currentWeight = tonumber(totalWeightRows and totalWeightRows[1] and totalWeightRows[1].weight) or 0
+  local addedWeight = 0
+
+  for _, entry in ipairs(checkItems) do
+    local defRows = query(
+      'SELECT `id`, `max_quantity`, `max_stack_size`, `weight`, `instance_mode` FROM `items` WHERE `name`=? LIMIT 1;',
+      { entry.item })
+    local def = defRows and defRows[1]
+    if not def then
+      return false, 'invalid_item', 'Item does not exist.'
+    end
+
+    local restricted = query(
+      'SELECT `inventory_id` FROM `inventory_blacklist` WHERE `inventory_id`=? AND `item_id`=? LIMIT 1;',
+      { inventory, def.id })
+    if restricted and restricted[1] then
+      return false, 'item_restricted', 'Item is restricted.'
+    end
+
+    local quantity = tonumber(entry.quantity) or 0
+
+    if not ignoreLimits then
+      local heldRows = query(
+        'SELECT COUNT(`id`) AS `count` FROM `inventory_items` WHERE `inventory_id`=? AND `item_id`=?;',
+        { inventory, def.id })
+      local held = tonumber(heldRows and heldRows[1] and heldRows[1].count) or 0
+      if (held + quantity) > (tonumber(def.max_quantity) or 0) then
+        return false, 'item_limit', 'Max Quantity Exceeded.'
+      end
+    end
+
+    local stackSize = math.max(tonumber(def.max_stack_size) or 1, 1)
+    local room = 0
+    if def.instance_mode ~= 'unique' then
+      for _, used in ipairs(stackRoom[tostring(def.id)] or {}) do
+        if used < stackSize then
+          room = room + (stackSize - used)
+        end
+      end
+    end
+
+    local overflow = quantity - room
+    if overflow > 0 then
+      local needed = math.ceil(overflow / stackSize)
+      if needed > freeSlots then
+        return false, 'inventory_full', 'Inventory has no available slots.'
+      end
+      freeSlots = freeSlots - needed
+    end
+
+    addedWeight = addedWeight + ((tonumber(def.weight) or 0) * quantity)
+  end
+
+  if weightLimit > 0 and (currentWeight + addedWeight) > weightLimit then
+    return false, 'weight_limit', 'Max Weight Exceeded.'
+  end
+
+  return true
+end
+
 -- (INV-01 root cause / INV-09) Previously moved every item by raw id with
 -- no check that it actually belonged to sourceInventory -- a caller could
 -- name any inventory_items.id and pull it out of wherever it actually
@@ -473,89 +660,148 @@ end
 -- free, not just the one call site that happened to get patched. This also
 -- fixes the nested-loop bug that fired ItemRemoved/ItemAdded #items^2
 -- times instead of once per moved item.
+-- (INV-01 root cause / INV-09) Verifies every item actually belongs to
+-- sourceInventory before moving it, so a caller cannot name an arbitrary
+-- inventory_items.id and pull it out of wherever it really lives.
+--
+-- (Weapons review #7) Now ATOMIC, with capacity evaluated INSIDE the
+-- transaction against locked rows. Previously the capacity check ran before
+-- the loop and outside any transaction, so two concurrent transfers could
+-- both pass the same pre-check and together overfill the destination. The
+-- per-item UPDATEs were also independent, so a failure partway left some
+-- items moved and some not.
+--
+-- Guards run before the transaction opens -- see MoveSlotItems for why.
 function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventory, items)
-  -- (INV-14) Every transfer path (UpdateInventory, GiveItem,
-  -- DropItemsOnGround) funnels through here, so this is the one place that
-  -- can guarantee slot/weight/restricted-item limits are actually enforced
-  -- instead of decorative. Resolve the requested item ids to names/counts
-  -- first and reject the whole move if the target can't hold them -- items
-  -- are per-unit rows here (no quantity field), so counts are built by name.
-  local requestCounts = {}
+  local requested = {}
   for _, item in pairs(items) do
     local id = type(item) == 'table' and item.id or item
-    local existingItem = InventoryControllers.GetInventoryItemById(id)
-    if existingItem and tostring(existingItem.inventory_id) == tostring(sourceInventory) then
-      requestCounts[existingItem.name] = (requestCounts[existingItem.name] or 0) + 1
+    if type(id) ~= 'number' and tonumber(id) == nil then
+      warn('Invalid Item type in MoveItems')
+      return { error = true, code = 'invalid_input', message = 'Invalid item reference.' }
     end
+    requested[#requested + 1] = tonumber(id)
   end
 
-  local checkItems = {}
-  for name, quantity in pairs(requestCounts) do
-    table.insert(checkItems, { item = name, quantity = quantity })
+  if #requested == 0 then
+    return { error = true, code = 'invalid_input', message = 'No items specified.' }
   end
 
-  if #checkItems > 0 then
-    -- InventoryCanHold (not ById) would misread this raw inventory.id as a
-    -- player source and always reject -- see InventoryCanHoldById's comment.
-    local canHold = InventoryAPI.InventoryCanHoldById(checkItems, targetInventory)
-    if not canHold or canHold.status == false then
+  for _, id in ipairs(requested) do
+    if not GuardsAPI.CanMoveInstance(id, { reason = 'move' }) then
       return {
         error = true,
-        -- Stable code travels with the message so the RPC layer can localize
-        -- by code (see TranslateResult) instead of matching English text.
-        code = canHold and canHold.code or nil,
-        message = canHold and canHold.message or 'Target inventory cannot hold these items.',
+        code = 'denied',
+        message = 'That item cannot be moved right now.',
         sourceItems = InventoryControllers.GetInventoryItems(sourceInventory),
         targetItems = InventoryControllers.GetInventoryItems(targetInventory)
       }
     end
   end
 
-  -- (§10.4) Resolved once rather than per item -- capacity is a per-inventory
-  -- database read now, and it cannot change midway through this loop.
-  local targetCapacity = InventoryControllers.GetInventoryCapacity(targetInventory)
+  local failureCode, failureMessage
+  local movedIds = {}
 
-  for _, item in pairs(items) do
-    local id = nil
-    if type(item) == 'table' then
-      id = item.id
-    elseif type(item) == 'number' then
-      id = item
-    else
-      warn('Invalid Item type in MoveItems')
-      return
+  local executed, committed = pcall(MySQL.startTransaction, function(query)
+    -- Lock the rows being moved and confirm membership under that lock, so a
+    -- concurrent transfer cannot move them out from under this one between
+    -- the check and the write.
+    local counts = {}
+    for _, id in ipairs(requested) do
+      local rows = query([[
+        SELECT ii.`id`, ii.`inventory_id`, i.`name`
+        FROM `inventory_items` ii INNER JOIN `items` i ON i.`id` = ii.`item_id`
+        WHERE ii.`id`=? FOR UPDATE;
+      ]], { id })
+      local row = rows and rows[1]
+      if not row or tostring(row.inventory_id) ~= tostring(sourceInventory) then
+        failureCode, failureMessage = 'not_found', 'One or more items are not in the source inventory.'
+        return false
+      end
+      counts[row.name] = (counts[row.name] or 0) + 1
     end
 
-    local existingItem = InventoryControllers.GetInventoryItemById(id)
-    if not existingItem or tostring(existingItem.inventory_id) ~= tostring(sourceInventory) then
-      warn('MoveInventoryItems: skipping item ' .. tostring(id) .. ' -- does not belong to source inventory ' .. tostring(sourceInventory))
-    -- (INV-W3) Pre-move guard. Placed here rather than at each caller because
-    -- this is the chokepoint every bulk transfer funnels through -- give,
-    -- ground drop, container move, quick-loot -- so one check covers them all
-    -- and none can be added later that forgets to ask.
-    elseif not GuardsAPI.CanMoveInstance(id, { reason = 'move' }) then
-      warn('MoveInventoryItems: item ' .. tostring(id) .. ' vetoed by a move guard.')
-    else
-      -- (Steampunk ledger) Carrying the item's old slot_index straight over
-      -- would silently collide with whatever the target inventory already
-      -- has sitting in that same slot -- give it a real compartment in the
-      -- destination the same way ItemsAPI.AddItem does (join a matching
-      -- under-full stack, else the first free slot).
-      local itemDefId = ItemControllers.GetItemByName(existingItem.name)
-      local targetSlot = InventoryControllers.GetJoinableSlot(targetInventory, itemDefId, existingItem.max_stack_size)
-      if targetSlot == nil then
-        targetSlot = InventoryControllers.GetFreeSlot(targetInventory, targetCapacity)
+    local checkItems = {}
+    for name, quantity in pairs(counts) do
+      checkItems[#checkItems + 1] = { item = name, quantity = quantity }
+    end
+
+    local ok, code, message = AcceptanceInTransaction(query, targetInventory, checkItems)
+    if not ok then
+      failureCode, failureMessage = code, message
+      return false
+    end
+
+    local capacityRows = query('SELECT `max_slots` FROM `inventory` WHERE `id`=? LIMIT 1;', { targetInventory })
+    local capacity = tonumber(capacityRows and capacityRows[1] and capacityRows[1].max_slots)
+      or tonumber(Config.maxItemSlots) or 0
+
+    for _, id in ipairs(requested) do
+      -- Placement resolved inside the transaction so it sees rows this loop
+      -- has already written -- the batched-insert bug GrantItem had, avoided
+      -- here by construction.
+      local defRows = query([[
+        SELECT ii.`item_id`, i.`max_stack_size`, i.`instance_mode`
+        FROM `inventory_items` ii INNER JOIN `items` i ON i.`id` = ii.`item_id`
+        WHERE ii.`id`=? LIMIT 1;
+      ]], { id })
+      local def = defRows and defRows[1]
+      local stackSize = math.max(tonumber(def and def.max_stack_size) or 1, 1)
+
+      local targetSlot
+      if def and def.instance_mode ~= 'unique' then
+        local joinable = query([[
+          SELECT `slot_index` FROM `inventory_items`
+          WHERE `inventory_id`=? AND `item_id`=? AND `slot_index` IS NOT NULL
+          GROUP BY `slot_index` HAVING COUNT(*) < ? LIMIT 1;
+        ]], { targetInventory, def.item_id, stackSize })
+        targetSlot = joinable and joinable[1] and tonumber(joinable[1].slot_index) or nil
       end
 
-      MySQL.query.await('UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=? WHERE `id`=?;', { targetInventory, targetSlot, id })
+      if targetSlot == nil then
+        local usedRows = query(
+          'SELECT DISTINCT `slot_index` FROM `inventory_items` WHERE `inventory_id`=? AND `slot_index` IS NOT NULL;',
+          { targetInventory })
+        local used = {}
+        for _, row in ipairs(usedRows or {}) do
+          used[tonumber(row.slot_index)] = true
+        end
+        for index = 0, capacity - 1 do
+          if not used[index] then
+            targetSlot = index
+            break
+          end
+        end
+      end
 
-      -- Legacy signals, kept for existing consumers (feather-weapons listens
-      -- to ItemRemoved today), alongside the structured post-commit event
-      -- INV-W3 introduces. Both fire only after the row has actually moved.
-      TriggerEvent('feather-inventory:ItemRemoved', id, 1, sourceInventory)
-      TriggerEvent('feather-inventory:ItemAdded', id, 1, targetInventory)
-      GuardsAPI.EmitItemMoved(id, sourceInventory, targetInventory, { reason = 'move' })
+      if targetSlot == nil then
+        failureCode, failureMessage = 'inventory_full', 'Inventory has no available slots.'
+        return false
+      end
+
+      query(
+        'UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=?, `row_revision`=`row_revision`+1 WHERE `id`=?;',
+        { targetInventory, targetSlot, id })
+      movedIds[#movedIds + 1] = id
     end
+
+    return true
+  end)
+
+  if not executed or committed ~= true then
+    return {
+      error = true,
+      code = failureCode or 'internal',
+      message = failureMessage or 'Items could not be moved.',
+      sourceItems = InventoryControllers.GetInventoryItems(sourceInventory),
+      targetItems = InventoryControllers.GetInventoryItems(targetInventory)
+    }
+  end
+
+  for _, id in ipairs(movedIds) do
+    TriggerEvent('feather-inventory:ItemRemoved', id, 1, sourceInventory)
+    TriggerEvent('feather-inventory:ItemAdded', id, 1, targetInventory)
+    GuardsAPI.EmitItemMoved(id, sourceInventory, targetInventory, { reason = 'move' })
   end
 
   return {
