@@ -82,9 +82,14 @@ end
 -- @param isPublic (INV-11/INV-12) If true, any src holding a valid temporary access grant
 --   (InventoryAPI.GrantTemporaryAccess) may open this inventory, in addition to the owner/ACL.
 --   Ignored (treated as false) on update if not explicitly passed, same as the other flags below.
+-- @param maxSlots (§10.4) How many compartments this inventory has. Leave nil to use
+--   Config.maxItemSlots -- capacity is a per-inventory property now, so a wagon or a
+--   storage chest can be genuinely bigger than a player's own book rather than every
+--   container in the world sharing one global size. The ledger UI scrolls to whatever
+--   this is, so it is not bounded by what fits on one visible page.
 -- @return Inventory UUID for accessing the inventory later (can be saved in your database table)
 --
-InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItemLimits, maxWeight, restrictedItems, ownerCharacterId, isPublic)
+InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItemLimits, maxWeight, restrictedItems, ownerCharacterId, isPublic, maxSlots)
   if not tableName or not id then
     warn(
       'All parameters are required!')
@@ -112,10 +117,20 @@ InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItem
 
   -- Inventory exists. Check Max Weight and Ignore Item Limits. Return Inventory UUID
   if inventory ~= nil and inventory[1] then
-    -- Max Weight and ignore items Update Check
-    if (tonumber(inventory[1].max_weight) and tonumber(inventory[1].max_weight) ~= maxWeight) or Boolean[inventory[1].ignore_item_limit] ~= ignoreItemLimits then
-      query = 'UPDATE `inventory` SET `max_weight`=?, `ignore_item_limit`=? WHERE `' .. foreignKey .. '`=?'
-      MySQL.query.await(query, { tonumber(inventory[1].max_weight), ignoreItemLimits, id })
+    -- (Re-register update bug) This previously wrote `inventory[1].max_weight`
+    -- -- the value already in the database -- rather than the `maxWeight`
+    -- argument, so re-registering an inventory could never actually change
+    -- its weight limit; the UPDATE set the column to itself. Rewritten to
+    -- write the passed value, and only when one was explicitly passed, which
+    -- matches the ownerCharacterId/isPublic/maxSlots rule below: omitting an
+    -- argument must not silently reset a stored setting.
+    if maxWeight ~= nil then
+      MySQL.query.await('UPDATE `inventory` SET `max_weight`=? WHERE `id`=?;',
+        { tonumber(maxWeight), inventory[1].id })
+    end
+    if ignoreItemLimits ~= nil then
+      MySQL.query.await('UPDATE `inventory` SET `ignore_item_limit`=? WHERE `id`=?;',
+        { ignoreItemLimits and 1 or 0, inventory[1].id })
     end
 
     if restrictedItems then
@@ -128,19 +143,280 @@ InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItem
     if isPublic ~= nil then
       MySQL.query.await('UPDATE `inventory` SET `is_public`=? WHERE `id`=?;', { isPublic and 1 or 0, inventory[1].id })
     end
+    -- Only written when explicitly passed, same as the two flags above --
+    -- omitting it on a re-register must not silently reset a container that
+    -- was already given a custom size back to the Config default.
+    if maxSlots ~= nil then
+      MySQL.query.await('UPDATE `inventory` SET `max_slots`=? WHERE `id`=?;', { tonumber(maxSlots), inventory[1].id })
+    end
 
     return inventory[1].uuid, inventory[1].id
   end
 
   -- Create new inventory
-  query = 'INSERT INTO `inventory` (' .. foreignKey .. ', location, name, max_weight, ignore_item_limit, owner_character_id, is_public) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *;'
-  inventory = MySQL.query.await(query, { id, tableName, displayName or 'storage', maxWeight or nil, ignoreItemLimits or false, ownerCharacterId or nil, isPublic and 1 or 0 })
+  query = 'INSERT INTO `inventory` (' .. foreignKey .. ', location, name, max_weight, ignore_item_limit, owner_character_id, is_public, max_slots) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *;'
+  inventory = MySQL.query.await(query, { id, tableName, displayName or 'storage', maxWeight or nil, ignoreItemLimits or false, ownerCharacterId or nil, isPublic and 1 or 0, maxSlots and tonumber(maxSlots) or nil })
 
   if not inventory or not inventory[1] then
     return nil
   end
 
   return inventory[1].uuid, inventory[1].id
+end
+
+---
+-- Validate the {item=, quantity=} list shape shared by every capacity check.
+--
+-- @return True if well-formed; false (plus a warn) otherwise
+--
+local function IsValidItemRequestList(items)
+  if type(items) ~= 'table' then
+    warn(
+      'Invalid items format. Must be a table of items and their quantity. { {item="apple", quantity=5}, {item="matches", quantity=10} }')
+    return false
+  end
+
+  for _, v in pairs(items) do
+    if not v.item or tonumber(v.quantity) == nil or tonumber(v.quantity) < 0 then
+      warn(
+        'Invalid items format. Must be a table of items and their quantity. { {item="apple", quantity=5}, {item="matches", quantity=10} }')
+      return false
+    end
+  end
+  return true
+end
+
+---
+-- Evaluate Inventory Acceptance
+--
+-- (Capacity model unification) The single answer to "can this inventory take
+-- N more of these items right now". Every grant and transfer path routes
+-- through this, so there is exactly one definition of "full" instead of the
+-- four mutually-inconsistent ones this resource used to carry:
+--
+--   * AddItem compared the inventory-wide count of an item against
+--     `max_stack_size` (the PER-SLOT cap), so an item with max_quantity=100
+--     and max_stack_size=20 was capped at 20 in total -- the reported
+--     "can't hold more than 20 apples" bug.
+--   * GrantItem used math.min(max_quantity, max_stack_size), the same
+--     conflation by a different route.
+--   * GrantItem also compared total unit COUNT against Config.maxItemSlots,
+--     treating every unit as if it consumed its own compartment -- 25 apples
+--     stacked into 2 slots reported a full 25-slot book.
+--   * InventoryCanHold/ById had the quantity check right but summed weight
+--     without multiplying by quantity, so moving 10 apples only ever counted
+--     one apple's weight.
+--
+-- Stack size is a *placement* property, not an acceptance limit: it decides
+-- how many compartments N units occupy, never how many the inventory may
+-- hold in total. That distinction is the whole bug class above.
+--
+-- `ignoreItemLimit` exempts the per-item quantity cap only -- slots and
+-- weight are physical properties of the container and stay enforced, which
+-- matches what InventoryCanHold already did and what the fixed-size ledger
+-- grid can actually render. (Revisit when §10.4's scrollable grid lands.)
+--
+-- @param inventory Raw inventory.id (already resolved)
+-- @param maxWeight Inventory's max_weight, or nil to fall back to Config.maxWeight
+-- @param ignoreItemLimit Inventory's ignore_item_limit flag, any DB representation
+-- @param items Table of {item=name, quantity=n}, already shape-validated
+-- @return { status = boolean, message = string }
+--
+local function EvaluateInventoryAcceptance(inventory, maxWeight, ignoreItemLimit, items)
+  -- (§10.4) Per-inventory, not the global Config default -- a storage wagon
+  -- registered with a larger capacity must be measured against its own size.
+  local capacity = InventoryControllers.GetInventoryCapacity(inventory)
+  local freeSlots = capacity - InventoryControllers.GetOccupiedSlotCount(inventory)
+  -- Normalized through the Boolean lookup rather than `== 0`/`tonumber(x) ~= 1`
+  -- -- this column has been read three different ways across this file,
+  -- items.lua, and GrantItem. It happens to be tinyint(4) today (so it comes
+  -- back a number), but `is_public` is tinyint(1) and comes back a real
+  -- boolean, which is exactly how that flag silently read as false for every
+  -- public inventory until Boolean gained [true]/[false] entries.
+  local ignoreLimits = Boolean[ignoreItemLimit] == true
+  local addedWeight = 0
+
+  for _, entry in pairs(items) do
+    local quantity = tonumber(entry.quantity) or 0
+    -- (INV-14) Was `GetItemByName(v)` -- passing the whole {item=, quantity=}
+    -- table where the function expects the item's name string, so every
+    -- lookup resolved to `false` and no capacity check could return a real
+    -- result.
+    local itemId, maxQuantity, itemWeight, maxStackSize = ItemControllers.GetItemByName(entry.item)
+    if not itemId then
+      return { status = false, code = 'invalid_item', message = 'Item does not exist.' }
+    end
+
+    if InventoryControllers.IsItemRestricted(inventory, itemId) then
+      return { status = false, code = 'item_restricted', message = 'Item is restricted.' }
+    end
+
+    -- (INV-10) `Boolean` is a lookup table (see helpers/main.lua), not a
+    -- function -- calling it as `Boolean(x)` errored every time this ran.
+    if not ignoreLimits then
+      if (InventoryControllers.InventoryItemCount(inventory, itemId) + quantity) > (tonumber(maxQuantity) or 0) then
+        return { status = false, code = 'item_limit', message = 'Max Quantity Exceeded.' }
+      end
+    end
+
+    -- Units join existing under-full stacks of the same item before claiming
+    -- fresh compartments -- the same placement rule AddItem/GrantItem apply
+    -- when they actually assign slot_index, so the check matches the write.
+    local stackSize = math.max(tonumber(maxStackSize) or 1, 1)
+    local roomInExistingStacks = 0
+    for _, stack in pairs(InventoryControllers.GetItemStackCounts(inventory, itemId)) do
+      local used = tonumber(stack.count) or 0
+      if used < stackSize then
+        roomInExistingStacks = roomInExistingStacks + (stackSize - used)
+      end
+    end
+
+    local overflow = quantity - roomInExistingStacks
+    if overflow > 0 then
+      local slotsNeeded = math.ceil(overflow / stackSize)
+      if slotsNeeded > freeSlots then
+        return { status = false, code = 'inventory_full', message = 'Inventory has no available slots.' }
+      end
+      -- Decrement so several items in one request compete for the same free
+      -- compartments instead of each being checked against the full count.
+      freeSlots = freeSlots - slotsNeeded
+    end
+
+    addedWeight = addedWeight + ((tonumber(itemWeight) or 0) * quantity)
+  end
+
+  -- A limit of 0 means "no weight limit" -- see GetInventoryWeightLimit.
+  -- Used by ground piles: a heap on the floor has nothing doing the
+  -- carrying, so weight is meaningless there, while slot and per-item
+  -- quantity limits still apply.
+  local weightLimit = tonumber(maxWeight) or tonumber(Config.maxWeight)
+  if weightLimit and weightLimit > 0
+      and (InventoryControllers.GetInventoryTotalWeight(inventory) + addedWeight) > weightLimit then
+    return { status = false, code = 'weight_limit', message = 'Max Weight Exceeded.' }
+  end
+
+  return { status = true, message = '' }
+end
+
+-- Exposed for the grant paths in items.lua, which resolve their own
+-- inventory/limits before calling and so would otherwise re-query for them.
+InventoryAPI.EvaluateInventoryAcceptance = EvaluateInventoryAcceptance
+
+---
+-- Evaluate one side of a slot move: `inventory` gives up `leaving` and
+-- receives `arriving`, both as GetSlotItemBreakdown rows.
+--
+-- The net-delta part is the whole point. Checking `arriving` alone against
+-- the inventory's current totals double-counts, because the items in
+-- `leaving` are vacating that same inventory in the same operation -- an
+-- inventory at its weight limit can always accept a swap for something no
+-- heavier, but an addition-only check rejects it.
+--
+-- @return { status = boolean, code = string?, message = string }
+--
+local function EvaluateSlotMoveSide(inventory, maxWeight, ignoreItemLimit, arriving, leaving)
+  local ignoreLimits = Boolean[ignoreItemLimit] == true
+
+  local leavingCountByItem = {}
+  local leavingWeight = 0
+  for _, row in pairs(leaving) do
+    local count = tonumber(row.count) or 0
+    local key = tostring(row.item_id)
+    leavingCountByItem[key] = (leavingCountByItem[key] or 0) + count
+    leavingWeight = leavingWeight + ((tonumber(row.weight) or 0) * count)
+  end
+
+  local arrivingWeight = 0
+  for _, row in pairs(arriving) do
+    local count = tonumber(row.count) or 0
+
+    if InventoryControllers.IsItemRestricted(inventory, row.item_id) then
+      return { status = false, code = 'item_restricted', message = 'Item is restricted.' }
+    end
+
+    if not ignoreLimits then
+      -- Subtract any units of this same item that are leaving in this
+      -- operation before adding what's arriving -- swapping one stack of
+      -- apples for another must not read as doubling the apple count.
+      local current = InventoryControllers.InventoryItemCount(inventory, row.item_id)
+      local alsoLeaving = leavingCountByItem[tostring(row.item_id)] or 0
+      if (current - alsoLeaving + count) > (tonumber(row.max_quantity) or 0) then
+        return { status = false, code = 'item_limit', message = 'Max Quantity Exceeded.' }
+      end
+    end
+
+    arrivingWeight = arrivingWeight + ((tonumber(row.weight) or 0) * count)
+  end
+
+  -- 0 means unlimited, same convention as EvaluateInventoryAcceptance.
+  local weightLimit = tonumber(maxWeight) or tonumber(Config.maxWeight)
+  if weightLimit and weightLimit > 0 then
+    local projected = InventoryControllers.GetInventoryTotalWeight(inventory) - leavingWeight + arrivingWeight
+    if projected > weightLimit then
+      return { status = false, code = 'weight_limit', message = 'Max Weight Exceeded.' }
+    end
+  end
+
+  return { status = true, message = '' }
+end
+
+---
+-- Evaluate Slot Move
+--
+-- (§6 MoveItem bypass, second half) Whether the ledger's drag-and-drop may
+-- move the whole compartment at (fromInventory, fromSlot) to
+-- (toInventory, toSlot), swapping with whatever is already there.
+--
+-- Handles both the empty-destination and swap cases through the same
+-- net-delta math, which is what made the swap case tractable at all. The
+-- previous fix could only close the empty-slot half: it reused
+-- InventoryCanHoldById, whose "add this on top of the current total" model
+-- double-counts the stack simultaneously leaving to make room for the swap,
+-- so the occupied case was left deliberately unchecked rather than shipped
+-- with wrong math. Expressing both sides as (current - leaving + arriving)
+-- makes the empty case fall out for free -- it is just a move whose
+-- `leaving` side happens to be empty.
+--
+-- Slot *capacity* is deliberately not re-checked here: unlike a grant,
+-- this targets one specific compartment index that the caller has already
+-- bounds-checked against capacity, so no new compartment is ever claimed
+-- beyond the one named. Weight, per-item quantity, and the blacklist are
+-- the real constraints, and each is evaluated for both inventories --
+-- an item leaving A for B has to be affordable to B *and* whatever comes
+-- back has to be affordable to A.
+--
+-- @param fromInventory Raw inventory.id the stack currently lives in
+-- @param fromSlot Its compartment index
+-- @param toInventory Raw inventory.id being moved into
+-- @param toSlot Destination compartment index
+-- @return { status = boolean, code = string?, message = string }
+--
+InventoryAPI.EvaluateSlotMove = function(fromInventory, fromSlot, toInventory, toSlot)
+  -- Same-inventory rearrangement changes nothing about what that inventory
+  -- holds in total -- no weight, quantity, or restriction can differ.
+  if tostring(fromInventory) == tostring(toInventory) then
+    return { status = true, message = '' }
+  end
+
+  local fromId, fromMaxWeight, fromIgnoreLimit = InventoryControllers.GetInventoryById(fromInventory, 'id')
+  local toId, toMaxWeight, toIgnoreLimit = InventoryControllers.GetInventoryById(toInventory, 'id')
+  if not fromId or not toId then
+    warn('Invalid inventory ID.')
+    return { status = false, code = 'invalid_inventory', message = 'Inventory does not exist.' }
+  end
+
+  local moving = InventoryControllers.GetSlotItemBreakdown(fromInventory, fromSlot)
+  local occupant = InventoryControllers.GetSlotItemBreakdown(toInventory, toSlot)
+
+  local destination = EvaluateSlotMoveSide(toInventory, toMaxWeight, toIgnoreLimit, moving, occupant)
+  if destination.status == false then
+    return destination
+  end
+
+  -- The swap's return leg. Skipping this is how an occupied-slot swap could
+  -- push the *source* inventory over its own limits with the occupant it
+  -- receives back, even when the destination side was perfectly fine.
+  return EvaluateSlotMoveSide(fromInventory, fromMaxWeight, fromIgnoreLimit, occupant, moving)
 end
 
 ---
@@ -152,18 +428,8 @@ end
 -- @return True if inventory can hold items, false if not
 --
 InventoryAPI.InventoryCanHold = function(items, inventoryId)
-  if type(items) ~= 'table' then
-    warn(
-      'Invalid items format. Must be a table of items and their quantity. { {item="apple", quantity=5}, {item="matches", quantity=10} }')
+  if not IsValidItemRequestList(items) then
     return nil
-  end
-
-  for _, v in pairs(items) do
-    if not v.item or tonumber(v.quantity) == nil or tonumber(v.quantity) < 0 then
-      warn(
-        'Invalid items format. Must be a table of items and their quantity. { {item="apple", quantity=5}, {item="matches", quantity=10} }')
-      return nil
-    end
   end
 
   local inventory, maxWeight, ignore_item_limit = nil, nil, nil
@@ -181,36 +447,7 @@ InventoryAPI.InventoryCanHold = function(items, inventoryId)
     return nil
   end
 
-  local weight = 0
-  for _, v in pairs(items) do
-    -- (INV-14) Was `GetItemByName(v)` -- passing the whole {item=, quantity=}
-    -- table where the function (and the underlying query param) expects the
-    -- item's name string. Every call resolved to `false`, so this always
-    -- fell through to the "Invalid itemName" error below and InventoryCanHold
-    -- could never return a real result.
-    local itemId, maxQuantity, itemWeight = ItemControllers.GetItemByName(v.item)
-    -- Check if item is restricted
-    if InventoryControllers.IsItemRestricted(inventory, itemId) then
-      return { status = false, message = 'Item is restricted.' }
-    end
-
-    -- Check if inv can carry more
-    -- (INV-10) `Boolean` is a lookup table (see helpers/main.lua), not a
-    -- function -- calling it as `Boolean(x)` errored every time this ran.
-    if not Boolean[ignore_item_limit] then
-      if (InventoryControllers.InventoryItemCount(inventory, itemId) + v.quantity) > maxQuantity then
-        return { status = false, message = 'Max Quantity Exceeded.' }
-      end
-    end
-
-    weight = weight + itemWeight
-  end
-
-  -- Check if player has enough weight left
-  if (weight + InventoryControllers.GetInventoryTotalWeight(inventory)) > (maxWeight or Config.maxWeight) then
-    return { status = false, message = 'Max Weight Exceeded.' }
-  end
-  return { status = true, message = '' }
+  return EvaluateInventoryAcceptance(inventory, maxWeight, ignore_item_limit, items)
 end
 
 ---
@@ -233,18 +470,8 @@ end
 -- @return True if inventory can hold items, false if not
 --
 InventoryAPI.InventoryCanHoldById = function(items, inventoryId)
-  if type(items) ~= 'table' then
-    warn(
-      'Invalid items format. Must be a table of items and their quantity. { {item="apple", quantity=5}, {item="matches", quantity=10} }')
+  if not IsValidItemRequestList(items) then
     return nil
-  end
-
-  for _, v in pairs(items) do
-    if not v.item or tonumber(v.quantity) == nil or tonumber(v.quantity) < 0 then
-      warn(
-        'Invalid items format. Must be a table of items and their quantity. { {item="apple", quantity=5}, {item="matches", quantity=10} }')
-      return nil
-    end
   end
 
   local inventory, maxWeight, ignore_item_limit = InventoryControllers.GetInventoryById(inventoryId, 'id')
@@ -253,26 +480,7 @@ InventoryAPI.InventoryCanHoldById = function(items, inventoryId)
     return nil
   end
 
-  local weight = 0
-  for _, v in pairs(items) do
-    local itemId, maxQuantity, itemWeight = ItemControllers.GetItemByName(v.item)
-    if InventoryControllers.IsItemRestricted(inventory, itemId) then
-      return { status = false, message = 'Item is restricted.' }
-    end
-
-    if not Boolean[ignore_item_limit] then
-      if (InventoryControllers.InventoryItemCount(inventory, itemId) + v.quantity) > maxQuantity then
-        return { status = false, message = 'Max Quantity Exceeded.' }
-      end
-    end
-
-    weight = weight + itemWeight
-  end
-
-  if (weight + InventoryControllers.GetInventoryTotalWeight(inventory)) > (maxWeight or Config.maxWeight) then
-    return { status = false, message = 'Max Weight Exceeded.' }
-  end
-  return { status = true, message = '' }
+  return EvaluateInventoryAcceptance(inventory, maxWeight, ignore_item_limit, items)
 end
 
 ---
@@ -300,8 +508,12 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
 
     -- Check if the character is available
     if character == nil then
+      -- `error` stays the developer-facing English string this has always
+      -- returned; `errorCode` is what the client localizes off (§10.2), so
+      -- the open-failure notice isn't hardcoded English on the way out.
       return {
-        error = 'Inventory not available'
+        error = 'Inventory not available',
+        errorCode = 'invalid_inventory'
       }
     end
 
@@ -309,7 +521,8 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
   else
     warn('Invalid Character Source!')
     return {
-      error = 'No Character Available'
+      error = 'No Character Available',
+      errorCode = 'no_character'
     }
   end
 
@@ -336,9 +549,9 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
       if not targetCharacter then
         -- no target connected/loaded; leave otherInventory nil
       elseif not IsWithinRobberyDistance(src, otherInventoryId) then
-        Feather.Notify.RightNotify(src, 'You are too far away.', 3000)
+        Feather.Notify.RightNotify(src, Translate(src, 'err_too_far', 'You are too far away.'), 3000)
       elseif not CanBeLootedDueToStatus(targetCharacter.id) then
-        Feather.Notify.RightNotify(src, 'This player cannot be searched right now.', 3000)
+        Feather.Notify.RightNotify(src, Translate(src, 'err_cannot_search', 'This player cannot be searched right now.'), 3000)
       else
         resolvedId, _, resolvedIgnoreLimits, resolvedName = InventoryControllers.GetInventoryByCharacter(targetCharacter.id)
       end
@@ -349,11 +562,11 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
       -- resource disclosed this UUID after checking its own proximity/
       -- consent condition.
       local uuidId, _, uuidIgnoreLimits, uuidName = InventoryControllers.GetInventoryById(otherInventoryId)
-      print(("[DEBUG-GROUND] InternalOpenInventory: src=%s requested uuid=%s -- resolved inventory.id=%s"):format(
-        tostring(src), tostring(otherInventoryId), tostring(uuidId)))
+      DebugPrint('DEBUG-GROUND', 'InternalOpenInventory: src=%s requested uuid=%s -- resolved inventory.id=%s',
+        tostring(src), tostring(otherInventoryId), tostring(uuidId))
       if uuidId and not IsAuthorizedForOwnedInventory(src, character.id, uuidId) then
-        print(("[DEBUG-GROUND] InternalOpenInventory: src=%s DENIED for inventory.id=%s"):format(tostring(src), tostring(uuidId)))
-        Feather.Notify.RightNotify(src, 'You do not have access to this inventory.', 3000)
+        DebugPrint('DEBUG-GROUND', 'InternalOpenInventory: src=%s DENIED for inventory.id=%s', tostring(src), tostring(uuidId))
+        Feather.Notify.RightNotify(src, Translate(src, 'err_no_access', 'You do not have access to this inventory.'), 3000)
       elseif uuidId then
         resolvedId, resolvedIgnoreLimits, resolvedName = uuidId, uuidIgnoreLimits, uuidName
       end
@@ -361,7 +574,7 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
 
     if resolvedId then
       if OpenInventories[tostring(resolvedId)] ~= nil then
-        Feather.Notify.RightNotify(src, 'This inventory is already opened. Try again later.', 3000)
+        Feather.Notify.RightNotify(src, Translate(src, 'err_already_open', 'This inventory is already opened. Try again later.'), 3000)
       else
         otherInventory, otherInventoryIgnoreLimits, otherName = resolvedId, resolvedIgnoreLimits, resolvedName
         otherInventoryItems = InventoryControllers.GetInventoryItems(otherInventory)
@@ -378,10 +591,18 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
     inventory = inventory,
     inventoryItems = inventoryItems,
     inventoryIgnoreLimits = inventoryIgnoreLimits,
+    -- (§10.4) Each book carries its own capacity. The client used to send one
+    -- global Config.maxItemSlots for both, which made a large storage chest
+    -- render as the same size as the player's own book -- and, worse, let the
+    -- UI offer slots the server would then reject as out of range.
+    inventoryMaxSlots = InventoryControllers.GetInventoryCapacity(inventory),
+    inventoryMaxWeight = InventoryControllers.GetInventoryWeightLimit(inventory),
     otherName = otherName,
     otherInventory = otherInventory,
     otherInventoryItems = otherInventoryItems,
-    otherInventoryIgnoreLimits = otherInventoryIgnoreLimits
+    otherInventoryIgnoreLimits = otherInventoryIgnoreLimits,
+    otherInventoryMaxSlots = otherInventory and InventoryControllers.GetInventoryCapacity(otherInventory) or nil,
+    otherInventoryMaxWeight = otherInventory and InventoryControllers.GetInventoryWeightLimit(otherInventory) or nil
   }
 end
 

@@ -1,13 +1,18 @@
 <script setup>
 import { computed } from 'vue';
+import { t } from '@/i18n';
 
 const props = defineProps({
   x: { type: Number, required: true },
   y: { type: Number, required: true },
   canUse: { type: Boolean, default: false },
+  // Only meaningful for a compartment holding more than one unit -- splitting
+  // a single item, or the whole stack, is just a move (see the server's
+  // SplitStack RPC, which rejects both).
+  canSplit: { type: Boolean, default: false },
 });
 
-const emit = defineEmits(['use', 'give', 'drop', 'close']);
+const emit = defineEmits(['use', 'give', 'drop', 'split', 'close']);
 
 // Keep the menu on-screen near the click point rather than letting it run
 // off the right/bottom edge -- flip anchor side instead of clamping
@@ -27,9 +32,10 @@ const style = computed(() => {
 <template>
   <div class="ctx-backdrop" @click="emit('close')" @contextmenu.prevent="emit('close')"></div>
   <div class="ctx-menu" :style="style">
-    <div v-if="canUse" class="ctx-item" @click="emit('use')">Use</div>
-    <div class="ctx-item" @click="emit('give')">Give</div>
-    <div class="ctx-item" @click="emit('drop')">Drop</div>
+    <div v-if="canUse" class="ctx-item" @click="(event) => emit('use', event)">{{ t('ui_use') }}</div>
+    <div class="ctx-item" @click="(event) => emit('give', event)">{{ t('ui_give') }}</div>
+    <div class="ctx-item" @click="(event) => emit('drop', event)">{{ t('ui_drop') }}</div>
+    <div v-if="canSplit" class="ctx-item" @click="(event) => emit('split', event)">{{ t('ui_split') }}</div>
   </div>
 </template>
 

@@ -25,13 +25,25 @@ RegisterNUICallback('Feather:Inventory:UpdateInventory', function(args, cb)
 
   local result = Feather.RPC.CallAsync('Feather:Inventory:UpdateInventory', data)
 
+  -- (Rejection surfacing) This used to forward only sourceItems/targetItems,
+  -- dropping error/message/code entirely -- so a rejected bulk transfer
+  -- (weight, capacity, restricted item) looked to the UI exactly like a
+  -- successful one that happened to change nothing. Same bug GiveItem had.
   cb({
-    sourceItems = result.sourceItems,
-    targetItems = result.targetItems
+    error = result and result.error or false,
+    code = result and result.code,
+    message = result and result.message,
+    sourceItems = result and result.sourceItems,
+    targetItems = result and result.targetItems
   })
 end)
 
 RegisterNUICallback('Feather:Inventory:GiveItem', function(args, cb)
+  -- (Distance-check staleness) The server re-verifies give distance from
+  -- cached positions (IsWithinGiveDistance). Refresh ours first -- see
+  -- SyncOwnPosition, including why this only half-fixes a two-party check.
+  SyncOwnPosition()
+
   local ped = GetPedInFront()
   if not ped or tonumber(ped) == 0 then
     cb({ error = true, message = 'No one is close enough in front of you.' })
@@ -73,6 +85,18 @@ end)
 
 RegisterNUICallback('Feather:Inventory:MoveItem', function(args, cb)
   local res = Feather.RPC.CallAsync('Feather:Inventory:MoveItem', args)
+
+  cb(res)
+end)
+
+RegisterNUICallback('Feather:Inventory:TakeAll', function(args, cb)
+  local res = Feather.RPC.CallAsync('Feather:Inventory:TakeAll', args)
+
+  cb(res)
+end)
+
+RegisterNUICallback('Feather:Inventory:SplitStack', function(args, cb)
+  local res = Feather.RPC.CallAsync('Feather:Inventory:SplitStack', args)
 
   cb(res)
 end)

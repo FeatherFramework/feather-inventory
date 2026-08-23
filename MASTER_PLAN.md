@@ -1,0 +1,356 @@
+# Feather Inventory — Master Plan
+
+> Status: proposed hardening & completion plan — two parallel tracks: unblock `feather-weapons` (§7), and finish inventory's own features on their own merits (§10)
+> Compatibility policy: the framework is alpha — breaking the current API is acceptable when required by [`DEPENDENCY_SUPPORT_PLAN.md`](./DEPENDENCY_SUPPORT_PLAN.md) §4's target contracts; changes should still preserve unrelated consumers where practical, not break things gratuitously
+> Source of truth: an `inventory_items` row is the ownership record; per-instance state moves to a versioned metadata document (§7) — flat `item_metadata` key/value rows are retained only as a compatibility projection if still useful
+> Primary rule: the server owns every inventory mutation, including *where in the UI grid* an item sits (`slot_index`) — already true today (§2), including capacity/weight enforcement on every grant and transfer path
+
+## 1. Purpose
+
+`feather-inventory` is the item/ownership domain the rest of the Feather ecosystem builds on, and it is under active, fast-moving development in its own right — a slot-based "steampunk ledger" UI, a robbery/forced-search access model, and real weight enforcement have all landed since this plan was first drafted. This document tracks two things that are both real priorities, not one subordinate to the other: what `feather-weapons` needs from this resource (§7, `DEPENDENCY_SUPPORT_PLAN.md` §4), and what inventory needs to finish being a complete, polished system on its own terms (§10). Neither blocks the other; they're sequenced to run in parallel.
+
+## 2. Where things actually stand
+
+`feather-inventory` has been through a long-running security/consistency audit — the original framework-wide Phase 1–6 pass (`AUDIT-FRAMEWORK-SUMMARY.md`, findings `INV-01` through `INV-10`), and a second wave of findings (`INV-11` through at least `INV-23`, plus an unlabeled "Tier 1 audit sweep" and several small bugfix commits) that closed real gaps discovered while building the newer features below. All of it is closed and referenced inline at its fix site — this plan doesn't re-enumerate every ID, but the shape of what's already solid matters for sequencing what's left:
+
+- **Ownership is enforced at the row level and re-verified live, not just at open time.** `IsInventoryAccessibleBySrc` re-checks proximity/status for a robbery target on every subsequent move, not just when the inventory was first opened (`INV-11`/`INV-23`).
+- **A real access-control model exists**, not just "your own inventory or nothing": owned/shared inventories (storage, saddlebags, job lockers) via `owner_character_id` + a persistent `inventory_access` grant table; public inventories (ground piles) via an `is_public` flag; player-to-player robbery/forced-search via proximity *and* a status check. All three are in `server/services/inventory_access.lua`.
+- **Weight and capacity are actually enforced on every transfer path** — `MoveInventoryItems` (which `UpdateInventory`, `GiveItem`, `DropItemsOnGround`, and the ledger's `MoveItem` all funnel through) calls `InventoryCanHoldById` before committing. This was itself the subject of several fixes (`INV-14`, `INV-10`) — earlier versions of this check silently no-op'd.
+- **A slot-based UI replaced the old panel design.** `inventory_items.slot_index` is real, persisted grid placement; `GetJoinableSlot`/`GetFreeSlot`/`GetItemsInSlot`/`MoveSlotItems` implement "join an under-full stack, else claim a free compartment" server-side (previously faked client-side with lodash). Drag-to-empty moves, drag-to-occupied swaps.
+- **SQL-identifier injection in `RegisterForeignKey`/`RegisterInventory` is closed** (`INV-18`) — table/column names from other resources are now validated against a strict identifier pattern before being concatenated into DDL.
+- **A trusted `ItemsAPI.GrantItem` export exists** for admin/reward/scripted flows — validates quantity, catalog membership, slot capacity, *and* weight atomically, returning structured `{error, code, message}` results (a better contract than the older `ItemsAPI.AddItem`, see §6).
+
+This plan starts from all of the above as given. What's left is real but narrower than it was: closing the one remaining weight-enforcement gap, finishing what the robbery system needs from `feather-core` to actually turn on, and the UX/feature backlog in §10.
+
+## 3. Non-goals
+
+- Re-litigating any closed `INV-xx` finding.
+- Re-deriving character/ownership binding — `feather-core`'s job, consumed correctly today.
+- Building weapon-specific rules into inventory — stays generic per `DEPENDENCY_SUPPORT_PLAN.md` §4.1.
+- Abandoning the ledger's book-page visual identity (frame art, header, category tabs, footer) — that chrome stays static and fixed-size. What's no longer a non-goal: the *compartment grid* inside that chrome scrolling to hold more than fits on one visible page (see §10.4, now a resolved direction rather than an open question).
+- Preserving the current inconsistent return shapes as a constraint — already being cleaned up incrementally (`GrantItem`'s `{error, code, message}` is the better pattern; older functions still return bare `false`/`nil`/`-1`).
+
+## 4. Guiding principles
+
+1. **`DEPENDENCY_SUPPORT_PLAN.md` §4 is the authoritative weapons-support target**, sequenced by this plan, not softened by it.
+2. **Inventory's own feature completeness is not "extra credit."** README's TODOs and the ideas in §10 get real phases and real priority, not a leftover slot after weapons work.
+3. **Breaking changes are allowed, gratuitous ones aren't** — alpha framework, but a change still needs a reason.
+4. **Server authority, always** — every mutation, including grid placement, re-derives identity from `src`; the robbery system is the clearest recent example (proximity *and* status, both re-checked live, neither trusted from a lock alone).
+5. **A half-finished feature is worse than a missing one.** The robbery/ACL system is fully built server-side and currently inert because `feather-core` doesn't implement `Feather.Character.HasStatus` yet — that's called out explicitly in §6/§10 as the highest-leverage single unblock available, not left as an implicit gap.
+
+## 5. Current architecture (as-built)
+
+```text
+UI (Vue3, local reactive() state -- no Pinia) ── "steampunk ledger": LedgerBook.vue (grid) / ContextMenu.vue (Use/Give/Drop) / ItemCountModal.vue (partial qty)
+       │  NUI callback
+       ▼
+client/services/nuicallbacks.lua  (thin forward, no logic)
+       │  Feather.RPC.CallAsync
+       ▼
+server/services/callbacks.lua  (RPC surface — GetInventoryItems, UpdateInventory, GiveItem, MoveItem, GrantAccess/RevokeAccess/SetPublic/ListAccess, GetCategories, GetCharacterInfoForDisplay)
+       │
+       ▼
+server/services/{inventory,items,categories,ground,character,commands,inventory_access}.lua   (InventoryAPI / ItemsAPI / CategoriesAPI)
+       │
+       ▼
+server/{controllers,services}/slots.lua + controllers/{inventory,item,ground,categories}.lua   (raw MySQL — inventory/inventory_items/item_metadata/items/categories/inventory_blacklist/ground/inventory_access)
+```
+
+Public surface today, exported via `exports['feather-inventory'].initiate()`:
+- `InventoryAPI` — `RegisterForeignKey`, `RegisterInventory` (now takes `ownerCharacterId`/`isPublic`), `InventoryCanHold`/`InventoryCanHoldById`, `InternalOpenInventory`, `IsInventoryAccessibleBySrc`, `OpenInventory`, `CloseInventory`, `GetInventory`, `GetCustomInventory`, `GetInventoryItems`, `InternalCloseInventory`, `GetInventoryOwner(AndVisibility)`, `Grant/Revoke/List InventoryAccess`, `SetInventoryPublic`, `Grant/Revoke/HasTemporaryAccess`
+- `ItemsAPI` — `GetDefinitions`, `GrantItem` (new, trusted, atomic), `AddItem`, `RemoveItemByName`, `RemoveItemById`, `SetMetadata`, `GetItem`, `GetItemCount`, `ItemExists`, `InventoryHasItems`, `RegisterUsableItem`, `UseItem`, `DropItemsOnGround`
+- `CategoriesAPI` — `GetCategories`
+- RPCs additive since the last version of this plan: `Feather:Inventory:MoveItem` (slot drag/swap), `Feather:Inventory:SplitStack` (peel part of a stack into a free compartment, same inventory), `Feather:Inventory:GrantAccess`/`RevokeAccess`/`SetPublic`/`ListAccess`
+- Events: `feather-inventory:ItemAdded`, `feather-inventory:ItemRemoved` (unchanged contract, still what `feather-weapons` listens to)
+
+Schema additions since the last version of this plan: `inventory.owner_character_id`, `inventory.is_public`, `inventory_items.slot_index`, `inventory.max_slots`, the `inventory_access` table — all self-migrated at startup the same way `RegisterForeignKey` always has (`SHOW COLUMNS` + conditional `ALTER TABLE`), never touching `feather-recipe`'s own migration.
+
+`Config.maxItemSlots` is now the *default* capacity rather than a global physical limit — `config.lua`'s comment was updated alongside §10.4 so it no longer describes the pre-scroll state.
+
+## 6. Residual issues found in the current code (not yet tracked elsewhere)
+
+**Found 2026-08-21, partially fixed 2026-08-21, fully closed 2026-08-23:** `Feather:Inventory:MoveItem` (the ledger's drag-and-drop RPC, `server/services/callbacks.lua`) called `InventoryControllers.MoveSlotItems` directly — raw `UPDATE inventory_items` statements with no weight/capacity check — while every other movement path (`UpdateInventory`, `GiveItem`, `DropItemsOnGround`) routes through `MoveInventoryItems` → `InventoryCanHoldById` first.
+
+The 2026-08-21 pass could only close the empty-destination half, by reusing `InventoryCanHoldById`. The occupied-slot swap was left deliberately open because that helper is addition-only: its "add this on top of the inventory's current total" model double-counts the stack simultaneously leaving `fromInventory` to make room for the swap, and bolting it onto swaps would have produced *false rejections* rather than merely weak ones.
+
+**Now closed.** `InventoryAPI.EvaluateSlotMove` (`server/services/inventory.lua`) replaces it with real net-delta math — `(current − leaving) + arriving` — evaluated for **both** inventories. Three things fell out of doing it properly:
+
+- The **swap's return leg was entirely unchecked**, and that was the more serious half. Even the empty-slot fix only ever validated the destination; nothing verified that what came *back* to the source inventory was affordable to it. A near-full inventory could receive an arbitrarily heavy occupant stack.
+- Slot capacity is deliberately *not* re-checked here, unlike a grant: `MoveItem` targets one specific compartment index already bounds-checked against capacity, so no new compartment is ever claimed beyond the one named. Weight, per-item quantity, and the blacklist are the real constraints.
+- The empty-destination case is no longer special-cased at all — it is the degenerate "nothing is leaving" form of the same calculation, so both paths now share one code path instead of two divergent ones.
+
+Verified by simulation across four cases: a swap at the weight limit trading equal weights is correctly **allowed** (the addition-only model wrongly rejected it), a genuinely overloading swap is rejected on the destination side, a swap whose return leg overloads the source is rejected on the source side (previously allowed), and an empty destination degrades to the pure-addition result.
+
+**Found 2026-08-23 (in-game testing), fixed 2026-08-23: ground pickup failed two or three times before succeeding.** `GetGroundUID` gates on the server's cached `character.x/y/z`, refreshed only every `Config.PositionSync` (feather-core, 20s). Walking to a pile and pressing the prompt rejected with "You are too far away" until a sync tick happened to land, which reads as a flaky prompt rather than a stale-position problem.
+
+The tell that this was *missed* rather than considered: the drop half of this exact flow already carried the fix, and the pickup half did not. All distance-gated client actions now route through one `SyncOwnPosition()` helper — ground drop, ground pickup, and `GiveItem` (latent, same class, not yet reported). Server authority is unchanged; the server still decides, just not from twenty-second-old data.
+
+Known limitation, recorded rather than papered over: a two-party check (`GiveItem`, robbery) still compares against the *other* player's cached position, which the calling client cannot refresh. This halves the staleness rather than eliminating it. Properly fixing it needs either a shorter `Config.PositionSync` in feather-core or a server-side "ask that client for its position" round-trip — both outside this resource.
+
+**Found 2026-08-23 (in-game testing), fixed 2026-08-23: three separate stacking bugs.**
+
+- **`GrantItem` could blow straight past `max_stack_size`.** Its placement loop builds one batched `INSERT` executed only after the loop ends, but called `GetFreeSlot` per unit — a *database* read, which the pending batch is invisible to. Every call returned the same free compartment, so every unit past the first full stack piled into one slot: granting 100 apples with `max_stack_size = 20` produced a single compartment holding 78. Now claims against a local set seeded once from the DB and marked as the loop consumes it. `AddItem` was never affected — it writes each row as it goes, so its lookups do see prior placements.
+- **Stacks could be split but never recombined.** `MoveItem` always swapped, so dropping a stack onto a matching one just traded their positions. Dropping onto a stack of the *same* item now tops it up to `max_stack_size`, leaving any remainder behind. Note this needs different validation from a swap: `EvaluateSlotMove` assumes the occupant vacates to make room, but in a merge it stays put, so swap math would credit the destination for weight that never leaves it. A same-inventory merge needs no check at all; a cross-inventory one is a pure addition of the units actually moving.
+- **The carrying line compared weight against the slot count.** It rendered `"<weight> / <capacity> lb."`, so a book holding 100 weight showed `100.0 / 25 lb.` — 25 being the compartment count, not a weight limit. Per-inventory `max_weight` is now resolved server-side and sent per book, alongside the per-book capacity from §10.4.
+
+**Ground piles carry no weight limit (2026-08-23).** A heap on the floor has nothing doing the carrying, so a weight cap on it is meaningless — but slot capacity and per-item quantity limits still apply to it, so only weight is exempted. Expressed as `max_weight = 0`, which both evaluators now read as "unlimited"; `NULL` could not carry that meaning because it already means "use the Config default". The ledger renders such a book as a bare carried weight with no `/ limit`, rather than `/ 0 lb.` which would read as a container that holds nothing.
+
+Fixed alongside it: `RegisterInventory`'s re-register path wrote `inventory[1].max_weight` — the value already in the database — instead of the `maxWeight` argument, setting the column to itself. Re-registering could therefore never change an inventory's weight limit, which would have silently defeated the change above for any pile that already existed. Now writes the passed value, and only when explicitly passed, matching the `ownerCharacterId`/`isPublic`/`maxSlots` rule.
+
+**Units resolved 2026-08-23: weight is in POUNDS.** `Config.maxWeight` was 120000 documented as grams, while the ledger has always rendered that line with an `lb.` suffix — the two never agreed, and a limit of 120000 was unreachable in practice, which is why every weight bug in §6 stayed invisible for so long. Default is now **125 lb**, a defensible load for a person on foot in 1901.
+
+Two constraints this exposes, both open:
+
+- **`items.weight` is an `int` column**, so 1 lb is the smallest expressible weight. There is no half-pound item without a schema change. That sets the granularity for any weight pass.
+- **Seeded weights are deliberately flat and stay that way.** 65 of 66 items weigh `1`. This is not placeholder data to be "fixed": balancing what an Elephant Rifle weighs against an apple is a *server owner's* decision, not a framework one. Feather ships neutral defaults and the tools to change them. The practical effect of a flat table is that 125 lb currently behaves as "you may carry 125 things" — which is the correct out-of-the-box behaviour for a framework, and becomes meaningful the moment an owner tunes it.
+
+  What Feather owes here is *tooling*, not values — see §10.3's in-game item-definition editor.
+
+**Found 2026-08-23, fixed 2026-08-23: the resource carried four mutually-inconsistent definitions of "full".** Surfaced by a reported bug — an apple with `max_quantity=100` and `max_stack_size=20` refused the 21st apple in the whole inventory. Root cause was not one bug but a systematic conflation of *stack size* (a per-compartment placement property) with *quantity limit* (an inventory-wide acceptance limit), plus two independent arithmetic errors:
+
+- `AddItem` compared the inventory-wide count of an item against `max_stack_size` — the reported bug.
+- `GrantItem` used `math.min(max_quantity, max_stack_size)`, the same conflation by a different route. This is the path `feather-admin`'s give-item flow calls, which is how it was hit.
+- `GrantItem` also compared total unit *count* against `Config.maxItemSlots`, treating each unit as consuming its own compartment — 25 apples stacked into 2 slots reported a full 25-slot book.
+- `InventoryCanHold`/`ById` had the quantity check right but summed weight without multiplying by quantity, so moving 10 apples only ever counted one apple's weight. This partly undercut §2's "weight is actually enforced on every transfer path" claim — it was enforced, but under-counted on every multi-unit move.
+- The same `ignore_item_limit` column was read three different ways (`== 0`, `tonumber(x) ~= 1`, `Boolean[x]`). All three happen to work because the column is `tinyint(4)` and comes back a number — but `is_public` is `tinyint(1)` and comes back a real boolean, which is exactly how that flag silently read as `false` for every public inventory until `Boolean` gained `[true]`/`[false]` entries. Same latent trap, one column-width change away.
+
+All five now route through one `EvaluateInventoryAcceptance(inventory, maxWeight, ignoreItemLimit, items)` in `server/services/inventory.lua`, which is the sole definition of whether an inventory can accept N of something. `InventoryCanHold`/`InventoryCanHoldById` are thin wrappers over it; `AddItem`/`GrantItem` call it directly. Two behaviour changes fell out of the consolidation: `GrantItem` now respects the per-inventory blacklist (it previously skipped `IsItemRestricted` entirely, so an admin could grant an item into an inventory explicitly barred from holding it — this adds one new error code, `item_restricted`, and a matching `feather-admin` locale key), and `AddItem` no longer reports success on a partial grant when it runs out of slots mid-loop.
+
+This is also the prerequisite for §10.4: `GetFreeSlot(inventory, capacity)` and the acceptance check now read capacity from one place, so making it per-inventory is a change to one helper rather than to four divergent call sites.
+
+- ~~**`ItemsAPI.AddItem` doesn't enforce weight.**~~ **Fixed.** `AddItem` now resolves the inventory's `maxWeight` and the item's weight and rejects before granting, same unconditional-of-`ignore_item_limit` pattern as `GrantItem`/`InventoryCanHoldById`.
+- ~~**`GiveItem` has no server-side distance check between giver and recipient.**~~ **Fixed.** `Config.Access.GiveDistance` + `IsWithinGiveDistance` (same shape as `IsWithinRobberyDistance`, separate config value since giving is consensual, not forced-search) now gate the RPC.
+- ~~**Debug `print(("[DEBUG-GROUND] ..."))` calls are still live in production paths**~~ **Fixed.** All five (across `inventory_access.lua`, `inventory.lua`, `ground.lua`) now route through a new `DebugPrint(tag, fmt, ...)` helper (`server/helpers/main.lua`) gated behind a new `Config.Debug` (default `false`, separate from `Config.DevMode`).
+- **The robbery/forced-search system is fully built and currently inert.** `CanBeLootedDueToStatus` calls `Feather.Character.HasStatus`, which doesn't exist in `feather-core` yet — the function defensively (and correctly) fails closed, so the feature just does nothing right now. This is the single highest-leverage unblock available: the inventory-side work (proximity, status gate, live re-verification, temporary grants) is *done*; it needs exactly one thing from `feather-core` to go live. Worth raising with whoever owns that resource's roadmap directly, not just noting here.
+- ~~**Stack splitting isn't possible.**~~ **Fixed 2026-08-23.** A `Split` entry now appears in the context menu for any compartment holding more than one unit, reusing the existing quantity modal and moving the chosen amount into the first free compartment of the same inventory (`Feather:Inventory:SplitStack` → `InventoryControllers.SplitSlotItems`). Deliberately same-inventory only: splitting *across* inventories would be a capacity-affecting transfer, which belongs on the `MoveItem`/`EvaluateSlotMove` path rather than duplicating that logic here. Dragging stays all-or-nothing, so the two gestures don't overlap.
+
+## 7. Supporting feather-weapons (target contract from `DEPENDENCY_SUPPORT_PLAN.md` §4)
+
+Full detail lives in `DEPENDENCY_SUPPORT_PLAN.md` — summary this plan sequences against, updated for what's already true:
+
+**Item definitions.** Add explicit `instance_mode` (`stack`/`unique`); enforce quantity 1 on unique rows. *Already partially true in effect* — every granted unit is already its own row with its own `slot_index` and independent metadata; formalizing `instance_mode` mainly means blocking a unique item from ever joining a slot via `GetJoinableSlot`.
+
+**Item instances.** A normalized read (instance ID, definition, container, slot, metadata document + revision) — not yet built; today's reads return the raw joined row shape.
+
+**Metadata.** An atomic, versioned document replacing one-key-at-a-time `item_metadata` writes — not yet built. `ItemsAPI.SetMetadata` still loops key-by-key with no transaction wrapper.
+
+**Transactions and locks.** A server-only `Inventory.Transaction(context, fn)` API with deterministic multi-item locking and revision-based compare-and-set — not yet built. `MoveSlotItems`/`MoveInventoryItems` do their capacity check-then-write as separate steps today, same race shape as before.
+
+**Idempotency and guards.** Idempotency keys, item-instance leases, and a pre-move guard registry (so weapons can force an authoritative unequip before an equipped item moves) — not yet built.
+
+**Events.** Structured post-commit events (`ItemCreated`/`ItemMoved`/`ItemMetadataChanged`/`ItemDestroyed`/`TransactionCommitted`) — not yet built; `ItemAdded`/`ItemRemoved` remain the only signal, now also fired correctly from `MoveItem` (slot drag) when an item actually changes inventory, not on in-place rearrangement.
+
+**Container access.** A generic `CanAccessInventory(source, inventoryId, action, context)` — partially superseded in spirit by `inventory_access.lua`'s purpose-built model (ownership/grant/public/robbery), but that model is bespoke to inventory's own RPCs, not exposed as a generic decision function other resources can call. Worth deciding whether weapons should call inventory's real ACL directly rather than inventory building a second, more generic layer on top of it.
+
+## 8. Concurrency and locking
+
+Unchanged from the prior version of this plan: `OpenInventories` locks a non-owned inventory to one `src` while open; no lock on concurrent mutation of the same inventory across RPCs, no transaction wrapping multi-step sequences. Superseded by §7's transaction API once it lands (`INV-W2`) — don't build a standalone mutex now.
+
+## 9. Security posture
+
+Better than the last version of this plan gave it credit for:
+
+- **`DropItemsOnGround`'s position is now bounded server-side** (`INV-17`) — the drop must be within `Config.Dropped.PromptViewDistance + 1.0` of the caller's own server-cached position. The earlier version of this plan flagged client-supplied drop coordinates as an open risk; that's closed.
+- ~~**`GiveItem` still has no equivalent check**~~ **Fixed** — see §6.
+- **RPC-level rate limiting** remains a `feather-core` concern; no evidence inventory needs its own limiter.
+- **The robbery system's fail-closed default is correct and worth preserving** as a pattern: when a dependency isn't ready, the safe behavior is "the feature does nothing," never "the feature falls back to an unsafe default."
+
+## 10. Inventory-native feature completion & product ideas
+
+This is deliberately a first-class section, not an appendix to the weapons work. It's organized into three tiers: finishing systems that are *already half-built* (highest leverage, lowest new-design risk), the README's own stated backlog (already scoped, just not done), and new ideas worth considering.
+
+### 10.1 Finish what's already started
+
+- ~~**Unify the capacity model (§6).**~~ **Done.** One `EvaluateInventoryAcceptance` is now the only definition of "can this inventory accept N of this", replacing four inconsistent ones. Fixes the reported "can't hold more than 20 apples" bug at its root rather than at the one call site that surfaced it.
+- ~~**`MoveItem` weight/capacity bypass (§6).**~~ **Done.** Both halves closed — `EvaluateSlotMove`'s net-delta math covers the occupied-slot swap and subsumes the empty-slot case, and it also closed the swap's return leg, which no version of this check had ever validated.
+- **Robbery system — deliberately staying pending (2026-08-23).** Inventory-side is complete and fails closed on the missing `Feather.Character.HasStatus`. It is *not* simply waiting on someone to implement that function: the statuses it gates on (unconscious, hogtied, cuffed) are **client-authoritative in RedM**, so a naive `HasStatus` would let a client assert its own lootability — or deny it — which is a worse security position than the feature being inert. Turning this on needs an authoritative model for that state first, which is a `feather-core` design problem, not an inventory one. Left failing closed until then; that is the correct state, not a gap to close quickly.
+- ~~**`AddItem` weight parity.**~~ **Done.**
+- ~~**`GiveItem` distance check.**~~ **Done.**
+- ~~**Split-stack action.**~~ **Done.** `Split` in the context menu (shown only for a compartment of >1), reusing the existing quantity modal, capped at one below the stack size — moving the whole stack out would leave an empty compartment behind, which is a move, not a split. The server enforces that cap itself rather than trusting the UI's, re-derives the inventory from the item's own row, and re-reads the stack from the slot instead of trusting which specific row ids the client picked.
+- ~~**Surface rejection reasons in the UI.**~~ **Fixed.** Confirmed the gap was real — `App.vue`'s `onDrop`/`performDrop`/`performGive` only ever `console.log`'d rejections, nothing reached the player in-game. Server-side handlers (`UpdateInventory`, `MoveItem`'s access checks, `GiveItem`, `DropItemsOnGround`) now call `Feather.Notify.RightNotify(src, message, 3000)` on every rejection branch, reusing the exact call this codebase already makes elsewhere (`GetGroundUID`'s proximity check) — no new NUI/client wiring needed, confirmed via `feather-core/client/services/notifications.lua` that this is purely a server→client event today. Deliberately did **not** add this to `MoveItem`'s "Invalid move"/"Item not found"/"not placed" branches — those are defensive-only guards not reachable through normal drag-and-drop, adding a notify there has no real player-facing value.
+- ~~**Debug print cleanup.**~~ **Done.**
+
+### 10.2 README's stated backlog (already scoped)
+
+- ~~**Ground item LOD**~~ **Fixed.** Turned out worse than "no culling" — the old `UpdateGroundLocations` handler unconditionally despawned and respawned *every* pile on the map for *every* online player on *every single* drop/pickup/empty event anywhere on the server, not just once at load. Rewrote `GroundItems` from an array to an id-keyed table, reconciled in place on updates (only piles that actually appeared/disappeared touch their entity), and added a 1s-tick LOD thread that spawns/despawns each pile's prop based on the player's own live distance (`Config.Dropped.LoadDistance`, new, validated `>= PromptViewDistance` in `errors.lua`). The pickup-prompt loop's `ipairs`-over-array logic and unguarded `item.entity:GetObj()` had to move to `pairs` + a nil-entity guard to match the new keying.
+- **Hotbar — parked 2026-08-23 pending internal design discussion.** No server or UI implementation, and deliberately not started: how it should behave and look is a team decision, not something to settle in implementation. §10.4's scrollable grid means one option is now open that wasn't before — the hotbar as the always-visible first page of compartments rather than a separate strip — but that is input to the discussion, not a decision.
+- ~~**Locale migration**~~ **Done 2026-08-23.** Every user-facing string in the resource now lives in `translations/en_us.lua` (40 keys), registered via `Feather.Locale.register` in both the server and client contexts. Two display paths, one source of truth:
+    - **Server notifications** translate off a stable `code` on the result envelope (`err_<code>`) rather than off English text, so the message a player sees is decoupled from the developer-facing `message` services still return for logs and scripting consumers. `code` is now propagated through `MoveInventoryItems`, `DropItemsOnGround`, `AddItem`, and `InternalOpenInventory`.
+    - **Ledger UI** labels are resolved *in Lua* and handed to the NUI as a key→string bundle, deliberately rather than standing up a second locale system in JavaScript. `ui/src/i18n.js` holds English defaults purely as a fallback layer — for a key missing from `translations/`, a server older than the `strings` payload field, and the Vite dev server, where there is no Lua side at all.
+    - Both `Translate` helpers guard against `Feather.Locale.translate` returning its literal `"... does not exist"` **sentinel string** (not nil) for an unregistered key — without that check a typo'd key would render to the player verbatim, which is strictly worse than untranslated English.
+- **Frontend state management** — **decided 2026-08-23: not adopting Pinia yet, revisit when the hotbar design lands.** Pinia is not a dependency and is not referenced anywhere in `ui/src`; it was dropped during the Vite migration, so this was never a half-finished migration to complete.
+
+  Assessed against what a store actually buys: all three components are *direct children* of `App.vue`, so there is no prop drilling to remove; one parent owns all state, so there is no cross-tree sharing to coordinate; and there is no test suite for it to make testable. What real pressure exists is `App.vue` at ~600 lines and `LedgerBook` taking 13 props — but that is component *size*, not state *sharing*, and the fix for it is extracting composables (`useDrag`, `useContextMenu`), which needs no dependency at all.
+
+  The hotbar is what changes this: if it renders outside the inventory overlay it becomes a genuinely separate component tree needing shared state, which is the point a store stops being ceremony. Tied to that parked decision rather than settled independently.
+- ~~**Shift+drag bulk transfer/drop**~~ **Done 2026-08-23.** Two gestures, matching the two halves of the original item:
+    - **Shift+click a compartment** quick-transfers the whole stack to the other book (paired view only). Routed through `UpdateInventory` rather than `MoveItem` deliberately — there is no destination slot to name, and `MoveInventoryItems` already assigns one server-side (join a matching under-full stack, else first free) with capacity, weight and blacklist enforced on the way. Choosing a slot client-side would duplicate that logic and race it.
+    - **Shift while clicking Drop or Give** in the context menu skips the quantity prompt and acts on the whole stack.
+  Fixed alongside: the `UpdateInventory` NUI bridge forwarded only `sourceItems`/`targetItems`, dropping `error`/`message`/`code` — so a rejected bulk transfer looked identical to a successful no-op. Same bug `GiveItem` had.
+
+### 10.3 New ideas
+
+Grounded in what's already built (slot-based ledger, generic custom-inventory API, per-item metadata, RDR setting) rather than invented from nothing:
+
+- ~~**Item condition/durability as a first-class, generic concept.**~~ **Shipped 2026-08-23 (convention + API + display).** A per-instance `condition` integer (0..`Config.Condition.Max`) in `item_metadata`. Inventory owns the *convention* — key, range, clamping, validation, wear-stage display — and deliberately none of the *policy*: when an item wears, by how much, and what a worn item then does belong to whichever resource models that behaviour (§3's non-goal). Doing it once generically is why a single wear indicator can render for weapons, tools and clothing alike.
+
+  API: `ItemsAPI.GetCondition` / `SetCondition` (clamped) / `AdjustCondition` (relative — the common case, since wear is expressed as "this cost 5" far more often than as an absolute target; an instance with no condition recorded is treated as full so consumers can wear something never explicitly initialised).
+
+  **`SetCondition` refuses stackable items, deliberately.** `GetJoinableSlot` stacks on `item_id` alone — metadata is invisible to it — so two units of a stackable definition carrying different conditions would silently merge into one compartment and lose a value. Per-instance state on a stackable item needs `INV-W1`'s unique-instance model first; until then this fails closed rather than quietly corrupting a stack. Every currently-seeded degradable item is `max_stack_size = 1` and is unaffected. **This is the concrete case that motivates `INV-W1`'s unique/stack `instance_mode` split** — it is no longer hypothetical.
+
+  Storage-agnostic on purpose: a single small integer sits in the flat `item_metadata` table unchanged and survives `INV-W1`'s move to a versioned document without the convention changing, which is exactly why the plan sequences this alongside that work rather than after it.
+
+  Still open: nothing *produces* wear yet (no consumer resource exists to), and the ledger shows condition only in the detail box — per-cell wear icons from the original idea are not built.
+- **Perishable/spoilage items — DEFERRED 2026-08-23, blocked on the same thing condition is.** A `spoilsAt` timestamp is per-instance state, and food is exactly the category that stacks (`consumable_apple` is `max_stack_size = 20`). `GetJoinableSlot` stacks on `item_id` alone, so two apples with different spoil times would silently merge and one timestamp would win. Condition sidesteps this by refusing stackable items — perishables cannot, because being stackable is the whole point of food. This needs `INV-W1`'s unique-instance model first, and is the second concrete caller waiting on it. Original sketch retained:  Fits the README's own "realistic and immersive" pitch and the RDR setting particularly well: a `spoilsAt` metadata timestamp on food/consumables, a spoiled state that changes the item's usable behavior (or swaps it for a "rotten" item) once passed. Reuses the metadata system that already exists; no new subsystem, just a convention plus a periodic check (or lazy check-on-read, cheaper than a poller).
+- **Vehicle/mount containers — DEFERRED 2026-08-23, nothing to build here.** Verified the inventory side is already complete: `RegisterForeignKey`/`RegisterInventory` generalize to any entity with an id, and §10.4 made capacity per-inventory so a wagon can genuinely be larger than a player's book. What is missing is a *consumer* — a resource that owns horses or wagons and calls it. That is `feather-mounts`' work, not inventory's; building a demo container here would be inventing an owner for an entity this resource does not model. Original sketch retained:  `RegisterForeignKey`/`RegisterInventory` already generalize to "any entity with an ID" — horse saddlebags and wagon storage are concrete, comparatively low-effort applications of an API that's already built but has no in-game entity wired to it yet. This is closer to "plug in the existing generic system" than "build a new feature."
+- ~~**Quick-loot / "Take All."**~~ **Shipped 2026-08-23.** `Feather:Inventory:TakeAll`, offered on the paired book only. Deliberately **greedy** rather than all-or-nothing — it is not `UpdateInventory` with every id, because that capacity-checks the whole batch and rejects it entirely, so taking from a pile larger than your remaining room would take *nothing*. Each item is attempted independently and failures skipped, so one heavy item cannot block the lighter ones behind it; the response reports `moved`/`skipped` so "took everything" and "took what fit" are distinguishable. Original sketch retained:  Especially valuable once the robbery system goes live (§10.1) — a forced search that requires dragging items one at a time undercuts the tension the feature is going for. A single server-validated "move everything from this inventory to mine, respecting my capacity" action reuses `MoveInventoryItems`'s existing per-item validation, just called in a loop server-side instead of once per drag.
+- ~~**A visible weight/capacity meter in the ledger UI.**~~ **Already satisfied 2026-08-23** — delivered incidentally by the carrying-line fix (§6), which was rendering weight against the *slot count*. It now shows carried weight against the inventory's own weight limit, which is exactly what this asked for. No further work; closing rather than leaving it open as if unbuilt. Original sketch retained:  Weight is now actually enforced (§2) but nothing in the UI surfaces current weight vs. limit the way slot count is already shown — players can only discover the limit by hitting it. Low effort, meaningfully closes the "why did that just get rejected" gap even before §10.1's "surface rejection reasons" lands.
+- **Search/filter within a book — DEFERRED 2026-08-23, needs a UI design decision first.** This plan already rates it "less urgent", and the blocker is not effort: the ledger is a fixed 574x983 asset whose chrome is calibrated against the art, so a text input has no obviously correct home in it. That is the same class of question as the parked hotbar, and bolting an input onto calibrated artwork unilaterally is how the design's fidelity gets eroded one addition at a time. Bundle it with the hotbar UI discussion. Original sketch retained:  Less urgent for the 25-slot player book, but a real usability need for larger custom inventories (storage, wagons) once those exist in numbers — a text filter across the currently-visible book's items, no new backend needed.
+- **In-game item-definition editor (searchable catalog: category, weight, stack size, quantity limit).** **Status: parked 2026-08-23 — ownership decision deferred, not yet approved to build.** The recommendation below is a proposal awaiting a call, not a settled direction; nothing should be implemented against it until that call is made. Server owners currently tune `items` by editing SQL directly, which is the only reason weight/stack values feel like framework decisions rather than server ones. Recommended split follows the precedent `GrantItem` already set: **`feather-inventory` owns a validated server-side write API** (it owns the `items` table and the invariants — e.g. `max_stack_size` is a per-compartment placement property while `max_quantity` is an inventory-wide cap, a distinction §6 shows is easy to get wrong), and **`feather-admin` owns the operator UI, permission gate and audit record** (it already has `feather-admin:inventory:catalog`, which reads `GetDefinitions()` and returns name/category/weight/maxStackSize/maxQuantity — the exact fields such an editor would edit, already permission-gated and searchable).
+
+  Live-edit consequences that need an explicit policy before building it: lowering `max_stack_size` below existing stack sizes, lowering `max_quantity` below what characters already hold, and raising `weight` such that an inventory is instantly over its limit. None of these corrupt data — the limits are only evaluated on grant/move — but each leaves the world temporarily out of spec, and "what happens to what already exists" should be a decision rather than an emergent behaviour. No cache invalidation is needed: `GetItemByName`/`GetDefinitions` query live on every call.
+
+- **A generic admin inventory-inspection export — DEFERRED 2026-08-23, tied to the parked editor decision.** This is the read half of the same ownership question as the in-game item-definition editor (does the API live here and the UI in `feather-admin`, or all in one place?). Building the read path before that is settled risks putting it on the wrong side of the boundary and having to move it. Revisit together. Original sketch retained:  `feather-admin`'s own dependency-plan section (`DEPENDENCY_SUPPORT_PLAN.md` §7) wants weapon-specific admin tooling; underneath that, inventory itself should expose a read (and permission-gated write) path for "show me this online character's inventory contents" independent of whether weapons exists at all — useful for support/moderation on day one.
+- **Sound/haptic feedback — AUDITED 2026-08-23: none exists, so this is genuinely new work.** The idea was flagged as "worth a quick audit before treating it as new work"; the audit found zero sound, audio, or `PLAY_SOUND` calls anywhere in the resource. Not started — it wants a decision about which RDR3 sound sets fit the ledger's period framing, which is a design call rather than an implementation one. Original sketch retained:  Matches the "immersive" framing in the README's own pitch; currently unclear whether this exists — worth a quick audit before treating it as new work.
+
+### 10.4 Per-inventory capacity — ~~resolved direction~~ **shipped 2026-08-23**: scrollable grid, static chrome
+
+Earlier drafts of this plan flagged "per-inventory slot count override" as blocked by the ledger's fixed 574×983 book art. Decision: keep the book frame, header, category tabs, and footer exactly as they are (fixed-size, no redesign) and make only the compartment grid inside that frame a scrollable region. This resolves the capacity problem without a second art asset per size tier and without abandoning the ledger's visual identity — README's own "Add Inventory specific slot counts" backlog item (§10.2) is this, not a separate piece of work.
+
+**Delivered.** The grid *region* is pinned to exactly one page's height (475px, 430px paired) with `overflow-y: auto` and `grid-auto-rows`; the chrome around it never moves. `Config.maxItemSlots` default raised 25 → **40** (8 rows at 5 columns) so a default inventory actually exercises the scroll path — at 25 the content height equalled the viewport exactly and nothing ever scrolled in normal play. Capacity below one page deliberately leaves the rest of the page blank rather than shrinking the region — the art underneath doesn't resize either way. Scrollbar is styled thin/ink-on-parchment so it doesn't read as a browser widget sitting on an 1899 ledger.
+
+Server side, `inventory.max_slots` (nullable, `NULL` = use the Config default, so no data migration was needed) is resolved through one `InventoryControllers.GetInventoryCapacity`, and every allocation and bounds check now goes through it: `EvaluateInventoryAcceptance`, both grant paths' `GetFreeSlot` loops (hoisted out of the loop, since capacity is a DB read now), `MoveInventoryItems`' target-slot assignment, `SplitStack`'s free-slot lookup, and `MoveItem`'s upper bound. That last one moved *after* the access checks rather than sitting with the cheap shape validation, so an unauthorized caller can't probe an arbitrary inventory's size.
+
+`RegisterInventory` gained a 9th `maxSlots` parameter, written only when explicitly passed — omitting it on a re-register must not silently reset a container that was already given a custom size back to the default, same rule the `ownerCharacterId`/`isPublic` flags already follow.
+
+Verified: the migration applies to the dev schema and is idempotent, `NULL` and explicit values both round-trip, both `RegisterInventory` INSERT paths execute with correct column alignment (checked in a transaction and rolled back), and the UI builds and lints clean.
+
+What this took:
+
+- **Frontend (`LedgerBook.vue`).** Wrap the grid cells in a scroll container sized to show one page's worth of compartments (still reads as "a page of the book") with `overflow-y: auto` for additional rows beyond that; the book-frame image, title/subtitle, category tabs, and footer label stay outside the scroll container and don't move. Drag-and-drop, hover highlighting, and the context menu need to keep working against scrolled-out-of-view slots (drop targets below the fold), not just visible ones.
+- **Config/schema.** `Config.maxItemSlots` stops being the single number that *is* the grid's physical capacity and goes back to being a default. Capacity becomes a real per-inventory value the same way `maxWeight`/`ignoreItemLimits` already are — `RegisterInventory` gains a capacity parameter, self-migrated the same way `owner_character_id`/`is_public`/`slot_index` were (a nullable `inventory.max_slots` column, `SHOW COLUMNS` + conditional `ALTER TABLE`, falling back to `Config.maxItemSlots` when null).
+- **Backend — smaller lift than it looks.** `GetFreeSlot(inventory, capacity)` already takes capacity as a parameter rather than assuming a global constant; every current caller just happens to always pass `Config.maxItemSlots`. Once capacity is per-inventory, callers pass that inventory's own registered capacity instead. `MoveItem`'s bounds check (`toSlot >= capacity`) needs the same swap. The slot-allocation logic itself (`GetJoinableSlot`, `GetItemsInSlot`, `MoveSlotItems`) is capacity-agnostic already and needs no changes.
+- **Client payload.** `App.vue` currently reads one global `data.maxSlots` for both the player and "other" book (`player.capacity = Number(data.maxSlots)`, same for `other`). Once capacity is per-inventory, the server needs to send each book's own capacity distinctly (e.g. `playerMaxSlots`/`otherMaxSlots`) so a player's personal effects book and a large storage chest opened alongside it can genuinely differ in size.
+
+This also gives the hotbar design question (§10.2) a cleaner answer: a hotbar can be "the first N compartments of the always-visible page" rather than needing a wholly separate UI strip, since scrolling already establishes the idea of "more exists below the visible page."
+
+## 11. Delivery phases
+
+Two tracks. The `INV-W*` track matches `DEPENDENCY_SUPPORT_PLAN.md` §4.5 exactly (shared vocabulary with the weapons plan). The Inventory-Native track is this resource's own, sequenced by leverage (§10.1 → §10.2 → §10.3), and runs in parallel — neither blocks the other.
+
+### `INV-W1` — Contract and schema foundation — **DONE 2026-08-23**
+- ~~Finalize `instance_mode` (`stack`/`unique`) on item definitions.~~ `items.instance_mode`, backfilled from `max_stack_size <= 1` (64 unique / 2 stack). Enforced at the single chokepoint that decides placement, `GetJoinableSlot` — so "unique cannot stack" covers `AddItem`, `GrantItem` and `MoveInventoryItems` at once rather than as three separately-maintained checks.
+- ~~Design and migrate the versioned metadata document; decide whether flat `item_metadata` survives.~~ `inventory_items.metadata` (JSON) + `metadata_revision`. **Decision: the flat table survives as a read-only compatibility projection.** Reads `COALESCE` the document over a `JSON_OBJECTAGG` of the flat rows, so an instance written before the migration reads identically to one written after and no data migration was needed.
+- ~~Introduce the shared result envelope/error-code catalog.~~ `server/helpers/result.lua` — `{ ok, value | error{code,message,details}, correlationId }` per `DEPENDENCY_SUPPORT_PLAN` §3.1, with `Result.Codes`. Deliberately *extends*: new contract surfaces use it, older functions keep their shapes. `Result.IsOk` exists because a failure envelope is itself a truthy table, so `if call() then` would treat every error as success.
+- ~~Add the normalized item-instance read model and a capability export.~~ `InstancesAPI.GetInstance` / `FindInstances` / `GetCapabilities`. `FindInstances` is scoped to one inventory on purpose — a global search would leak inventories the caller cannot access.
+- **Exit gate — verified against the live schema:** a unique definition returns no joinable slot; a compare-and-set write with the correct revision affects 1 row while a stale one affects 0 and reports `CONFLICT` with expected/actual; and the compatibility projection surfaces flat rows when only they exist, with the document taking precedence when both do.
+
+Also migrated `condition` (§10.3) onto the document, so it inherits compare-and-set — two callers wearing the same item concurrently can no longer clobber one another, which the previous one-key-at-a-time flat write allowed.
+
+### `INV-W2` — Transactions and concurrency — **DONE 2026-08-23**
+
+**A constraint reshaped this phase, and it is worth stating before the outcome.** `oxmysql` exposes `MySQL.transaction.await(queries) -> boolean`: an *array* of statements, atomic, returning only success/failure. There is no interactive transaction — no way to hold one connection open, `SELECT ... FOR UPDATE`, run Lua against the result, and write inside that same transaction. **The plan's literal "deterministic multi-item row locking" is therefore not achievable against this dependency**, and implementing something called a lock that does not lock would be worse than not having one. This is exactly the `oxmysql` capability validation `DEPENDENCY_SUPPORT_PLAN` §12 asks for, resolved: *row locking is unavailable; optimistic concurrency is*.
+
+- ~~Implement `Inventory.Transaction(context, fn)`.~~ Read → validate → commit, where the read phase records each instance's `metadata_revision`, the validate phase is pure Lua with no side effects, and the commit phase submits one atomic batch. Retries the whole closure on conflict (bounded at 3) — re-reading is the point, since the caller's decision was made against state that has since moved.
+- **The guard is the load-bearing piece.** A CAS `UPDATE ... WHERE revision = ?` that matches nothing does *not* error — it affects zero rows — and the batch API reports no per-statement affected counts, so a stale write would commit silently beside its siblings and leave partial state. The commit batch is therefore led by a guard statement that re-checks every recorded revision and deliberately provokes `ER_SUBQUERY_NO_1_ROW` when any has moved, aborting the batch.
+- ~~Add idempotency records.~~ Bounded in-memory cache (500 entries, 60s TTL). Not a table: the record only needs to outlive a request's retry window, and persisting it would mean schema plus cleanup for something worthless after a restart. Bounded deliberately — an unbounded cache keyed by caller-supplied strings is a memory-exhaustion vector.
+- **Exit gate — verified against MariaDB 12.3, not asserted:** two transactions both read revision 0; the first committed and advanced it; the second's guard raised `ERROR 1242` and **its write did not land**. One commit, one explicit conflict.
+
+**Honest limitation:** this is optimistic, not pessimistic. Contending transactions do not queue — one wins and the other is told `CONFLICT`. That satisfies the exit gate and is safe, but it is not a lock, and callers with long validate phases will see more conflicts than a locking implementation would. Closing that properly needs either an `oxmysql` interactive-transaction capability or a stored routine, neither of which exists today.
+
+### `INV-W3` — Movement guards and events — **DONE 2026-08-23**
+- ~~Pre-move/destroy guard registry.~~ `GuardsAPI.RegisterMoveGuard` / `RegisterDestroyGuard`. The contract is documented because §3.3 requires a veto to be one: guards are **synchronous** (a yielding guard stalls every mutation behind it), return `true` or `false, reason`, and **a guard that errors is treated as a veto, not an allow** — a guard exists to prevent something, so a broken one must not silently become permission. Guards hold no state, so a crashed consumer cannot wedge the inventory; that is the "no permanent locks" requirement satisfied by construction rather than by cleanup.
+- ~~Structured post-commit events.~~ `ItemCreated` / `ItemMoved` / `ItemMetadataChanged` / `ItemDestroyed` / `TransactionCommitted`, named exactly as §4.4 writes them so a consumer needs no translation layer. Internal `TriggerEvent`, deliberately **not** `RegisterServerEvent` — a network-registered mutation event is spoofable by any client, which `feather-weapons` already has a note about on `ItemRemoved`.
+- ~~Route give/ground/container/admin/deletion through the same pipeline.~~ Guards are wired at the **chokepoints** rather than per caller: `MoveInventoryItems` (give, ground drop, container move, quick-loot), `MoveSlotItems` (drag, swap), `CreateInventoryItem` (grants), and a guarded delete path. One check covers every route, and a route added later cannot forget to ask. In-book rearrangement is deliberately unguarded — it is not a movement anything outside this resource can meaningfully veto.
+- Inside a transaction, guards run at **queue time during the validate phase**, so a veto aborts before anything is written rather than after a partial commit.
+- **Exit gate:** every movement now emits a post-commit event carrying instance id, both inventory ids, and the correlation id; and a registered move guard vetoes the move before any write — which is precisely the "force an authoritative unequip before an equipped item moves" hook weapons needs.
+
+Legacy `feather-inventory:ItemAdded`/`ItemRemoved` still fire alongside the structured set, so existing consumers are unaffected.
+
+### `INV-W4` — Capacity and hardening — **DONE 2026-08-23**
+- ~~Close the last weight-enforcement gap (`AddItem`).~~ Done earlier in this branch, along with the wider capacity-model unification (§6) that turned out to be four inconsistent definitions of "full" rather than one gap.
+- ~~Metadata size limits.~~ Documents bounded at 4096 bytes, rejected with `LIMIT_EXCEEDED` carrying actual size and limit.
+- ~~Access-mode checks.~~ `InventoryAPI.CanAccessInventory(src, inventoryId, action, context)` with `READ`/`INSERT`/`REMOVE`/`MANAGE`. **The modes are deliberately not all distinct**: `MANAGE` is genuinely owner/admin-only and never granted by proximity or public visibility, while the other three currently resolve through the same live check. Modelling that honestly beats inventing five permission bits that all resolve identically and rot out of sync — a ground pile is readable and lootable by anyone near it and manageable by nobody, and that is the truth the API should tell.
+- ~~Failure diagnostics and transaction metrics.~~ Counters (`started`/`committed`/`conflicts`/`retriesExhausted`/`bodyErrors`/`idempotentHits`) exposed via `Diagnostics.GetTransactionMetrics`, returned as a copy so a caller cannot reset them by mutating what it was handed. Conflicts are *expected* under optimistic concurrency — the number that actually matters operationally is `retriesExhausted`, which is a caller losing work rather than merely retrying. Failures log with the correlation id so a line can be tied back to its originating request.
+- ~~Restart tests.~~ Audited rather than asserted: the only in-memory state is `OpenInventories`, `TemporaryGrants`, the idempotency cache and the metrics counters. Each is empty on boot, and empty means *deny* (grants), *unlocked* (open-inventory locks), *cache miss* (idempotency) and *zero* (metrics). **No in-memory structure is persistent authority** — the §12 checklist item — and every one fails safe rather than open.
+- **Exit gate:** the vertical-slice suite belongs to `feather-weapons` and cannot run before that resource exists. What is verifiable here is verified: unique instances cannot stack, metadata CAS yields one commit and one explicit conflict, guards veto before any write, events fire only post-commit, and all 33 Lua files parse clean.
+
+**Concurrency caveat carried forward from `INV-W2`:** this is optimistic, not pessimistic. `oxmysql` exposes no interactive transaction, so row locking is unavailable and contending callers conflict-and-retry rather than queue.
+
+### Inventory-Native Phase A — Close the loop (§10.1)
+- ~~`MoveItem` weight/capacity bypass~~ — empty-slot case done; occupied-slot swap across inventories still open (needs net-delta capacity math, see §6).
+- Unblock robbery (cross-resource ask to `feather-core`, still open).
+- ~~`AddItem` weight parity~~, ~~`GiveItem` distance check~~, ~~surfaced rejection reasons~~, ~~debug print cleanup~~ — done.
+- Split-stack action — still open.
+- **Exit gate:** every currently-built inventory feature is actually reachable and consistent with the patterns the rest of the resource follows.
+
+### Inventory-Native Phase B — README backlog (§10.2)
+- ~~Scrollable grid + per-inventory capacity (§10.4)~~ — **done.** This also resolves README's "Add Inventory specific slot counts" item, and unblocks the hotbar design (it can now be the always-visible first page rather than a separate strip).
+- ~~Ground LOD~~ — done.
+- ~~Locale migration~~ — done. Hotbar (as the always-visible first page, per §10.4), a store layer if the ledger's local state outgrows `reactive()`, and shift+drag-all — still open.
+- **Exit gate:** README's "Next Major version improvements" list is empty or explicitly re-scoped.
+
+### Inventory-Native Phase C — New ideas (§10.3), prioritized by leverage
+- Condition/durability convention (do this before or alongside `INV-W1`'s metadata document work, since weapons wants the same thing — one design, two consumers).
+- Perishables, vehicle/mount containers, quick-loot-all, weight meter, search/filter, admin inspection export, sound feedback audit.
+- **Exit gate:** each shipped idea has a clear owner decision recorded (built, deferred with reason, or rejected with reason) — this phase is explicitly open-ended, not a fixed checklist to clear.
+
+### Phase D — Public API documentation
+- Document every export's real contract once `INV-W1`–`W4` stabilize it.
+- **Exit gate:** `feather-website`'s inventory section (`DOCS-W1`) can be written directly from this.
+
+## 12. Workstream checklist
+
+**Weapons-support (`DEPENDENCY_SUPPORT_PLAN.md` §4.6):**
+- [x] Unique item instance cannot stack (INV-W1) — enforced at `GetJoinableSlot`, the single placement chokepoint; splitting a 1-stack is already rejected by `SplitStack`'s whole-stack guard
+- [x] Metadata document and revision update atomically (INV-W1) — one JSON column, one CAS statement
+- [x] Multi-item flows can commit atomically through `Transaction(context, fn)` (INV-W2)
+- [x] Concurrent requests cannot duplicate state (INV-W2) — revision guard aborts the whole batch; verified one commit / one conflict against MariaDB 12.3
+- [x] Post-commit events fire only after commit (INV-W3) — emitted from the commit path, never from the queue helpers, so an uncommitted write cannot announce itself
+- [x] All mutation paths enforce live container access (INV-W4) — `CanAccessInventory` re-checks rather than caching, so a late mutation cannot ride a stale authorization
+- [x] Restart leaves no in-memory lock as persistent authority (INV-W4) — audited; all four in-memory structures are empty-on-boot and fail safe
+
+**Inventory-native:**
+- [x] Capacity model unified behind one `EvaluateInventoryAcceptance` (§6, found/fixed 2026-08-23) — fixes the stack-size/quantity-limit conflation in `AddItem` and `GrantItem`, the unit-count-as-slot-count check in `GrantItem`, and the quantity-less weight sum in `InventoryCanHold`/`ById`
+- [x] `GrantItem` now respects the per-inventory blacklist (was skipped entirely)
+- [x] `AddItem` no longer reports success on a partial grant
+- [x] `MoveItem` weight/capacity bypass fixed for empty-destination-slot case (§6, found 2026-08-21)
+- [x] `MoveItem` swap-into-occupied-slot-across-inventories closed via `EvaluateSlotMove`'s net-delta math (§6, 2026-08-23) — also closed the previously-unvalidated return leg
+- [ ] **PENDING BY DESIGN** — robbery stays inert until `feather-core` has an *authoritative* model for unconscious/hogtied/cuffed. Those states are client-authoritative in RedM, so shipping a naive `HasStatus` would be worse than the current fail-closed behaviour.
+- [ ] **PARKED** — hotbar design (behaviour + look) awaiting internal discussion
+- [x] `AddItem` weight check added
+- [x] `GiveItem` server-side distance check added
+- [x] Stack merge on drop shipped (2026-08-23) — same-item stacks recombine up to max_stack_size, remainder stays
+- [x] `GrantItem` batched-insert over-stacking fixed (2026-08-23) — slots claimed locally, not re-read from a DB the batch hasn't touched
+- [x] Carrying line now shows the weight limit, not the slot count (2026-08-23)
+- [x] Split-stack action shipped (§10.1, 2026-08-23) — same-inventory only, server-enforced cap, UI build + lint verified
+- [x] Rejection reasons confirmed surfaced in UI
+- [x] Debug prints replaced with gated logger
+- [x] Scrollable grid + per-inventory capacity shipped (§10.4, 2026-08-23) — static chrome, scrolling compartments, `inventory.max_slots` self-migration, `RegisterInventory` capacity param, per-book client payload, all six server-side capacity call sites routed through one resolver
+- [x] Ground LOD shipped
+- [x] Locale migration shipped (§10.2, 2026-08-23) — 40 keys, code-based server notifications, Lua-resolved UI bundle, key parity verified across all three layers
+- [x] Shift+drag bulk transfer/drop shipped (§10.2, 2026-08-23) — shift+click quick-transfer, shift skips the quantity prompt
+- [x] Pinia assessed and **declined for now** (§10.2, 2026-08-23) — no prop drilling, no cross-tree state, no test suite; revisit if the hotbar introduces a second component tree
+- [x] Condition/durability convention shipped (§10.3, 2026-08-23) — generic 0..Max per-instance value, Get/Set/AdjustCondition, wear stages in the ledger; refuses stackable items pending INV-W1's unique-instance model
+- [ ] **NOTHING PRODUCES WEAR YET** — condition is fully built (API, display, per-cell indicator) but no resource decrements it. That is by design: inventory owns the convention, not the policy. Real wear arrives with `feather-weapons`, which is the first consumer.
+- [ ] **DECISION PENDING** — in-game item-definition editor: does the write API live in `feather-inventory` and the UI in `feather-admin` (recommended, mirrors `GrantItem`), or does it all sit in one resource? Parked 2026-08-23 at the owner's request. Blocks nothing; revisit before any §10.3 tooling work.
+- [x] Quick-loot "Take All" shipped (§10.3, 2026-08-23) — greedy per-item, reports moved/skipped
+- [x] Weight meter — already satisfied by the carrying-line fix; closed rather than left open as if unbuilt
+- [x] Condition per-cell wear indicator shipped (§10.3, 2026-08-23) — thin ink rule, length carries the value
+- [x] §10.3 idea list fully triaged (2026-08-23) — every item now has a recorded decision, per that section's own exit gate
+- [ ] **DEFERRED, blocked on `INV-W1`** — perishables (per-instance spoil time on a definition that *must* stack; the second concrete caller for unique-instance support, after condition)
+- [ ] **DEFERRED, needs a consumer** — vehicle/mount containers; the inventory side is already complete, `feather-mounts` would own the entity
+- [ ] **DEFERRED, needs UI design** — search/filter within a book; no correct home for an input in calibrated book art, bundle with the hotbar discussion
+- [ ] **DEFERRED, tied to the editor decision** — admin inventory-inspection export is the read half of the same ownership question
+- [ ] **NOT STARTED** — sound/haptic feedback; audited and confirmed none exists, wants a period-fit sound-set decision first
+- [ ] Every export documented against its real contract (Phase D — deliberately after `INV-W1`–`W4` stabilize the contracts, per §11; documenting them now would document shapes that are about to change)
+
+## 13. Definition of done
+
+- Inventory supports unique item instances, versioned metadata, atomic multi-item mutations, concurrency control, access assertions, movement guards, and post-commit events (weapons track).
+- `feather-weapons` can build creation/equip/reload/attachment services entirely on the transaction API and guard registry.
+- Every currently-built inventory feature (robbery, weight enforcement, slot-based UI) is fully reachable and consistent, not partially wired.
+- README's outstanding TODO and "Next Major version" lists are empty or explicitly re-scoped.
+- Each §10.3 idea has a recorded decision, not silence.
+- Every export has a documented, accurate result-envelope contract.
+- The cross-resource test matrix (`DEPENDENCY_SUPPORT_PLAN.md` §15, inventory column) passes on a clean database and after resource/server restarts.

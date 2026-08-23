@@ -1,35 +1,92 @@
+-- (§10.2 ground LOD) Keyed by tostring(id) rather than an array index --
+-- reconciled in place on every server update instead of being wholesale
+-- cleared and rebuilt, so a pile the player is nowhere near doesn't get
+-- despawned and respawned every time *any* pile changes *anywhere* on the
+-- map (which the old unconditional Clear+Spawn did, for every online
+-- player, on every single drop/pickup/empty). `entity` is nil until the LOD
+-- thread below actually spawns it.
 GroundItems = {}
+
 RegisterNetEvent("Feather:Inventory:UpdateGroundLocations", function(locations)
-    ClearGroundItems()
-    GroundItems = locations
-    SpawnGroundItems()
+    local seen = {}
+    for _, loc in ipairs(locations) do
+        local key = tostring(loc.id)
+        seen[key] = true
+        local existing = GroundItems[key]
+        if existing then
+            -- Same pile, refresh its coords; keep whatever entity state
+            -- (spawned or not) the LOD thread already has for it.
+            existing.x, existing.y, existing.z = loc.x, loc.y, loc.z
+        else
+            GroundItems[key] = { id = loc.id, x = loc.x, y = loc.y, z = loc.z, entity = nil }
+        end
+    end
+
+    -- A pile that's gone from the server's list (fully looted/swept) --
+    -- despawn its entity if it had one and drop it from the table.
+    for key, item in pairs(GroundItems) do
+        if not seen[key] then
+            if item.entity then
+                item.entity:Remove()
+            end
+            GroundItems[key] = nil
+        end
+    end
 end)
 
 RegisterNetEvent("Feather:Character:Spawned", function()
     TriggerServerEvent('Feather:Inventory:GetGroundLocations')
 end)
 
-function SpawnGroundItems()
-    for index, groundItem in ipairs(GroundItems) do
-        local spawnedGroundItem = Feather.Object:Create(Config.Dropped.Item, tonumber(groundItem.x), tonumber(groundItem.y), tonumber(groundItem.z), 0, true)
-        spawnedGroundItem:SetAsMission()
-        spawnedGroundItem:Freeze()
+function SpawnGroundItemEntity(item)
+    local spawnedGroundItem = Feather.Object:Create(Config.Dropped.Item, tonumber(item.x), tonumber(item.y), tonumber(item.z), 0, true)
+    spawnedGroundItem:SetAsMission()
+    spawnedGroundItem:Freeze()
 
-        local spawnedGroundItemObj = spawnedGroundItem:GetObj()
+    Citizen.InvokeNative(0x7DFB49BCDB73089A, spawnedGroundItem:GetObj(), true) --SetPickupLight
 
-        Citizen.InvokeNative(0x7DFB49BCDB73089A, spawnedGroundItemObj, true) --SetPickupLight
-        groundItem.entity = spawnedGroundItem
-    end
+    return spawnedGroundItem
 end
 
-function ClearGroundItems()
-    for _, groundItem in ipairs(GroundItems) do
-        groundItem.entity:Remove()
+-- (§10.2 ground LOD) Spawns/despawns each pile's prop based on the player's
+-- own live distance to it. A 1s tick is plenty for a prop appearing/
+-- disappearing at LoadDistance -- this isn't the pickup-eligibility check
+-- (that's the tighter, 3ms loop further down using PromptViewDistance).
+CreateThread(function()
+    while true do
+        Wait(1000)
+        local playerCoords = GetEntityCoords(PlayerPedId())
+        for _, item in pairs(GroundItems) do
+            local dist = Feather.Math.GetDistanceBetween(
+                playerCoords, vector3(tonumber(item.x), tonumber(item.y), tonumber(item.z)))
+            if dist <= Config.Dropped.LoadDistance then
+                if not item.entity then
+                    item.entity = SpawnGroundItemEntity(item)
+                end
+            elseif item.entity then
+                item.entity:Remove()
+                item.entity = nil
+            end
+        end
     end
-    GroundItems = {}
-end
+end)
 
 function OpenGroundLocation(id)
+    -- (Pickup-distance staleness) GetGroundUID checks this pile against the
+    -- server's cached character.x/y/z, which feather-core only refreshes
+    -- every Config.PositionSync (20s by default). Walking to a pile and
+    -- pressing the prompt therefore failed with "You are too far away" until
+    -- a sync tick happened to land -- typically two or three attempts before
+    -- it succeeded, which reads as the prompt being flaky rather than as a
+    -- stale-position problem.
+    --
+    -- Exactly the same fix DropItemsOnGround already carries, which is the
+    -- tell that this was missed rather than considered: the drop half of this
+    -- flow was corrected and the pickup half was left on stale data. Server
+    -- authority is unchanged -- the server still decides -- it just isn't
+    -- deciding from a 20-second-old position.
+    SyncOwnPosition()
+
     local InventoryID = Feather.RPC.CallAsync("Feather:Inventory:GetGroundUID", {
         id = id
     })
@@ -51,21 +108,11 @@ function DropItemsOnGround(items)
     local y = coords.y + forward.y * 1.6
     local z = coords.z + forward.z * 1.6
 
-    -- (Drop-distance bugfix) The server checks this drop position against
-    -- its own cached character.x/y/z (never the client-supplied coords
-    -- directly -- see server/services/ground.lua), which is correct, but
-    -- that cache is only refreshed every Config.PositionSync (feather-core,
-    -- 20s by default). A player who'd moved at all since the last sync
-    -- would get rejected as "too far away" even standing right next to
-    -- where they actually are. Forcing a fresh sync immediately before the
-    -- check keeps the server-authoritative model intact -- it's just no
-    -- longer working from stale data.
-    -- Same call shape feather-core's own position-sync loop uses
-    -- (client/services/character.lua's startPositionSync) -- passing the
-    -- raw vector3 rather than a hand-built table, since the server side
-    -- (RPCAPI.Register("UpdatePlayerCoords", ...)) unpacks it expecting
-    -- exactly that shape.
-    Feather.RPC.CallAsync("UpdatePlayerCoords", coords)
+    -- (Drop-distance bugfix) The server checks this drop position against its
+    -- own cached character.x/y/z (never the client-supplied coords directly --
+    -- see server/services/ground.lua), which is correct, but that cache goes
+    -- stale between Config.PositionSync ticks. See SyncOwnPosition.
+    SyncOwnPosition()
 
     local result = Feather.RPC.CallAsync("Feather:Inventory:DropItemsOnGround", {
         items = items,
@@ -89,9 +136,16 @@ CreateThread(function()
         -- dead-check was a permanent no-op that always fell through as
         -- "alive", regardless of actual state.
         local isDead = IsEntityDead(PlayerPedId())
+        -- (§10.2 ground LOD) GroundItems is now keyed by id (pairs), not a
+        -- dense array (ipairs) -- see the reconciliation rewrite above. An
+        -- item this close should already be spawned by the 1s LOD thread
+        -- (PromptViewDistance is always < LoadDistance, enforced in
+        -- errors.lua), but `item.entity` is guarded anyway rather than
+        -- assumed non-nil for the one tick right after a pile first comes
+        -- into pickup range, before that thread's next pass catches up.
         if not isDead then
-            if GroundItems[1] ~= nil then
-                for i, item in ipairs(GroundItems) do
+            for _, item in pairs(GroundItems) do
+                if item.entity then
                     local playerped = PlayerPedId()
                     local playerCoords = GetEntityCoords(playerped)
                     local dist = Feather.Math.GetDistanceBetween(

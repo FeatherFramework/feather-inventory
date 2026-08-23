@@ -31,15 +31,27 @@ Feather.RPC.Register('Feather:Inventory:UpdateInventory', function(params, res, 
 
   if not InventoryAPI.IsInventoryAccessibleBySrc(src, sourceInventory) then
     warn('Rejected UpdateInventory: src ' .. src .. ' does not have access to source inventory ' .. tostring(sourceInventory))
+    Feather.Notify.RightNotify(src, Translate(src, 'err_no_access', 'You do not have access to that inventory.'), 3000)
     return res({ error = true, message = 'You do not have access to that inventory.' })
   end
 
   if not InventoryAPI.IsInventoryAccessibleBySrc(src, targetInventory) then
     warn('Rejected UpdateInventory: src ' .. src .. ' does not have access to target inventory ' .. tostring(targetInventory))
+    Feather.Notify.RightNotify(src, Translate(src, 'err_no_access', 'You do not have access to that inventory.'), 3000)
     return res({ error = true, message = 'You do not have access to that inventory.' })
   end
 
-  res(InventoryControllers.MoveInventoryItems(sourceInventory, targetInventory, items))
+  -- (§10.1 rejection-surfacing) MoveInventoryItems already returns a real
+  -- {error, message} on capacity/weight/restricted-item rejection (INV-14)
+  -- -- it just never reached the player. The NUI only ever logged it to the
+  -- browser devtools console (see App.vue's onDrop), which nobody sees
+  -- in-game. Reusing Feather.Notify.RightNotify the same way this file's
+  -- other rejection paths already do.
+  local result = InventoryControllers.MoveInventoryItems(sourceInventory, targetInventory, items)
+  if result and result.error then
+    Feather.Notify.RightNotify(src, TranslateResult(src, result, 'err_move_failed'), 3000)
+  end
+  res(result)
 end)
 
 -- (INV-06) Previously called res() twice -- once inside the success branch
@@ -62,7 +74,18 @@ Feather.RPC.Register('Feather:Inventory:GiveItem', function(params, res, src)
   local targetPlayer = Feather.Character.GetCharacter({ src = tonumber(target) })
   local targetCharacter = targetPlayer and targetPlayer.char
   if not targetCharacter then
+    Feather.Notify.RightNotify(src, Translate(src, 'err_target_unavailable', 'That player is not available.'), 3000)
     return res({ error = true, message = 'That player is not available.' })
+  end
+
+  -- (§10.1 give-distance parity) Ground pickup/drop and the robbery system
+  -- both validate real distance server-side; GiveItem previously only relied
+  -- on the client having aimed GetPedInFront() at someone, with nothing
+  -- re-verified here. See IsWithinGiveDistance (inventory_access.lua).
+  if not IsWithinGiveDistance(src, tonumber(target)) then
+    warn('Rejected GiveItem: src ' .. src .. ' is not close enough to target ' .. tostring(target))
+    Feather.Notify.RightNotify(src, Translate(src, 'err_too_far', 'You are too far away.'), 3000)
+    return res({ error = true, message = 'You are too far away.' })
   end
 
   -- GetInventoryByCharacter returns (id, max_weight, ignore_item_limit,
@@ -73,16 +96,22 @@ Feather.RPC.Register('Feather:Inventory:GiveItem', function(params, res, src)
   local destinationInventoryId = InventoryControllers.GetInventoryByCharacter(targetCharacter.id)
 
   if not sourceInventoryId or not destinationInventoryId then
+    Feather.Notify.RightNotify(src, Translate(src, 'err_invalid_inventory', 'Inventory not available.'), 3000)
     return res({ error = true, message = 'Inventory not available.' })
   end
 
-  return res(InventoryControllers.MoveInventoryItems(sourceInventoryId, destinationInventoryId, { item }))
+  local giveResult = InventoryControllers.MoveInventoryItems(sourceInventoryId, destinationInventoryId, { item })
+  if giveResult and giveResult.error then
+    Feather.Notify.RightNotify(src, TranslateResult(src, giveResult, 'err_give_failed'), 3000)
+  end
+  return res(giveResult)
 end)
 
 -- (Steampunk ledger) Drag-and-drop placement: moves the whole compartment
--- (every row sharing the source item's slot_index -- stack splitting isn't
--- part of this design, see the design handoff) to a specific destination
+-- (every row sharing the source item's slot_index) to a specific destination
 -- slot, swapping with whatever's already there rather than displacing it.
+-- Dragging is deliberately all-or-nothing; peeling part of a stack off is
+-- the separate SplitStack RPC below.
 -- Same ownership pattern as UpdateInventory above: both the source and
 -- destination inventory must actually be accessible to the caller right
 -- now, re-derived from src rather than trusted from the client.
@@ -90,9 +119,8 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
   local itemId = tonumber(params.itemId)
   local toInventory = params.toInventory
   local toSlot = tonumber(params.toSlot)
-  local capacity = tonumber(Config.maxItemSlots) or 0
 
-  if not itemId or not toInventory or toSlot == nil or toSlot < 0 or toSlot >= capacity then
+  if not itemId or not toInventory or toSlot == nil or toSlot < 0 then
     return res({ error = true, message = 'Invalid move.' })
   end
 
@@ -106,12 +134,24 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
 
   if not InventoryAPI.IsInventoryAccessibleBySrc(src, fromInventory) then
     warn('Rejected MoveItem: src ' .. src .. ' does not have access to source inventory ' .. tostring(fromInventory))
+    Feather.Notify.RightNotify(src, Translate(src, 'err_no_access', 'You do not have access to that inventory.'), 3000)
     return res({ error = true, message = 'You do not have access to that inventory.' })
   end
 
   if not InventoryAPI.IsInventoryAccessibleBySrc(src, toInventory) then
     warn('Rejected MoveItem: src ' .. src .. ' does not have access to target inventory ' .. tostring(toInventory))
+    Feather.Notify.RightNotify(src, Translate(src, 'err_no_access', 'You do not have access to that inventory.'), 3000)
     return res({ error = true, message = 'You do not have access to that inventory.' })
+  end
+
+  -- (§10.4) The upper bound is the destination inventory's own capacity, not
+  -- one global constant -- a 60-slot wagon must accept slot 40 while a
+  -- 25-slot book must still reject it. Checked after the access checks
+  -- rather than alongside the cheap shape validation above, so an
+  -- unauthorized caller can't probe an arbitrary inventory's size.
+  local capacity = InventoryControllers.GetInventoryCapacity(toInventory)
+  if toSlot >= capacity then
+    return res({ error = true, message = 'Invalid move.' })
   end
 
   if fromSlot == nil then
@@ -126,7 +166,76 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
     })
   end
 
-  InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory, toSlot)
+  -- (Stack merge) Dropping a stack onto another stack of the SAME item tops
+  -- it up rather than swapping the two compartments. Without this there was
+  -- no way to recombine stacks at all -- split was one-way, and any drag
+  -- onto a matching stack just traded their positions.
+  --
+  -- Only a single-definition compartment on each side can merge; a mixed
+  -- slot (not producible through normal play, but not forbidden by the
+  -- schema either) falls through to the swap path rather than guessing.
+  local movingBreakdown = InventoryControllers.GetSlotItemBreakdown(fromInventory, fromSlot)
+  local occupantBreakdown = InventoryControllers.GetSlotItemBreakdown(toInventory, toSlot)
+  local mergeCount = 0
+
+  if #movingBreakdown == 1 and #occupantBreakdown == 1
+      and tostring(movingBreakdown[1].item_id) == tostring(occupantBreakdown[1].item_id) then
+    local stackSize = math.max(tonumber(occupantBreakdown[1].max_stack_size) or 1, 1)
+    local room = stackSize - (tonumber(occupantBreakdown[1].count) or 0)
+    if room > 0 then
+      mergeCount = math.min(tonumber(movingBreakdown[1].count) or 0, room)
+    end
+  end
+
+  -- (§6/§10.1 MoveItem weight/capacity bypass -- now closed for both cases)
+  -- Every other movement path (UpdateInventory, GiveItem, DropItemsOnGround)
+  -- enforces weight/quantity/restricted-item limits via MoveInventoryItems ->
+  -- InventoryCanHoldById (INV-14); this drag-and-drop path never did.
+  --
+  -- The first pass could only close the empty-destination half, because it
+  -- reused InventoryCanHoldById -- an addition-only check, which double-counts
+  -- the stack simultaneously leaving fromInventory to make room for a swap.
+  -- EvaluateSlotMove replaces it with real net-delta math evaluated on both
+  -- inventories ((current - leaving) + arriving), which closes the swap case
+  -- and subsumes the empty-slot one as the degenerate "nothing is leaving"
+  -- form of the same calculation.
+  --
+  -- A merge needs different math from a swap: EvaluateSlotMove assumes the
+  -- occupant vacates to make room, but in a merge it stays put. Validating a
+  -- merge with swap math would credit the destination for weight that never
+  -- leaves it. Within one inventory nothing changes hands at all, so only a
+  -- cross-inventory merge needs checking, as a pure addition of the units
+  -- actually moving.
+  local canMove
+  if mergeCount > 0 then
+    if tostring(fromInventory) ~= tostring(toInventory) then
+      local _, toMaxWeight, toIgnoreLimit = InventoryControllers.GetInventoryById(toInventory, 'id')
+      canMove = InventoryAPI.EvaluateInventoryAcceptance(toInventory, toMaxWeight, toIgnoreLimit,
+        { { item = movingBreakdown[1].name, quantity = mergeCount } })
+    else
+      canMove = { status = true, message = '' }
+    end
+  else
+    canMove = InventoryAPI.EvaluateSlotMove(fromInventory, fromSlot, toInventory, toSlot)
+  end
+
+  if not canMove or canMove.status == false then
+    local rejectMessage = (canMove and canMove.message) or 'Target inventory cannot hold this item.'
+    warn('Rejected MoveItem: src ' .. src .. ' -- ' .. tostring(rejectMessage) ..
+      ' (from inventory ' .. tostring(fromInventory) .. ' slot ' .. tostring(fromSlot) ..
+      ' to inventory ' .. tostring(toInventory) .. ' slot ' .. tostring(toSlot) .. ')')
+    Feather.Notify.RightNotify(src, TranslateResult(src, canMove, 'err_move_failed'), 3000)
+    return res({ error = true, message = rejectMessage })
+  end
+
+  if mergeCount > 0 then
+    -- Only the units that fit move; any remainder stays where it was, so
+    -- dragging 15 onto a stack with room for 5 tops it up and leaves 10
+    -- behind rather than silently overfilling past max_stack_size.
+    InventoryControllers.MoveSlotItemsPartial(fromInventory, fromSlot, toInventory, toSlot, mergeCount)
+  else
+    InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory, toSlot)
+  end
 
   -- Only fire the cross-resource item-left/item-arrived events (e.g.
   -- feather-weapons unequipping on ItemRemoved) when the item actually left
@@ -140,6 +249,135 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
   res({
     sourceItems = InventoryControllers.GetInventoryItems(fromInventory),
     targetItems = InventoryControllers.GetInventoryItems(toInventory)
+  })
+end)
+
+-- (§10.1 split stack) The ledger otherwise only ever moves a whole
+-- compartment (MoveSlotItems, via MoveItem above); this peels part of one
+-- into a free compartment in the same inventory, which is what the design's
+-- existing quantity modal was already shaped for.
+--
+-- Same-inventory only, and that keeps it simple: nothing enters or leaves
+-- the inventory, so there is no weight/quantity/blacklist question to ask
+-- and no ItemAdded/ItemRemoved to fire (same reasoning as MoveItem's
+-- in-place rearrangement branch). The only real constraint is a free
+-- compartment to split into. Ownership is re-derived from the item's own
+-- row, never from the client -- same pattern as MoveItem.
+Feather.RPC.Register('Feather:Inventory:SplitStack', function(params, res, src)
+  local itemId = tonumber(params.itemId)
+  local quantity = tonumber(params.quantity)
+
+  if not itemId or not quantity or quantity < 1 or quantity % 1 ~= 0 then
+    return res({ error = true, message = 'Invalid split.' })
+  end
+
+  local item = InventoryControllers.GetInventoryItemById(itemId)
+  if not item then
+    return res({ error = true, message = 'Item not found.' })
+  end
+
+  local inventory = item.inventory_id
+  local fromSlot = item.slot_index
+  if fromSlot == nil then
+    return res({ error = true, message = 'Item is not placed anywhere yet.' })
+  end
+
+  if not InventoryAPI.IsInventoryAccessibleBySrc(src, inventory) then
+    warn('Rejected SplitStack: src ' .. src .. ' does not have access to inventory ' .. tostring(inventory))
+    Feather.Notify.RightNotify(src, Translate(src, 'err_no_access', 'You do not have access to that inventory.'), 3000)
+    return res({ error = true, message = 'You do not have access to that inventory.' })
+  end
+
+  -- Splitting off the whole stack would just relocate it and leave an empty
+  -- compartment behind -- that's a move, which MoveItem already does.
+  local stack = InventoryControllers.GetItemsInSlot(inventory, fromSlot)
+  if quantity >= #stack then
+    Feather.Notify.RightNotify(src, Translate(src, 'err_split_whole_stack', 'Choose fewer than the whole stack.'), 3000)
+    return res({ error = true, message = 'Choose fewer than the whole stack.' })
+  end
+
+  local freeSlot = InventoryControllers.GetFreeSlot(inventory, InventoryControllers.GetInventoryCapacity(inventory))
+  if freeSlot == nil then
+    Feather.Notify.RightNotify(src, Translate(src, 'err_no_free_compartment', 'No free compartment to split into.'), 3000)
+    return res({ error = true, message = 'No free compartment to split into.' })
+  end
+
+  InventoryControllers.SplitSlotItems(inventory, fromSlot, freeSlot, quantity)
+
+  res({
+    sourceItems = InventoryControllers.GetInventoryItems(inventory),
+    targetItems = InventoryControllers.GetInventoryItems(inventory)
+  })
+end)
+
+-- (§10.3 quick-loot) Moves everything from one inventory into the caller's
+-- own, respecting capacity.
+--
+-- Deliberately GREEDY rather than all-or-nothing, which is why it isn't just
+-- UpdateInventory with every id: MoveInventoryItems capacity-checks the whole
+-- batch and rejects it entirely if the lot won't fit, so "take all" from a
+-- pile larger than your remaining room would take nothing at all. Here each
+-- item is attempted independently and failures are skipped -- a heavy item
+-- that doesn't fit must not block the lighter ones behind it.
+--
+-- Reports how many actually moved so the UI can tell "took everything" from
+-- "took what fit", rather than both looking like success.
+Feather.RPC.Register('Feather:Inventory:TakeAll', function(params, res, src)
+  local fromInventory = params.fromInventory
+
+  if not fromInventory then
+    return res({ error = true, message = 'Invalid inventory.' })
+  end
+
+  local player = Feather.Character.GetCharacter({ src = src })
+  local character = player and player.char
+  if not character then
+    return res({ error = true, code = 'no_character', message = 'No character loaded.' })
+  end
+
+  local targetInventory = InventoryControllers.GetInventoryByCharacter(character.id)
+  if not targetInventory then
+    Feather.Notify.RightNotify(src, Translate(src, 'err_invalid_inventory', 'Inventory not available.'), 3000)
+    return res({ error = true, code = 'invalid_inventory', message = 'Inventory not available.' })
+  end
+
+  -- Same ownership rule as every other movement path: re-derived from src,
+  -- never trusted from the client, and re-checked here rather than relying on
+  -- the inventory merely being open.
+  if not InventoryAPI.IsInventoryAccessibleBySrc(src, fromInventory) then
+    warn('Rejected TakeAll: src ' .. src .. ' does not have access to inventory ' .. tostring(fromInventory))
+    Feather.Notify.RightNotify(src, Translate(src, 'err_no_access', 'You do not have access to that inventory.'), 3000)
+    return res({ error = true, code = 'no_access', message = 'You do not have access to that inventory.' })
+  end
+
+  if tostring(fromInventory) == tostring(targetInventory) then
+    return res({ error = true, message = 'Cannot take from your own inventory.' })
+  end
+
+  local sourceItems = InventoryControllers.GetInventoryItems(fromInventory)
+  local moved, skipped = 0, 0
+
+  for _, item in pairs(sourceItems) do
+    local result = InventoryControllers.MoveInventoryItems(fromInventory, targetInventory, { item.id })
+    if result and result.error then
+      skipped = skipped + 1
+    else
+      moved = moved + 1
+    end
+  end
+
+  if moved == 0 and skipped > 0 then
+    Feather.Notify.RightNotify(src, Translate(src, 'err_inventory_full', 'There is no room for that.'), 3000)
+  elseif skipped > 0 then
+    Feather.Notify.RightNotify(src, Translate(src, 'msg_took_what_fit', 'Took what would fit.'), 3000)
+  end
+
+  res({
+    error = false,
+    moved = moved,
+    skipped = skipped,
+    sourceItems = InventoryControllers.GetInventoryItems(fromInventory),
+    targetItems = InventoryControllers.GetInventoryItems(targetInventory)
   })
 end)
 

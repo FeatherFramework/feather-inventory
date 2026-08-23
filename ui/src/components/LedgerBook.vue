@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue';
+import { t, conditionStage, conditionMax } from '@/i18n';
 
 // One "1899 personal effects ledger" book -- either the player's own
 // inventory or the paired container/ground/robbery-target book. Fully
@@ -9,10 +10,11 @@ import { computed } from 'vue';
 const props = defineProps({
   title: { type: String, required: true },
   subtitle: { type: String, required: true },
-  footerLabel: { type: String, required: true }, // "CARRYING" | "STORED"
-  capacity: { type: Number, required: true },
+  footerLabel: { type: String, required: true }, // locale KEY: ui_carrying | ui_stored
+  capacity: { type: Number, required: true }, // compartments
+  maxWeight: { type: Number, default: 0 }, // weight limit -- NOT capacity
   items: { type: Array, required: true }, // flat rows, each with slot_index
-  categories: { type: Array, required: true }, // [{ id: null, label: 'ALL' }, { id, label }, ...]
+  categories: { type: Array, required: true }, // [{ id: null, label: <localized ALL> }, { id, label }, ...]
   activeCategoryId: { default: null },
   selectedIndex: { type: Number, default: -1 },
   paired: { type: Boolean, default: false },
@@ -21,6 +23,9 @@ const props = defineProps({
   dragSlot: { type: Number, default: -1 },
   dragArmed: { type: Boolean, default: false }, // a drag from a book paired with this one is in progress
   hoverSlot: { type: Number, default: -1 },
+  // (§10.3 quick-loot) Only the paired "other" book offers Take All --
+  // there is nowhere to take your own inventory to.
+  canTakeAll: { type: Boolean, default: false },
 });
 
 const emit = defineEmits([
@@ -31,6 +36,7 @@ const emit = defineEmits([
   'cellMouseUp',
   'cellDblClick',
   'cellContextMenu',
+  'takeAll',
 ]);
 
 // Every compartment sharing a slot_index stacks together (up to
@@ -74,16 +80,33 @@ const selectedCell = computed(() => {
 const detail = computed(() => {
   const cell = selectedCell.value;
   if (!cell || !cell.repItem) {
-    return { label: '—', desc: 'No entry selected.', weight: '—', qtyPlain: '—', img: null };
+    return { label: '—', desc: t('ui_no_entry'), weight: '—', qtyPlain: '—', img: null, condition: null };
   }
+  // (§10.3) Condition rides along in item_metadata, which the server already
+  // sends with every row -- no extra payload field needed. Absent metadata
+  // means this instance has no condition recorded, which is not the same as
+  // zero, so it renders nothing rather than "Ruined".
+  const raw = cell.repItem.item_metadata && cell.repItem.item_metadata.condition;
+  const value = Number(raw);
+  const hasCondition = raw !== undefined && raw !== null && Number.isFinite(value);
+  const stage = hasCondition ? conditionStage(value) : null;
+
   return {
     label: cell.repItem.display_name,
     desc: cell.repItem.description,
     weight: (Number(cell.repItem.weight) * cell.qty).toFixed(1) + ' lb.',
     qtyPlain: String(cell.qty),
     img: iconSrc(cell.repItem.name),
+    condition: hasCondition
+      ? (stage ? `${stage} (${value}/${conditionMax()})` : `${value}/${conditionMax()}`)
+      : null,
   };
 });
+
+// A limit of 0 means unlimited (ground piles register that way) -- show the
+// weight carried but no "/ limit", rather than rendering "/ 0 lb.", which
+// reads as a container that can hold nothing.
+const hasWeightLimit = computed(() => Number(props.maxWeight) > 0);
 
 const carrying = computed(() => {
   const lb = props.items.reduce((total, item) => total + (Number(item.weight) || 0), 0);
@@ -104,6 +127,19 @@ function onIconError(event) {
   // degrade to no icon rather than a broken-image box, per the design's
   // "engraving only" minimalism.
   event.target.style.display = 'none';
+}
+
+// (§10.3) Per-cell wear indicator. Returns 0..1, or null when this instance
+// has no condition recorded -- which is not the same as zero, so those cells
+// render no bar at all rather than an empty one reading as "ruined".
+function cellCondition(cell) {
+  if (!cell.repItem) return null;
+  const raw = cell.repItem.item_metadata && cell.repItem.item_metadata.condition;
+  if (raw === undefined || raw === null) return null;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return null;
+  const max = conditionMax() || 100;
+  return Math.max(0, Math.min(value / max, 1));
 }
 
 function cellBg(cell) {
@@ -151,30 +187,35 @@ function tabLabelSize(count) {
 
       <div class="ledger-rule"></div>
 
-      <div class="ledger-grid">
-        <div
-          v-for="cell in cells"
-          :key="cell.index"
-          class="ledger-cell"
-          :style="{ background: cellBg(cell) }"
-          :class="{ selected: cell.index === selectedIndex && cell.repItem }"
-          @mousedown.left.prevent="emit('cellMouseDown', cell.index)"
-          @mouseup.left="emit('cellMouseUp', cell.index)"
-          @mouseenter="emit('cellMouseEnter', cell.index)"
-          @dblclick="emit('cellDblClick', cell.index)"
-          @contextmenu.prevent="(event) => emit('cellContextMenu', cell.index, event)"
-        >
-          <div class="ledger-cell-icon">
-            <img
-              v-if="cell.repItem"
-              :src="iconSrc(cell.repItem.name)"
-              class="ink"
-              draggable="false"
-              @error="onIconError"
-            />
+      <div class="ledger-grid-viewport">
+        <div class="ledger-grid">
+          <div
+            v-for="cell in cells"
+            :key="cell.index"
+            class="ledger-cell"
+            :style="{ background: cellBg(cell) }"
+            :class="{ selected: cell.index === selectedIndex && cell.repItem }"
+            @mousedown.left.prevent="(event) => emit('cellMouseDown', cell.index, event)"
+            @mouseup.left="emit('cellMouseUp', cell.index)"
+            @mouseenter="emit('cellMouseEnter', cell.index)"
+            @dblclick="emit('cellDblClick', cell.index)"
+            @contextmenu.prevent="(event) => emit('cellContextMenu', cell.index, event)"
+          >
+            <div class="ledger-cell-icon">
+              <img
+                v-if="cell.repItem"
+                :src="iconSrc(cell.repItem.name)"
+                class="ink"
+                draggable="false"
+                @error="onIconError"
+              />
+            </div>
+            <div v-if="cell.repItem" class="ledger-cell-qty">&times;{{ cell.qty }}</div>
+            <div v-if="cellCondition(cell) !== null" class="ledger-cell-wear">
+              <div class="ledger-cell-wear-fill" :style="{ width: (cellCondition(cell) * 100) + '%' }"></div>
+            </div>
+            <div v-if="cell.index === selectedIndex && cell.repItem" class="ledger-pointer"></div>
           </div>
-          <div v-if="cell.repItem" class="ledger-cell-qty">&times;{{ cell.qty }}</div>
-          <div v-if="cell.index === selectedIndex && cell.repItem" class="ledger-pointer"></div>
         </div>
       </div>
 
@@ -186,15 +227,18 @@ function tabLabelSize(count) {
           <div class="ledger-detail-name">{{ detail.label }}</div>
           <div class="ledger-detail-desc">{{ detail.desc }}</div>
           <div class="ledger-detail-footer">
-            <span>Quantity &mdash; {{ detail.qtyPlain }}</span>
-            <span>Weight &mdash; {{ detail.weight }}</span>
+            <span>{{ t('ui_quantity') }} &mdash; {{ detail.qtyPlain }}</span>
+            <span>{{ t('ui_weight') }} &mdash; {{ detail.weight }}</span>
+            <span v-if="detail.condition">{{ t('ui_condition') }} &mdash; {{ detail.condition }}</span>
           </div>
         </div>
       </div>
 
+      <div v-if="canTakeAll" class="ledger-take-all" @click="emit('takeAll')">{{ t('ui_take_all') }}</div>
+
       <div class="ledger-carrying">
         <img src="@/assets/ledger/carry-arrow-left.png" class="carry-arrow" />
-        <div class="ledger-carrying-text">{{ footerLabel }}&nbsp;&nbsp;{{ carrying }}&#8195;/&#8195;{{ capacity }} lb.</div>
+        <div class="ledger-carrying-text">{{ t(footerLabel) }}&nbsp;&nbsp;{{ carrying }}<span v-if="hasWeightLimit">&#8195;/&#8195;{{ maxWeight }}</span> lb.</div>
         <img src="@/assets/ledger/carry-arrow-right.png" class="carry-arrow" />
       </div>
     </div>
@@ -338,22 +382,60 @@ function tabLabelSize(count) {
   width: 54px;
 }
 
-.ledger-grid {
+/* (§10.4 scrollable grid) The book art is a fixed-size asset calibrated for
+   one page of exactly 5x5 compartments, and the chrome around it (header,
+   tabs, detail box, carrying line) is positioned against that. So the grid
+   REGION stays pinned to exactly one page's height no matter what the
+   inventory's capacity is -- only its contents scroll. A 60-slot wagon
+   scrolls; it does not stretch the page and push the detail box out of the
+   layout, which is what an auto-sized grid would do.
+
+   Capacity below one page (a small pouch) deliberately leaves the remaining
+   page area blank rather than shrinking the region, for the same reason:
+   the art underneath doesn't resize. */
+.ledger-grid-viewport {
   margin-top: 10px;
+  height: 475px; /* 5 rows x 95px */
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* Thin ink-on-parchment scrollbar -- the default chrome one reads as a
+     browser widget sitting on top of a 1899 ledger. */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(43, 32, 19, 0.45) transparent;
+}
+
+.paired .ledger-grid-viewport {
+  height: 430px; /* 5 rows x 86px */
+}
+
+.ledger-grid-viewport::-webkit-scrollbar {
+  width: 6px;
+}
+
+.ledger-grid-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ledger-grid-viewport::-webkit-scrollbar-thumb {
+  background: rgba(43, 32, 19, 0.4);
+  border-radius: 3px;
+}
+
+.ledger-grid-viewport::-webkit-scrollbar-thumb:hover {
+  background: rgba(43, 32, 19, 0.65);
+}
+
+.ledger-grid {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  /* Fixed 5 rows, not auto-rows -- the book art is a fixed-size asset
-     calibrated for exactly 25 compartments (see Config.maxItemSlots).
-     Pinning the row count here means a misconfigured capacity overflows
-     rather than silently stretching the grid and crushing the detail
-     box/carrying line below it out of the layout. */
-  grid-template-rows: repeat(5, 95px);
-  overflow: hidden;
+  /* auto-rows, not a pinned row count -- rows beyond the first page are
+     reachable by scrolling the viewport above rather than being clipped. */
+  grid-auto-rows: 95px;
   gap: 0;
 }
 
 .paired .ledger-grid {
-  grid-template-rows: repeat(5, 86px);
+  grid-auto-rows: 86px;
 }
 
 .ledger-cell {
@@ -365,6 +447,44 @@ function tabLabelSize(count) {
   justify-content: center;
   box-sizing: border-box;
   border: 1px solid rgba(43, 32, 19, 0.3);
+}
+
+/* Wear bar: a thin ink rule along the bottom of the compartment. Chosen over
+   a pristine/worn/damaged glyph because the ledger is engraving-only -- a
+   status icon would read as a second item in the cell. Length carries the
+   value; no colour, since colour is not part of this design's vocabulary. */
+/* Sits between the detail box and the carrying line, outside the scrolling
+   viewport, so it never moves with the compartments. */
+.ledger-take-all {
+  margin-top: 6px;
+  text-align: center;
+  font-family: 'Playfair Display', serif;
+  font-weight: 500;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #5c4a30;
+  text-decoration: underline;
+  cursor: pointer;
+  user-select: none;
+}
+
+.ledger-take-all:hover {
+  color: #2b2013;
+}
+
+.ledger-cell-wear {
+  position: absolute;
+  left: 12%;
+  right: 12%;
+  bottom: 5px;
+  height: 2px;
+  background: rgba(43, 32, 19, 0.16);
+}
+
+.ledger-cell-wear-fill {
+  height: 100%;
+  background: rgba(43, 32, 19, 0.65);
 }
 
 .ledger-cell.selected {

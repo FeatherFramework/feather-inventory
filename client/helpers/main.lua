@@ -2,6 +2,73 @@ function IsTable(var)
   return type(var) == 'table'
 end
 
+---
+-- Sync Own Position
+--
+-- (Distance-check staleness) Pushes this player's current position to the
+-- server immediately, before an action the server gates on distance.
+--
+-- Every proximity check in this resource -- ground drop, ground pickup,
+-- GiveItem, robbery -- compares against feather-core's server-cached
+-- character.x/y/z, which is only refreshed every Config.PositionSync (20s by
+-- default). Without this the server can be deciding from a position up to
+-- twenty seconds old, which surfaces as an action failing with "You are too
+-- far away" while standing right on top of the target, then succeeding a few
+-- attempts later once a sync tick happens to land.
+--
+-- This does NOT weaken server authority: the server still decides, using its
+-- own stored value. It just isn't deciding from stale data.
+--
+-- Same call shape feather-core's own position-sync loop uses
+-- (client/services/character.lua's startPositionSync) -- the raw vector3,
+-- since the server side unpacks exactly that.
+--
+-- LIMITATION: this only refreshes the CALLER's position. A two-party check
+-- (GiveItem, robbery) still compares against the other player's cached
+-- position, which this client cannot refresh. It halves the staleness rather
+-- than eliminating it.
+--
+function SyncOwnPosition()
+  Feather.RPC.CallAsync("UpdatePlayerCoords", GetEntityCoords(PlayerPedId(), true, true))
+end
+
+---
+-- Translate
+--
+-- (§10.2 locale migration) Client-side counterpart of the server helper in
+-- server/helpers/main.lua -- see that one for why the fallback exists
+-- (Feather.Locale.translate returns a literal "does not exist" sentinel
+-- string for an unregistered key, not nil, so a missing key would otherwise
+-- be rendered to the player verbatim).
+--
+-- `src` is meaningless client-side; the language comes from the locale
+-- service's own client cache, so 0 is passed purely to satisfy the shared
+-- signature.
+--
+-- CONSTRAINT: no value in translations/ may contain a `%` format directive
+-- unless every caller of that key passes matching arguments. LocalesAPI.
+-- translate unconditionally runs string.format on the result, so a `%s` in
+-- a string resolved without arguments raises "bad argument #2 to 'format'".
+-- The pcall below keeps that from breaking the caller, but CitizenFX still
+-- prints the traceback, so it must be avoided rather than caught -- see the
+-- `{n}` convention on ui_how_many/ui_use_all in translations/en_us.lua.
+--
+-- @param key Locale key (see translations/)
+-- @param fallback Text to use if the key isn't registered
+-- @return Localized string, or fallback
+--
+function Translate(key, fallback)
+  if not key then
+    return fallback
+  end
+
+  local ok, translated = pcall(Feather.Locale.translate, 0, key)
+  if not ok or type(translated) ~= 'string' or translated:find('does not exist', 1, true) then
+    return fallback
+  end
+  return translated
+end
+
 -- Only meaningful for a table with no gaps in its integer keys.
 function IsArray(t)
   local i = 0

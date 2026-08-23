@@ -3,6 +3,52 @@ local isInvOpen = false
 
 InventoryAction = {}
 
+-- (§10.2 locale migration) Every label the ledger UI renders, resolved in the
+-- player's language here and handed to the NUI as a plain key->string bundle.
+--
+-- Deliberately resolved Lua-side rather than shipping a second locale system
+-- into JavaScript: translations/ stays the single source of truth for every
+-- user-facing string in this resource, and the Vue layer just renders what
+-- it's given. Templates containing %s (ui_how_many, ui_use_all) are passed
+-- through unformatted -- the UI substitutes them, since only it knows the
+-- runtime value.
+local UI_STRING_KEYS = {
+  'ui_personal_effects', 'ui_storage', 'ui_carrying', 'ui_stored', 'ui_all',
+  'ui_use', 'ui_give', 'ui_drop', 'ui_split', 'ui_cancel', 'ui_confirm',
+  'ui_quantity', 'ui_weight', 'ui_how_many', 'ui_use_all', 'ui_invalid_amount',
+  'ui_no_entry',
+  'ui_take_all',
+  'ui_condition', 'ui_condition_pristine', 'ui_condition_worn',
+  'ui_condition_damaged', 'ui_condition_ruined',
+  'ui_paired_hint',
+}
+
+-- (§10.3) Condition wear stages, thresholds from Config and labels resolved
+-- through the locale like every other UI string. Sent once per open rather
+-- than per item -- the UI picks the matching stage from an item's condition
+-- value itself, so this doesn't grow with inventory size.
+local function BuildConditionStages()
+  local stages = {}
+  for _, stage in ipairs((Config.Condition and Config.Condition.Stages) or {}) do
+    stages[#stages + 1] = {
+      at = tonumber(stage.at) or 0,
+      label = Translate(stage.label, nil)
+    }
+  end
+  return stages
+end
+
+local function BuildUIStrings()
+  local strings = {}
+  for _, key in ipairs(UI_STRING_KEYS) do
+    -- No fallback text here on purpose: the Vue side carries its own English
+    -- defaults, so a key missing from translations/ degrades to the UI's
+    -- literal rather than to an empty label.
+    strings[key] = Translate(key, nil)
+  end
+  return strings
+end
+
 function CanOpenInventory()
   if IsEntityDead(PlayerPedId()) then return false end
   if IsPauseMenuActive() then return false end
@@ -25,7 +71,9 @@ InventoryAction.Open = function(otherInventoryId, target)
   if not isInvOpen and CanOpenInventory() then
     local results = Feather.RPC.CallAsync('Feather:Inventory:GetInventoryItems', { otherInventoryId = otherInventoryId })
     if results.error ~= nil then
-      Feather.Notify.RightNotify(results.error, 3000)
+      -- Localized off the server's stable errorCode, falling back to the
+      -- English `error` string it has always sent (§10.2).
+      Feather.Notify.RightNotify(Translate('err_' .. tostring(results.errorCode or ''), results.error), 3000)
       return
     end
 
@@ -45,7 +93,23 @@ InventoryAction.Open = function(otherInventoryId, target)
       otherIgnoreLimits = results.otherInventoryIgnoreLimits,
       otherName = results.otherName,
       maxWeight = Config.maxWeight,
-      maxSlots = Config.maxItemSlots, -- TODO: Make this customizable
+      -- (§10.4) Per-book capacity, resolved server-side from each inventory's
+      -- own max_slots (falling back to Config.maxItemSlots when unset). This
+      -- was one global Config value for both books, which meant a large
+      -- storage container rendered at the player book's size. `maxSlots` is
+      -- kept as a fallback for the player book so an older server that
+      -- doesn't send the new field still renders something sane.
+      maxSlots = Config.maxItemSlots,
+      playerMaxSlots = results.inventoryMaxSlots,
+      otherMaxSlots = results.otherInventoryMaxSlots,
+      playerMaxWeight = results.inventoryMaxWeight,
+      otherMaxWeight = results.otherInventoryMaxWeight,
+      strings = BuildUIStrings(),
+      -- (§10.3) Wear stages resolved here rather than duplicated in JS --
+      -- thresholds come from Config, labels through the same locale path as
+      -- every other UI string.
+      conditionStages = BuildConditionStages(),
+      conditionMax = (Config.Condition and Config.Condition.Max) or 100,
       categories = Feather.RPC.CallAsync('Feather:Inventory:GetCategories', {}),
       player = {
         dollars = player_display.dollars,

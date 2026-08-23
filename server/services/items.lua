@@ -42,25 +42,22 @@ function ItemsAPI.GrantItem(itemName, quantity, inventoryId)
     return { error = true, code = 'invalid_inventory', message = 'Inventory does not exist.' }
   end
 
-  local currentItemCount = InventoryControllers.InventoryItemCount(inventory, definition.id)
-  local totalItemCount = InventoryControllers.GetInventoryTotalItemCounts(inventory)
-  totalItemCount = totalItemCount[1] and tonumber(totalItemCount[1].count) or 0
-  if totalItemCount + quantity > (tonumber(Config.maxItemSlots) or math.huge) then
-    return { error = true, code = 'inventory_full', message = 'Inventory has no available slots.' }
-  end
-
-  if tonumber(ignoreItemLimit) ~= 1 then
-    local maximum = math.min(tonumber(definition.max_quantity) or 0,
-      tonumber(definition.max_stack_size) or 0)
-    if maximum < 1 or currentItemCount + quantity > maximum then
-      return { error = true, code = 'item_limit', message = 'Item quantity limit would be exceeded.' }
-    end
-  end
-
-  local addedWeight = (tonumber(definition.weight) or 0) * quantity
-  local weightLimit = tonumber(maxWeight) or tonumber(Config.maxWeight)
-  if weightLimit and InventoryControllers.GetInventoryTotalWeight(inventory) + addedWeight > weightLimit then
-    return { error = true, code = 'weight_limit', message = 'Inventory weight limit would be exceeded.' }
+  -- (Capacity model unification) Was three separate checks here, two of them
+  -- wrong in the same way AddItem's were -- see EvaluateInventoryAcceptance
+  -- (server/services/inventory.lua). The slot check counted item *units*
+  -- against Config.maxItemSlots, so 25 apples stacked into 2 compartments
+  -- reported a full 25-slot book; the quantity check used
+  -- math.min(max_quantity, max_stack_size), capping an item at its
+  -- per-compartment stack size no matter how much the inventory was actually
+  -- allowed to hold.
+  local acceptance = InventoryAPI.EvaluateInventoryAcceptance(inventory, maxWeight, ignoreItemLimit,
+    { { item = definition.name, quantity = quantity } })
+  if not acceptance or acceptance.status == false then
+    return {
+      error = true,
+      code = (acceptance and acceptance.code) or 'inventory_full',
+      message = (acceptance and acceptance.message) or 'Inventory cannot hold these items.'
+    }
   end
 
   -- Steampunk ledger: same slot-assignment as AddItem below -- join an
@@ -68,12 +65,41 @@ function ItemsAPI.GrantItem(itemName, quantity, inventoryId)
   local maxStackSize = tonumber(definition.max_stack_size) or 1
   local currentSlot = InventoryControllers.GetJoinableSlot(inventory, definition.id, maxStackSize)
   local currentSlotCount = currentSlot ~= nil and #InventoryControllers.GetItemsInSlot(inventory, currentSlot) or 0
+  -- (§10.4) Hoisted out of the loop -- per-inventory capacity is a DB read
+  -- now, and it can't change while this grant is being assembled.
+  local capacity = InventoryControllers.GetInventoryCapacity(inventory)
+
+  -- (Over-stacking bugfix) This loop builds ONE batched INSERT, executed only
+  -- after it finishes -- so nothing it places is visible to a database read
+  -- taken during it. Calling GetFreeSlot per unit therefore returned the same
+  -- free compartment every single time, and every unit past the first full
+  -- stack landed in that one slot: a grant of 100 apples with max_stack_size
+  -- 20 produced a compartment holding 78, wildly past the stack limit.
+  --
+  -- Claim slots against a local set instead, seeded once from the database
+  -- and marked as this loop consumes them. (AddItem below is unaffected --
+  -- it writes each row as it goes, so its GetFreeSlot calls do see prior
+  -- placements.)
+  local occupied = InventoryControllers.GetOccupiedSlotSet(inventory)
+  if currentSlot ~= nil then
+    occupied[tonumber(currentSlot)] = true
+  end
+
+  local function claimFreeSlot()
+    for index = 0, capacity - 1 do
+      if not occupied[index] then
+        occupied[index] = true
+        return index
+      end
+    end
+    return nil
+  end
 
   local placeholders = {}
   local values = {}
   for index = 1, quantity do
     if currentSlot == nil or currentSlotCount >= maxStackSize then
-      currentSlot = InventoryControllers.GetFreeSlot(inventory, tonumber(Config.maxItemSlots) or 0)
+      currentSlot = claimFreeSlot()
       currentSlotCount = 0
       if currentSlot == nil then
         return { error = true, code = 'inventory_full', message = 'Inventory has no available slots.' }
@@ -101,9 +127,11 @@ function ItemsAPI.GrantItem(itemName, quantity, inventoryId)
   }
 end
 
--- Grants `quantity` of `itemName` to an inventory, enforcing per-item max
--- quantity/stack-size limits (weight is not yet implemented, see
--- config.lua). Fires feather-inventory:ItemAdded once per unit granted.
+-- Grants `quantity` of `itemName` to an inventory, enforcing the per-item
+-- quantity cap, slot capacity, and weight limit (see
+-- EvaluateInventoryAcceptance). Fires feather-inventory:ItemAdded once per
+-- unit granted. `max_stack_size` governs only how many compartments those
+-- units are spread across, never how many the inventory may hold.
 ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   quantity = tonumber(quantity)
   if not quantity or quantity < 1 or quantity % 1 ~= 0 then
@@ -114,7 +142,9 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
     }
   end
 
-  local itemId, max_quantity, _, max_stack_size = ItemControllers.GetItemByName(itemName)
+  -- max_quantity/weight are read by EvaluateInventoryAcceptance itself now;
+  -- only the id and stack size are needed here, for slot placement below.
+  local itemId, _, _, max_stack_size = ItemControllers.GetItemByName(itemName)
   if not itemId then
     warn('Invalid itemName. Please make sure it is in the items table in your database.')
     return {
@@ -122,25 +152,11 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
       message = "Invalid itemName. Please make sure it is in the items table in your database."
     }
   end
+  -- Same normalization GrantItem and EvaluateInventoryAcceptance apply -- the
+  -- placement loop below compares against this, so a nil would crash it.
+  max_stack_size = math.max(tonumber(max_stack_size) or 1, 1)
 
-  --TODO: Add a check for weight (this will be supported at another date. V1 will only support slots and stack sizes)
-
-  local ItemCount = ItemsAPI.GetItemCount(itemName, inventoryId)
-
-  -- Check to make sure this doesnt exceed the amount of slots available.
-  -- (Tier 1 audit sweep) Was `(ItemCount + quantity) / max_stack_size >
-  -- max_stack_size`, which requires ItemCount+quantity > max_stack_size^2
-  -- to ever reject -- far more permissive than the stated "max stack size"
-  -- limit.
-  if (ItemCount + quantity) > max_stack_size then
-    return {
-      error = true,
-      message = "Max slots reached"
-    }
-  end
-
-
-  local inventory, _, ignore_item_limit = nil, nil, nil
+  local inventory, maxWeight, ignore_item_limit = nil, nil, nil
   if tonumber(inventoryId) then
     local player = Feather.Character.GetCharacter({ src = inventoryId })
     local character = player and player.char
@@ -149,20 +165,10 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
     -- "Invalid inventory ID" rejection below, same as every other resolved-
     -- character branch in this file.
     if character then
-      inventory, _, ignore_item_limit, _ = InventoryControllers.GetInventoryByCharacter(character.id)
+      inventory, maxWeight, ignore_item_limit, _ = InventoryControllers.GetInventoryByCharacter(character.id)
     end
   else
-    inventory, _, ignore_item_limit, _ = InventoryControllers.GetInventoryById(inventoryId)
-  end
-
-  -- Check to make sure this doesnt exceed the max quantity for this item.
-  -- (was >=, which rejected exactly reaching the max -- every seeded weapon
-  -- has max_quantity=1, so granting even a single one always failed)
-  if ItemCount + quantity > max_quantity and ignore_item_limit == 0 then
-    return {
-      error = true,
-      message = "Too Many Items in Inventory"
-    }
+    inventory, maxWeight, ignore_item_limit, _ = InventoryControllers.GetInventoryById(inventoryId)
   end
 
   if not inventory then
@@ -170,6 +176,24 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
     return {
       error = true,
       message = "Invalid inventory ID."
+    }
+  end
+
+  -- (Capacity model unification) Quantity, slot, and weight limits are now
+  -- one decision made in one place -- see EvaluateInventoryAcceptance
+  -- (server/services/inventory.lua) for what each of the three checks this
+  -- replaces was actually getting wrong. The headline one: the slot check
+  -- here compared this inventory's total count of the item against
+  -- `max_stack_size` (the per-compartment cap), so an apple with
+  -- max_quantity=100 and max_stack_size=20 refused the 21st apple in the
+  -- whole book rather than starting a second stack.
+  local acceptance = InventoryAPI.EvaluateInventoryAcceptance(inventory, maxWeight, ignore_item_limit,
+    { { item = itemName, quantity = quantity } })
+  if not acceptance or acceptance.status == false then
+    return {
+      error = true,
+      code = (acceptance and acceptance.code) or 'inventory_full',
+      message = (acceptance and acceptance.message) or 'Inventory cannot hold these items.'
     }
   end
 
@@ -191,10 +215,13 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   -- race with another grant -- guarded rather than trusted.
   local currentSlot = InventoryControllers.GetJoinableSlot(inventory, itemId, max_stack_size)
   local currentSlotCount = currentSlot ~= nil and #InventoryControllers.GetItemsInSlot(inventory, currentSlot) or 0
+  -- (§10.4) Hoisted out of the loop, same as GrantItem above.
+  local capacity = InventoryControllers.GetInventoryCapacity(inventory)
+  local granted = 0
 
-  for count = 1, quantity do
+  for _ = 1, quantity do
     if currentSlot == nil or currentSlotCount >= max_stack_size then
-      currentSlot = InventoryControllers.GetFreeSlot(inventory, tonumber(Config.maxItemSlots) or 0)
+      currentSlot = InventoryControllers.GetFreeSlot(inventory, capacity)
       currentSlotCount = 0
       if currentSlot == nil then
         warn('AddItem: ran out of free slots granting ' .. itemName .. ' to inventory ' .. tostring(inventory))
@@ -204,6 +231,7 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
 
     local item = InventoryControllers.CreateInventoryItem(inventory, itemId, currentSlot)
     currentSlotCount = currentSlotCount + 1
+    granted = granted + 1
 
     if metadata ~= nil then
       for k, v in pairs(metadata) do
@@ -212,12 +240,27 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
     end
 
     TriggerEvent('feather-inventory:ItemAdded', itemId, 1, inventory)
+  end
 
-    count = count + 1
+  -- (Capacity model unification) The loop above can still come up short if
+  -- another grant raced us between the acceptance check and here. That used
+  -- to `break` and then unconditionally report `{ error = false }` -- a
+  -- partial grant indistinguishable from a complete one, which any caller
+  -- doing "charge the player, then AddItem" would silently under-deliver on.
+  -- Report what actually landed instead.
+  if granted < quantity then
+    return {
+      error = true,
+      message = 'Inventory has no available slots.',
+      granted = granted,
+      requested = quantity
+    }
   end
 
   return {
-    error = false
+    error = false,
+    granted = granted,
+    requested = quantity
   }
 end
 
@@ -321,6 +364,132 @@ ItemsAPI.SetMetadata = function(item, metadata)
   return {
     error = false
   }
+end
+
+------------------------------------------------------------------
+-- Condition / durability (§10.3)
+------------------------------------------------------------------
+--
+-- A generic per-instance wear value on top of item_metadata. This resource
+-- owns the convention only -- key, range, clamping, validation, display --
+-- and none of the policy. When an item wears, by how much, and what a worn
+-- item then does are all questions for whichever resource models that
+-- behaviour (feather-weapons, a tools resource, ...). Keeping it generic here
+-- is the whole point: otherwise every consumer invents its own field and
+-- nothing can render a wear indicator for all of them.
+--
+-- Storage-agnostic by design. `condition` is a single small integer, so it
+-- sits in the current flat item_metadata table unchanged, and will survive
+-- INV-W1's move to a versioned metadata document without the convention
+-- itself changing -- which is why MASTER_PLAN sequences this alongside that
+-- work rather than after it.
+
+local function ConditionKey()
+  return (Config.Condition and Config.Condition.Key) or 'condition'
+end
+
+local function ConditionMax()
+  return tonumber(Config.Condition and Config.Condition.Max) or 100
+end
+
+---
+-- Get Condition
+--
+-- @param itemId inventory_items.id
+-- @return Integer 0..Max, or nil if this instance has no condition recorded
+--
+ItemsAPI.GetCondition = function(itemId)
+  -- (INV-W1) Reads through the versioned metadata document, which
+  -- transparently falls back to the legacy flat item_metadata rows for
+  -- instances written before that migration -- so this behaves identically
+  -- either side of it.
+  local metadata = InstancesAPI.ReadMetadata(tonumber(itemId))
+  if not Result.IsOk(metadata) then
+    return nil
+  end
+  return tonumber(metadata.value.document[ConditionKey()])
+end
+
+---
+-- Set Condition
+--
+-- Clamps to 0..Config.Condition.Max and writes it to this instance.
+--
+-- REFUSES STACKABLE ITEMS, deliberately. A compartment stacks by item_id
+-- alone (see GetJoinableSlot) -- metadata is invisible to it -- so two units
+-- of a stackable item carrying different conditions would silently merge into
+-- one compartment and one of the values would be lost. Per-instance state on
+-- a stackable definition needs INV-W1's unique-instance model first; until
+-- then this fails closed rather than quietly corrupting a stack. Every
+-- currently-seeded degradable item (weapons, tools) is max_stack_size = 1 and
+-- is unaffected.
+--
+-- @param itemId inventory_items.id
+-- @param value Desired condition; clamped into range
+-- @return { error, code, message, condition }
+--
+ItemsAPI.SetCondition = function(itemId, value)
+  local numericId = tonumber(itemId)
+  local numericValue = tonumber(value)
+  if not numericId or not numericValue then
+    return { error = true, code = 'invalid_quantity', message = 'Invalid item id or condition value.' }
+  end
+
+  local item = InventoryControllers.GetInventoryItemById(numericId)
+  if not item then
+    return { error = true, code = 'invalid_item', message = 'Item does not exist.' }
+  end
+
+  if (tonumber(item.max_stack_size) or 1) > 1 then
+    return {
+      error = true,
+      code = 'condition_not_supported',
+      message = 'Condition cannot be set on a stackable item.'
+    }
+  end
+
+  local clamped = math.max(0, math.min(math.floor(numericValue), ConditionMax()))
+
+  -- (INV-W1) Written through MergeMetadata rather than a direct key write, so
+  -- condition inherits the document's compare-and-set semantics: two callers
+  -- wearing the same item concurrently can no longer silently clobber one
+  -- another's value, which the old one-key-at-a-time flat write allowed.
+  local written = InstancesAPI.MergeMetadata(numericId, { [ConditionKey()] = clamped })
+  if not Result.IsOk(written) then
+    return {
+      error = true,
+      code = written.error.code,
+      message = written.error.message
+    }
+  end
+
+  return { error = false, condition = clamped, metadataRevision = written.value.revision }
+end
+
+---
+-- Adjust Condition
+--
+-- Relative change -- the common case, since wear is expressed as "this cost
+-- 5 condition" far more often than as an absolute target. An instance with
+-- no condition recorded yet is treated as full, so a consumer can wear an
+-- item that was never explicitly initialised.
+--
+-- @param itemId inventory_items.id
+-- @param delta Signed change (negative wears, positive repairs)
+-- @return { error, code, message, condition }
+--
+ItemsAPI.AdjustCondition = function(itemId, delta)
+  local numericDelta = tonumber(delta)
+  if not numericDelta then
+    return { error = true, code = 'invalid_quantity', message = 'Invalid condition delta.' }
+  end
+
+  local current = ItemsAPI.GetCondition(itemId)
+  if current == nil then
+    current = ConditionMax()
+  end
+
+  return ItemsAPI.SetCondition(itemId, current + numericDelta)
 end
 
 ItemsAPI.GetItem = function(id)
@@ -531,7 +700,11 @@ ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z)
   -- after GetGroundUID (server/services/ground.lua) has verified they're
   -- actually standing near it and issued a short-lived grant -- see
   -- InventoryAPI.GrantTemporaryAccess / IsAuthorizedForOwnedInventory.
-  local _, groundInventoryID = InventoryAPI.RegisterInventory('ground', groundID, 'Ground', nil, nil, nil, nil, true)
+  -- maxWeight = 0 means "no weight limit" (see GetInventoryWeightLimit). A
+  -- heap on the floor has nothing doing the carrying, so a weight cap on it
+  -- is meaningless -- but slot capacity and per-item quantity limits still
+  -- apply, which is why only the weight argument is zeroed here.
+  local _, groundInventoryID = InventoryAPI.RegisterInventory('ground', groundID, 'Ground', nil, 0, nil, nil, true)
   local updateinv = InventoryControllers.MoveInventoryItems(inventoryId, groundInventoryID, items)
 
   -- This always reported `error = false` even when MoveInventoryItems
@@ -541,6 +714,7 @@ ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z)
   if updateinv and updateinv.error then
     return {
       error = true,
+      code = updateinv.code,
       message = updateinv.message,
       inv = updateinv
     }

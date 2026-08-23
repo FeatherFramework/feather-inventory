@@ -5,6 +5,7 @@ import '@/assets/tailwind.css';
 import LedgerBook from '@/components/LedgerBook.vue';
 import ContextMenu from '@/components/ContextMenu.vue';
 import ItemCountModal from '@/components/ItemCountModal.vue';
+import { t, setStrings, setConditionStages } from '@/i18n';
 
 const visible = ref(false);
 const devmode = ref(false);
@@ -15,6 +16,7 @@ function makeBook(footerLabel) {
     subtitle: '',
     footerLabel,
     capacity: 0,
+    maxWeight: 0,
     inventoryId: null,
     ignoreLimits: 0,
     items: [],
@@ -23,13 +25,13 @@ function makeBook(footerLabel) {
   });
 }
 
-const player = makeBook('CARRYING');
-const other = makeBook('STORED');
+const player = makeBook('ui_carrying');
+const other = makeBook('ui_stored');
 const hasOther = computed(() => other.inventoryId !== null);
 
 const rawCategories = ref([]);
 const categoryOptions = computed(() => [
-  { id: null, label: 'ALL' },
+  { id: null, label: t('ui_all') },
   ...rawCategories.value.map((c) => ({ id: c.id, label: String(c.name).toUpperCase() })),
 ]);
 
@@ -56,10 +58,15 @@ const onMessage = (event) => {
 
   visible.value = data.visible;
   rawCategories.value = data.categories || [];
+  setStrings(data.strings);
+  setConditionStages(data.conditionStages, data.conditionMax);
 
-  player.title = 'PERSONAL EFFECTS';
+  player.title = t('ui_personal_effects');
   player.subtitle = data.player?.characterName || '';
-  player.capacity = Number(data.maxSlots) || 0;
+  // Each book has its own capacity now -- fall back to the old global
+  // maxSlots so a server that predates the per-book fields still renders.
+  player.capacity = Number(data.playerMaxSlots) || Number(data.maxSlots) || 0;
+  player.maxWeight = Number(data.playerMaxWeight) || Number(data.maxWeight) || 0;
   player.inventoryId = data.playerInventory;
   player.ignoreLimits = data.playerIgnoreLimits || 0;
   player.items = data.playerItems || [];
@@ -67,9 +74,10 @@ const onMessage = (event) => {
   player.selectedIndex = -1;
 
   if (data.otherItems != null) {
-    other.title = String(data.otherName || 'STORAGE').toUpperCase();
+    other.title = String(data.otherName || t('ui_storage')).toUpperCase();
     other.subtitle = '';
-    other.capacity = Number(data.maxSlots) || 0;
+    other.capacity = Number(data.otherMaxSlots) || Number(data.maxSlots) || 0;
+    other.maxWeight = Number(data.otherMaxWeight) || Number(data.maxWeight) || 0;
     other.inventoryId = data.otherInventory;
     other.ignoreLimits = data.otherIgnoreLimits || 0;
     other.items = data.otherItems;
@@ -109,15 +117,72 @@ const closeApp = () => {
 
 // --- Drag and drop -------------------------------------------------------
 
-function onCellMouseDown(bookKey, slotIndex) {
+function onCellMouseDown(bookKey, slotIndex, event) {
   contextMenu.value = null;
 
   const book = bookByKey(bookKey);
-  const cellHasItem = book.items.some((i) => i.slot_index === slotIndex);
-  if (!cellHasItem) return;
+  const stack = book.items.filter((i) => i.slot_index === slotIndex);
+  if (stack.length === 0) return;
 
   book.selectedIndex = slotIndex;
+
+  // Shift+click quick-transfers the whole compartment to the other book
+  // instead of starting a drag -- the bulk-transfer half of README's
+  // "shift+drag" item. Only meaningful when a second book is actually open;
+  // otherwise fall through to a normal drag.
+  if (event && event.shiftKey && hasOther.value) {
+    quickTransfer(bookKey, stack);
+    return;
+  }
+
   drag.value = { book: bookKey, slot: slotIndex };
+}
+
+// Deliberately routed through UpdateInventory rather than MoveItem: this has
+// no destination slot to name, and UpdateInventory -> MoveInventoryItems
+// already assigns one server-side (join a matching under-full stack, else the
+// first free compartment) with capacity, weight and blacklist all enforced on
+// the way. Picking a slot client-side would duplicate that logic and race it.
+// (§10.3 quick-loot) Server-side greedy move -- see the TakeAll RPC for why
+// it isn't UpdateInventory with every id (that check is all-or-nothing, so a
+// pile bigger than your remaining room would yield nothing at all).
+async function onTakeAll() {
+  if (!other.inventoryId) return;
+  try {
+    const { data } = await api.post('Feather:Inventory:TakeAll', {
+      fromInventory: other.inventoryId,
+    });
+    if (data?.error) {
+      console.log('Take all rejected: ' + (data.message || 'unknown error'));
+      return;
+    }
+    if (data?.sourceItems) other.items = data.sourceItems;
+    if (data?.targetItems) player.items = data.targetItems;
+  } catch (e) {
+    console.log(e.message);
+  }
+}
+
+async function quickTransfer(fromKey, stack) {
+  const fromBook = bookByKey(fromKey);
+  const toBook = fromKey === 'player' ? other : player;
+  if (!fromBook.inventoryId || !toBook.inventoryId) return;
+
+  try {
+    const { data } = await api.post('Feather:Inventory:UpdateInventory', {
+      sourceInventory: fromBook.inventoryId,
+      targetInventory: toBook.inventoryId,
+      items: stack.map((i) => i.id),
+    });
+    if (data?.error) {
+      console.log('Transfer rejected: ' + (data.message || 'unknown error'));
+      return;
+    }
+    if (data?.sourceItems) fromBook.items = data.sourceItems;
+    if (data?.targetItems) toBook.items = data.targetItems;
+  } catch (e) {
+    console.log(e.message);
+  }
 }
 
 function onCellMouseEnter(bookKey, slotIndex) {
@@ -246,12 +311,14 @@ function onContextUse() {
 // ever hold one) skips the modal and just acts, per your call.
 const quantityPrompt = ref(null); // { action: 'drop' | 'give', book, items, itemName, max } | null
 
-function onContextGive() {
+function onContextGive(event) {
   const { book, items } = contextStack();
   contextMenu.value = null;
   if (items.length === 0) return;
 
-  if (items.length > 1) {
+  // Shift skips the quantity prompt and acts on the whole stack -- the
+  // bulk-drop/give half of README's "shift+drag" item.
+  if (items.length > 1 && !(event && event.shiftKey)) {
     quantityPrompt.value = { action: 'give', book, items, itemName: items[0].display_name, max: items.length };
     return;
   }
@@ -259,12 +326,12 @@ function onContextGive() {
   performGive(book, items);
 }
 
-function onContextDrop() {
+function onContextDrop(event) {
   const { book, items } = contextStack();
   contextMenu.value = null;
   if (!book || items.length === 0) return;
 
-  if (items.length > 1) {
+  if (items.length > 1 && !(event && event.shiftKey)) {
     quantityPrompt.value = { action: 'drop', book, items, itemName: items[0].display_name, max: items.length };
     return;
   }
@@ -272,10 +339,36 @@ function onContextDrop() {
   performDrop(book, items);
 }
 
+// Split always prompts -- there's no sensible "just do it" default for how
+// much to peel off. Capped at items.length - 1: moving the whole stack out
+// would leave an empty compartment behind, which is a move, not a split
+// (the server rejects it too, rather than trusting this cap).
+function onContextSplit() {
+  const { book, items } = contextStack();
+  contextMenu.value = null;
+  if (!book || items.length < 2) return;
+
+  quantityPrompt.value = {
+    action: 'split',
+    book,
+    items,
+    itemName: items[0].display_name,
+    max: items.length - 1,
+  };
+}
+
 function onQuantityConfirm(quantity) {
   const prompt = quantityPrompt.value;
   quantityPrompt.value = null;
   if (!prompt) return;
+
+  if (prompt.action === 'split') {
+    // Split sends the source compartment's item id and a count, not a list
+    // of ids -- the server re-reads the stack from the slot itself rather
+    // than trusting which specific rows the client picked.
+    performSplit(prompt.book, prompt.items[0], quantity);
+    return;
+  }
 
   const chosen = prompt.items.slice(0, quantity);
   if (prompt.action === 'drop') {
@@ -283,6 +376,19 @@ function onQuantityConfirm(quantity) {
   } else {
     performGive(prompt.book, chosen);
   }
+}
+
+function performSplit(book, item, quantity) {
+  api
+    .post('Feather:Inventory:SplitStack', { itemId: item.id, quantity })
+    .then(({ data }) => {
+      if (data?.error) {
+        console.log('Split rejected: ' + (data.message || 'unknown error'));
+        return;
+      }
+      if (data?.sourceItems) book.items = data.sourceItems;
+    })
+    .catch((e) => console.log(e.message));
 }
 
 function performDrop(book, items) {
@@ -325,6 +431,15 @@ async function performGive(book, items) {
 }
 
 const contextCanUse = computed(() => !!contextStack().items[0]?.usable);
+// Only offer Split where there's actually something to split -- a single
+// unit has nothing to peel off.
+const contextCanSplit = computed(() => contextStack().items.length > 1);
+
+const QUANTITY_ACTION_KEYS = { drop: 'ui_drop', give: 'ui_give', split: 'ui_split' };
+const quantityActionLabel = computed(() => {
+  const key = QUANTITY_ACTION_KEYS[quantityPrompt.value?.action];
+  return key ? t(key) : t('ui_confirm');
+});
 </script>
 
 <template>
@@ -338,6 +453,7 @@ const contextCanUse = computed(() => !!contextStack().items[0]?.usable);
         :subtitle="player.subtitle"
         footer-label="CARRYING"
         :capacity="player.capacity"
+        :max-weight="player.maxWeight"
         :items="player.items"
         :categories="categoryOptions"
         v-model:active-category-id="player.activeCategoryId"
@@ -346,7 +462,7 @@ const contextCanUse = computed(() => !!contextStack().items[0]?.usable);
         :drag-slot="drag && drag.book === 'player' ? drag.slot : -1"
         :drag-armed="dragArmedFor('player')"
         :hover-slot="hover && hover.book === 'player' ? hover.slot : -1"
-        @cell-mouse-down="(i) => onCellMouseDown('player', i)"
+        @cell-mouse-down="(i, e) => onCellMouseDown('player', i, e)"
         @cell-mouse-enter="(i) => onCellMouseEnter('player', i)"
         @cell-mouse-up="(i) => onCellMouseUp('player', i)"
         @cell-dbl-click="(i) => onCellDblClick('player', i)"
@@ -359,6 +475,7 @@ const contextCanUse = computed(() => !!contextStack().items[0]?.usable);
         :subtitle="other.subtitle"
         footer-label="STORED"
         :capacity="other.capacity"
+        :max-weight="other.maxWeight"
         :items="other.items"
         :categories="categoryOptions"
         v-model:active-category-id="other.activeCategoryId"
@@ -367,31 +484,35 @@ const contextCanUse = computed(() => !!contextStack().items[0]?.usable);
         :drag-slot="drag && drag.book === 'other' ? drag.slot : -1"
         :drag-armed="dragArmedFor('other')"
         :hover-slot="hover && hover.book === 'other' ? hover.slot : -1"
-        @cell-mouse-down="(i) => onCellMouseDown('other', i)"
+        @cell-mouse-down="(i, e) => onCellMouseDown('other', i, e)"
         @cell-mouse-enter="(i) => onCellMouseEnter('other', i)"
         @cell-mouse-up="(i) => onCellMouseUp('other', i)"
         @cell-dbl-click="(i) => onCellDblClick('other', i)"
         @cell-context-menu="(i, e) => onCellContextMenu('other', i, e)"
+        :can-take-all="true"
+        @take-all="onTakeAll"
       />
     </div>
 
-    <div v-if="hasOther" class="ledger-hint">Drag an entry from one book to the other to move it &bull; ESC closes both</div>
+    <div v-if="hasOther" class="ledger-hint">{{ t('ui_paired_hint') }}</div>
 
     <ContextMenu
       v-if="contextMenu"
       :x="contextMenu.x"
       :y="contextMenu.y"
       :can-use="contextCanUse"
+      :can-split="contextCanSplit"
       @use="onContextUse"
       @give="onContextGive"
       @drop="onContextDrop"
+      @split="onContextSplit"
       @close="contextMenu = null"
     />
 
     <ItemCountModal
       v-if="quantityPrompt"
       :item-name="quantityPrompt.itemName"
-      :action-label="quantityPrompt.action === 'drop' ? 'Drop' : 'Give'"
+      :action-label="quantityActionLabel"
       :max="quantityPrompt.max"
       @confirm="onQuantityConfirm"
       @cancel="quantityPrompt = null"

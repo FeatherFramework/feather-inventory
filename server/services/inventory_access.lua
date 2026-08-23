@@ -112,6 +112,24 @@ function IsWithinRobberyDistance(src, targetSrc)
     return IsWithinDistance(x1, y1, z1, x2, y2, z2, Config.Access.RobberyDistance)
 end
 
+---
+-- Is Within Give Distance
+--
+-- Same shape as IsWithinRobberyDistance -- see its comment for the
+-- server-cached-position caveat -- bound to Config.Access.GiveDistance
+-- instead. Used by GiveItem (server/services/callbacks.lua), which
+-- previously had no server-side distance check at all.
+--
+-- @param src Caller's player source
+-- @param targetSrc Target player's source
+-- @return True if within Config.Access.GiveDistance
+--
+function IsWithinGiveDistance(src, targetSrc)
+    local x1, y1, z1 = GetCharacterPosition(src)
+    local x2, y2, z2 = GetCharacterPosition(targetSrc)
+    return IsWithinDistance(x1, y1, z1, x2, y2, z2, Config.Access.GiveDistance)
+end
+
 ------------------------------------------------------------------
 -- Owned/shared inventory ACL (storage, saddlebags, job lockers, ...)
 ------------------------------------------------------------------
@@ -289,12 +307,14 @@ InventoryAPI.HasTemporaryAccess = function(src, inventoryId)
     local grants = TemporaryGrants[tostring(src)]
     local expiresAt = grants and grants[tostring(inventoryId)]
     local now = GetGameTimer()
-    local keys = {}
-    if grants then
-        for k in pairs(grants) do table.insert(keys, k) end
+    if Config.Debug then
+        local keys = {}
+        if grants then
+            for k in pairs(grants) do table.insert(keys, k) end
+        end
+        DebugPrint('DEBUG-ACCESS', 'HasTemporaryAccess: src=%s inventoryId=%s expiresAt=%s now=%s grantKeysForSrc=[%s]',
+            tostring(src), tostring(inventoryId), tostring(expiresAt), tostring(now), table.concat(keys, ', '))
     end
-    print(("[DEBUG-GROUND] HasTemporaryAccess: src=%s inventoryId=%s expiresAt=%s now=%s grantKeysForSrc=[%s]"):format(
-        tostring(src), tostring(inventoryId), tostring(expiresAt), tostring(now), table.concat(keys, ', ')))
     return expiresAt ~= nil and expiresAt > now
 end
 
@@ -314,12 +334,83 @@ end)
 -- @param inventoryId Raw inventory.id being requested (UUID already resolved)
 -- @return True if src may open this inventory right now
 --
+------------------------------------------------------------------
+-- Access modes (INV-W4)
+------------------------------------------------------------------
+
+-- (INV-W4) DEPENDENCY_SUPPORT_PLAN §4.4 asks for a generic
+-- `CanAccessInventory(source, inventoryId, action, context)` distinguishing
+-- read, insert, remove, manage, and temporary world pickup -- so a consumer
+-- can ask the real question ("may this player take something OUT of here?")
+-- instead of the blunt one this resource has been answering
+-- ("is this inventory accessible at all?").
+--
+-- The modes are deliberately NOT all distinct today. Ground piles are the
+-- clearest case: anyone standing near one may read it, take from it and put
+-- into it, but nobody may manage its access list because it has no owner.
+-- Modelling that honestly is better than inventing five separate permission
+-- bits that all currently resolve the same way and would rot out of sync.
+InventoryAPI.AccessModes = {
+    READ = 'read',       -- see contents
+    INSERT = 'insert',   -- put something in
+    REMOVE = 'remove',   -- take something out
+    MANAGE = 'manage',   -- grant/revoke access, change visibility
+}
+
+---
+-- Can Access Inventory
+--
+-- @param src Caller's player source
+-- @param inventoryId Raw inventory.id
+-- @param action One of InventoryAPI.AccessModes (defaults to READ)
+-- @param context Optional { reason, correlationId } for diagnostics
+-- @return Result envelope; Ok(true) when permitted
+--
+InventoryAPI.CanAccessInventory = function(src, inventoryId, action, context)
+    action = action or InventoryAPI.AccessModes.READ
+    context = context or {}
+
+    if not src or not inventoryId then
+        return Result.Err(Result.Codes.INVALID_INPUT, 'Source and inventory id are required.',
+            nil, context.correlationId)
+    end
+
+    -- MANAGE is the one mode that genuinely differs: it is owner/admin only,
+    -- and is never granted by proximity, a share, or public visibility. A
+    -- ground pile is readable and lootable by anyone near it, and manageable
+    -- by nobody.
+    if action == InventoryAPI.AccessModes.MANAGE then
+        local ownerCharacterId = InventoryAPI.GetInventoryOwner(inventoryId)
+        if not ownerCharacterId then
+            return Result.Err(Result.Codes.DENIED, 'This inventory has no owner and cannot be managed.',
+                { action = action }, context.correlationId)
+        end
+        if not IsOwnerOrAdmin(src, ownerCharacterId) then
+            return Result.Err(Result.Codes.DENIED, 'You do not own this inventory.',
+                { action = action }, context.correlationId)
+        end
+        return Result.Ok(true, context.correlationId)
+    end
+
+    -- READ/INSERT/REMOVE all currently resolve through the same live
+    -- accessibility check, which already re-verifies proximity and status for
+    -- a robbery target on every call rather than trusting an open lock
+    -- (INV-11/INV-23). Re-checked here rather than cached, so a mutation
+    -- arriving late cannot ride an authorization that was true a minute ago.
+    if not InventoryAPI.IsInventoryAccessibleBySrc(src, inventoryId) then
+        return Result.Err(Result.Codes.DENIED, 'You do not have access to that inventory.',
+            { action = action }, context.correlationId)
+    end
+
+    return Result.Ok(true, context.correlationId)
+end
+
 function IsAuthorizedForOwnedInventory(src, callerCharacterId, inventoryId)
     local ownerCharacterId, isPublic = InventoryAPI.GetInventoryOwnerAndVisibility(inventoryId)
     local hasGrant = InventoryAPI.HasInventoryAccessGrant(callerCharacterId, inventoryId)
     local hasTemp = InventoryAPI.HasTemporaryAccess(src, inventoryId)
-    print(("[DEBUG-GROUND] IsAuthorizedForOwnedInventory: src=%s callerCharacterId=%s inventoryId=%s owner=%s isPublic=%s hasAccessGrant=%s hasTemporaryAccess=%s"):format(
-        tostring(src), tostring(callerCharacterId), tostring(inventoryId), tostring(ownerCharacterId), tostring(isPublic), tostring(hasGrant), tostring(hasTemp)))
+    DebugPrint('DEBUG-ACCESS', 'IsAuthorizedForOwnedInventory: src=%s callerCharacterId=%s inventoryId=%s owner=%s isPublic=%s hasAccessGrant=%s hasTemporaryAccess=%s',
+        tostring(src), tostring(callerCharacterId), tostring(inventoryId), tostring(ownerCharacterId), tostring(isPublic), tostring(hasGrant), tostring(hasTemp))
 
     if ownerCharacterId and callerCharacterId and tostring(ownerCharacterId) == tostring(callerCharacterId) then
         return true
