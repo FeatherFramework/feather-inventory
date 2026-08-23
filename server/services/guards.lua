@@ -1,0 +1,194 @@
+-- (INV-W3) Movement guards and structured post-commit events, per
+-- DEPENDENCY_SUPPORT_PLAN §4.4 and §3.3.
+--
+-- Two halves of the same idea: something outside this resource needs to be
+-- able to say "not yet" BEFORE an item moves, and to know reliably AFTER it
+-- did. The motivating case is an equipped weapon -- feather-weapons has to
+-- force an authoritative unequip before the item leaves the inventory,
+-- because a weapon that moves while still equipped leaves the game-native
+-- state and the database disagreeing about who is holding what.
+--
+-- GUARD CONTRACT (documented, because §3.3 requires a veto to be one):
+--
+--   * Guards are SYNCHRONOUS. A guard must not yield -- no Wait, no
+--     CallAsync, no MySQL await. There is no way to enforce that in Lua, so
+--     it is stated here and in the registration function: a yielding guard
+--     stalls every mutation behind it.
+--   * A guard returns `true` to allow, or `false, reason` to veto.
+--   * A guard that ERRORS is treated as a VETO, not as an allow. Failing
+--     closed is the whole point -- a guard exists to prevent something, so a
+--     broken guard must not silently become permission. §3.4's "fail clearly
+--     rather than partially start" applied to the mutation path.
+--   * Guards never leave a lock behind. They are a pure question asked at
+--     one moment; there is nothing to release, so a crashed consumer cannot
+--     wedge the inventory (the "no permanent locks" requirement).
+--
+-- EVENT CONTRACT:
+--
+--   * Emitted only AFTER the mutation is committed (§3.3). A consumer can
+--     therefore trust that what it is told already happened.
+--   * Internal `TriggerEvent`, deliberately NOT `RegisterServerEvent`. A
+--     network-registered mutation event is spoofable by any client -- see
+--     feather-weapons' own note about exactly this on ItemRemoved.
+--   * Payloads carry stable ids and immutable summaries, never live tables a
+--     consumer could mutate underneath the resource.
+
+GuardsAPI = {}
+
+local MoveGuards = {}
+local DestroyGuards = {}
+
+------------------------------------------------------------------
+-- Registration
+------------------------------------------------------------------
+
+---
+-- Register Move Guard
+--
+-- @param name Unique identifier; re-registering the same name replaces it,
+--        so a resource restart cannot accumulate duplicate guards.
+-- @param fn function(instance, context) -> boolean, reason
+--        MUST be synchronous -- see the guard contract above.
+--
+function GuardsAPI.RegisterMoveGuard(name, fn)
+    if type(name) ~= 'string' or type(fn) ~= 'function' then
+        warn('RegisterMoveGuard requires a name and a function.')
+        return false
+    end
+    MoveGuards[name] = fn
+    return true
+end
+
+function GuardsAPI.RegisterDestroyGuard(name, fn)
+    if type(name) ~= 'string' or type(fn) ~= 'function' then
+        warn('RegisterDestroyGuard requires a name and a function.')
+        return false
+    end
+    DestroyGuards[name] = fn
+    return true
+end
+
+function GuardsAPI.UnregisterMoveGuard(name)
+    MoveGuards[name] = nil
+end
+
+function GuardsAPI.UnregisterDestroyGuard(name)
+    DestroyGuards[name] = nil
+end
+
+------------------------------------------------------------------
+-- Evaluation
+------------------------------------------------------------------
+
+local function RunGuards(registry, instanceId, context)
+    -- Nothing registered is the overwhelmingly common case (no consumer
+    -- resource loaded), so skip the instance read entirely rather than
+    -- paying a query per moved item for guards that do not exist.
+    if next(registry) == nil then
+        return true
+    end
+
+    local instance = InstancesAPI.GetInstance(instanceId)
+    if not Result.IsOk(instance) then
+        -- Cannot describe what is moving, so cannot let a guard make an
+        -- informed decision about it. Fail closed.
+        return false, 'Item instance could not be read for guard evaluation.'
+    end
+
+    for name, guard in pairs(registry) do
+        local ok, allowed, reason = pcall(guard, instance.value, context or {})
+        if not ok then
+            -- A guard that throws is a broken guard, and a broken guard must
+            -- not become permission by accident.
+            warn(('Guard "%s" errored (%s); vetoing as fail-closed.'):format(name, tostring(allowed)))
+            return false, ('Guard "%s" failed.'):format(name)
+        end
+        if allowed == false then
+            return false, reason or ('Blocked by guard "%s".'):format(name)
+        end
+    end
+
+    return true
+end
+
+---
+-- Can Move Instance
+--
+-- @return true, or false plus a reason
+--
+function GuardsAPI.CanMoveInstance(instanceId, context)
+    return RunGuards(MoveGuards, instanceId, context)
+end
+
+function GuardsAPI.CanDestroyInstance(instanceId, context)
+    return RunGuards(DestroyGuards, instanceId, context)
+end
+
+------------------------------------------------------------------
+-- Post-commit events
+------------------------------------------------------------------
+
+-- Names match DEPENDENCY_SUPPORT_PLAN §4.4 exactly, so a consumer written
+-- against that document listens for the right thing without translation.
+GuardsAPI.Events = {
+    ItemCreated = 'Feather:Inventory:ItemCreated',
+    ItemMoved = 'Feather:Inventory:ItemMoved',
+    ItemMetadataChanged = 'Feather:Inventory:ItemMetadataChanged',
+    ItemDestroyed = 'Feather:Inventory:ItemDestroyed',
+    TransactionCommitted = 'Feather:Inventory:TransactionCommitted',
+}
+
+local function Emit(eventName, payload)
+    -- TriggerEvent, never TriggerClientEvent or a networked registration:
+    -- these describe committed server state and have no business being
+    -- reachable from, or broadcast to, a client.
+    TriggerEvent(eventName, payload)
+end
+
+function GuardsAPI.EmitItemCreated(instanceId, definitionId, inventoryId, context)
+    Emit(GuardsAPI.Events.ItemCreated, {
+        instanceId = instanceId,
+        definitionId = definitionId,
+        inventoryId = inventoryId,
+        correlationId = context and context.correlationId,
+        reason = context and context.reason,
+    })
+end
+
+function GuardsAPI.EmitItemMoved(instanceId, fromInventoryId, toInventoryId, context)
+    Emit(GuardsAPI.Events.ItemMoved, {
+        instanceId = instanceId,
+        fromInventoryId = fromInventoryId,
+        toInventoryId = toInventoryId,
+        correlationId = context and context.correlationId,
+        reason = context and context.reason,
+    })
+end
+
+function GuardsAPI.EmitItemMetadataChanged(instanceId, revision, context)
+    Emit(GuardsAPI.Events.ItemMetadataChanged, {
+        instanceId = instanceId,
+        revision = revision,
+        correlationId = context and context.correlationId,
+        reason = context and context.reason,
+    })
+end
+
+function GuardsAPI.EmitItemDestroyed(instanceId, definitionId, inventoryId, context)
+    Emit(GuardsAPI.Events.ItemDestroyed, {
+        instanceId = instanceId,
+        definitionId = definitionId,
+        inventoryId = inventoryId,
+        correlationId = context and context.correlationId,
+        reason = context and context.reason,
+    })
+end
+
+function GuardsAPI.EmitTransactionCommitted(context, summary)
+    Emit(GuardsAPI.Events.TransactionCommitted, {
+        correlationId = context and context.correlationId,
+        reason = context and context.reason,
+        resource = context and context.resource,
+        summary = summary,
+    })
+end

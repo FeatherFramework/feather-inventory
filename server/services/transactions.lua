@@ -145,6 +145,7 @@ function Tx:SetMetadata(instanceId, document)
     self.touched[id] = true
     self.writes[#self.writes + 1] = {
         id = id,
+        kind = 'metadata',
         query = 'UPDATE `inventory_items` SET `metadata`=?, `metadata_revision`=`metadata_revision`+1 WHERE `id`=?;',
         values = { encoded, id }
     }
@@ -165,9 +166,18 @@ function Tx:MoveInstance(instanceId, toInventory, toSlot)
         return Result.Err(Result.Codes.INVALID_INPUT, 'Invalid move parameters.')
     end
 
+    -- (INV-W3) Guards run at QUEUE time, in the validate phase, so a veto
+    -- aborts before anything is written rather than after a partial commit.
+    local allowed, reason = GuardsAPI.CanMoveInstance(id, self.context)
+    if not allowed then
+        return Result.Err(Result.Codes.DENIED, reason or 'Move blocked by a guard.', nil, self.context.correlationId)
+    end
+
     self.touched[id] = true
     self.writes[#self.writes + 1] = {
         id = id,
+        kind = 'move',
+        toInventory = toInventory,
         query = 'UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=? WHERE `id`=?;',
         values = { toInventory, toSlot, id }
     }
@@ -183,9 +193,15 @@ function Tx:DestroyInstance(instanceId)
         return Result.Err(Result.Codes.INVALID_INPUT, 'Invalid instance id.')
     end
 
+    local allowed, reason = GuardsAPI.CanDestroyInstance(id, self.context)
+    if not allowed then
+        return Result.Err(Result.Codes.DENIED, reason or 'Destroy blocked by a guard.', nil, self.context.correlationId)
+    end
+
     self.touched[id] = true
     self.writes[#self.writes + 1] = {
         id = id,
+        kind = 'destroy',
         query = 'DELETE FROM `inventory_items` WHERE `id`=?;',
         values = { id }
     }
@@ -300,6 +316,21 @@ function TransactionAPI.Transaction(context, fn)
 
         local committed = pcall(MySQL.transaction.await, batch)
         if committed then
+            -- (INV-W3) Post-commit events. Emitted here rather than inside the
+            -- queue helpers precisely because a queued write that never
+            -- committed must never announce itself -- §3.3's "domain
+            -- notifications fire only after commit".
+            for _, write in ipairs(tx.writes) do
+                if write.kind == 'metadata' then
+                    GuardsAPI.EmitItemMetadataChanged(write.id, nil, context)
+                elseif write.kind == 'move' then
+                    GuardsAPI.EmitItemMoved(write.id, nil, write.toInventory, context)
+                elseif write.kind == 'destroy' then
+                    GuardsAPI.EmitItemDestroyed(write.id, nil, nil, context)
+                end
+            end
+            GuardsAPI.EmitTransactionCommitted(context, { writes = #tx.writes })
+
             local result = Result.Ok(outcome, context.correlationId)
             IdempotencyPut(context.idempotencyKey, result)
             return result

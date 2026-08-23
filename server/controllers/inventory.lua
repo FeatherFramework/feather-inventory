@@ -151,8 +151,15 @@ end
 
 
 function InventoryControllers.CreateInventoryItem(inventory, itemId, slotIndex)
-  return MySQL.query.await('INSERT INTO `inventory_items` (`inventory_id`, `item_id`, `slot_index`) VALUES (?, ?, ?) RETURNING *;',
+  local created = MySQL.query.await('INSERT INTO `inventory_items` (`inventory_id`, `item_id`, `slot_index`) VALUES (?, ?, ?) RETURNING *;',
     { inventory, itemId, slotIndex })
+
+  -- (INV-W3) Post-commit: the row exists by the time this fires.
+  if created and created[1] then
+    GuardsAPI.EmitItemCreated(created[1].id, itemId, inventory, { reason = 'grant' })
+  end
+
+  return created
 end
 
 -- Steampunk ledger: a compartment already holding this item with room left
@@ -307,6 +314,23 @@ function InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory
   local moving = InventoryControllers.GetItemsInSlot(fromInventory, fromSlot)
   local occupant = InventoryControllers.GetItemsInSlot(toInventory, toSlot)
 
+  -- (INV-W3) Only a move that actually changes inventory is guarded --
+  -- rearranging compartments within one book is not a movement anything
+  -- outside this resource can meaningfully veto, and asking would make every
+  -- drag pay for a guard lookup.
+  if tostring(fromInventory) ~= tostring(toInventory) then
+    for _, row in pairs(moving) do
+      if not GuardsAPI.CanMoveInstance(row.id, { reason = 'slot_move' }) then
+        return false
+      end
+    end
+    for _, row in pairs(occupant) do
+      if not GuardsAPI.CanMoveInstance(row.id, { reason = 'slot_swap' }) then
+        return false
+      end
+    end
+  end
+
   if #occupant > 0 then
     for _, row in pairs(occupant) do
       MySQL.query.await('UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=? WHERE `id`=?;',
@@ -317,6 +341,15 @@ function InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory
   for _, row in pairs(moving) do
     MySQL.query.await('UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=? WHERE `id`=?;',
       { toInventory, toSlot, row.id })
+  end
+
+  if tostring(fromInventory) ~= tostring(toInventory) then
+    for _, row in pairs(moving) do
+      GuardsAPI.EmitItemMoved(row.id, fromInventory, toInventory, { reason = 'slot_move' })
+    end
+    for _, row in pairs(occupant) do
+      GuardsAPI.EmitItemMoved(row.id, toInventory, fromInventory, { reason = 'slot_swap' })
+    end
   end
 
   return #moving > 0
@@ -355,6 +388,23 @@ function InventoryControllers.SetMetadata(item, key, value)
   MySQL.query.await(
     'INSERT INTO `item_metadata` (`inventory_items_id`, `key`, `value`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `value`=?;',
     { item, key, value, value })
+end
+
+-- (INV-W3) Destroy guard + post-commit event. Same chokepoint reasoning as
+-- the move path: guarding here covers every removal route rather than
+-- trusting each caller to remember.
+function InventoryControllers.DeleteInventoryItemGuarded(id, context)
+  if not GuardsAPI.CanDestroyInstance(id, context or { reason = 'destroy' }) then
+    return false
+  end
+
+  local instance = InventoryControllers.GetInventoryItemById(id)
+  InventoryControllers.DeleteInventoryItem(id)
+
+  if instance then
+    GuardsAPI.EmitItemDestroyed(id, instance.item_id, instance.inventory_id, context)
+  end
+  return true
 end
 
 function InventoryControllers.DeleteInventoryItem(id)
@@ -479,6 +529,12 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
     local existingItem = InventoryControllers.GetInventoryItemById(id)
     if not existingItem or tostring(existingItem.inventory_id) ~= tostring(sourceInventory) then
       warn('MoveInventoryItems: skipping item ' .. tostring(id) .. ' -- does not belong to source inventory ' .. tostring(sourceInventory))
+    -- (INV-W3) Pre-move guard. Placed here rather than at each caller because
+    -- this is the chokepoint every bulk transfer funnels through -- give,
+    -- ground drop, container move, quick-loot -- so one check covers them all
+    -- and none can be added later that forgets to ask.
+    elseif not GuardsAPI.CanMoveInstance(id, { reason = 'move' }) then
+      warn('MoveInventoryItems: item ' .. tostring(id) .. ' vetoed by a move guard.')
     else
       -- (Steampunk ledger) Carrying the item's old slot_index straight over
       -- would silently collide with whatever the target inventory already
@@ -493,8 +549,12 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
 
       MySQL.query.await('UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=? WHERE `id`=?;', { targetInventory, targetSlot, id })
 
+      -- Legacy signals, kept for existing consumers (feather-weapons listens
+      -- to ItemRemoved today), alongside the structured post-commit event
+      -- INV-W3 introduces. Both fire only after the row has actually moved.
       TriggerEvent('feather-inventory:ItemRemoved', id, 1, sourceInventory)
       TriggerEvent('feather-inventory:ItemAdded', id, 1, targetInventory)
+      GuardsAPI.EmitItemMoved(id, sourceInventory, targetInventory, { reason = 'move' })
     end
   end
 

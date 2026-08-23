@@ -374,8 +374,8 @@ function InstancesAPI.GetCapabilities()
             instanceReadModel = true,   -- INV-W1: normalized reads
             resultEnvelope = true,      -- INV-W1: shared { ok, value|error }
             transactions = true,        -- INV-W2: optimistic, revision-guarded
-            movementGuards = false,     -- INV-W3
-            postCommitEvents = false,   -- INV-W3
+            movementGuards = true,      -- INV-W3: pre-move/destroy veto registry
+            postCommitEvents = true,    -- INV-W3: structured, internal, post-commit
         }
     }
 end

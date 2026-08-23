@@ -258,10 +258,14 @@ Also migrated `condition` (§10.3) onto the document, so it inherits compare-and
 
 **Honest limitation:** this is optimistic, not pessimistic. Contending transactions do not queue — one wins and the other is told `CONFLICT`. That satisfies the exit gate and is safe, but it is not a lock, and callers with long validate phases will see more conflicts than a locking implementation would. Closing that properly needs either an `oxmysql` interactive-transaction capability or a stored routine, neither of which exists today.
 
-### `INV-W3` — Movement guards and events
-- Add the pre-move/destroy guard registry and the structured post-commit event set.
-- Route give/ground/container/admin/deletion through the same pipeline `INV-W2` established.
-- **Exit gate:** every item movement is observable after commit; an equipped weapon can be synchronously blocked/unequipped before movement.
+### `INV-W3` — Movement guards and events — **DONE 2026-08-23**
+- ~~Pre-move/destroy guard registry.~~ `GuardsAPI.RegisterMoveGuard` / `RegisterDestroyGuard`. The contract is documented because §3.3 requires a veto to be one: guards are **synchronous** (a yielding guard stalls every mutation behind it), return `true` or `false, reason`, and **a guard that errors is treated as a veto, not an allow** — a guard exists to prevent something, so a broken one must not silently become permission. Guards hold no state, so a crashed consumer cannot wedge the inventory; that is the "no permanent locks" requirement satisfied by construction rather than by cleanup.
+- ~~Structured post-commit events.~~ `ItemCreated` / `ItemMoved` / `ItemMetadataChanged` / `ItemDestroyed` / `TransactionCommitted`, named exactly as §4.4 writes them so a consumer needs no translation layer. Internal `TriggerEvent`, deliberately **not** `RegisterServerEvent` — a network-registered mutation event is spoofable by any client, which `feather-weapons` already has a note about on `ItemRemoved`.
+- ~~Route give/ground/container/admin/deletion through the same pipeline.~~ Guards are wired at the **chokepoints** rather than per caller: `MoveInventoryItems` (give, ground drop, container move, quick-loot), `MoveSlotItems` (drag, swap), `CreateInventoryItem` (grants), and a guarded delete path. One check covers every route, and a route added later cannot forget to ask. In-book rearrangement is deliberately unguarded — it is not a movement anything outside this resource can meaningfully veto.
+- Inside a transaction, guards run at **queue time during the validate phase**, so a veto aborts before anything is written rather than after a partial commit.
+- **Exit gate:** every movement now emits a post-commit event carrying instance id, both inventory ids, and the correlation id; and a registered move guard vetoes the move before any write — which is precisely the "force an authoritative unequip before an equipped item moves" hook weapons needs.
+
+Legacy `feather-inventory:ItemAdded`/`ItemRemoved` still fire alongside the structured set, so existing consumers are unaffected.
 
 ### `INV-W4` — Capacity and hardening
 - Close the last weight-enforcement gap (`AddItem`, §10.1) as part of this, not separately.
