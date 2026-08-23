@@ -51,6 +51,14 @@ end
 -- unregistered key would be shown to the player verbatim, which is strictly
 -- worse than showing untranslated English.
 --
+-- CONSTRAINT: no value in translations/ may contain a `%` format directive
+-- unless every caller of that key passes matching arguments -- LocalesAPI.
+-- translate unconditionally string.formats the result, and a `%s` resolved
+-- without arguments raises "bad argument #2 to 'format'". The pcall below
+-- stops that breaking the caller, but CitizenFX prints the traceback
+-- regardless, so it has to be avoided rather than caught. See the `{n}`
+-- convention documented in translations/en_us.lua.
+--
 -- @param src Player source, used to resolve their language
 -- @param key Locale key (see translations/)
 -- @param fallback Text to use if the key isn't registered

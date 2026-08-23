@@ -26,8 +26,8 @@ const DEFAULTS = {
 
   ui_quantity: 'Quantity',
   ui_weight: 'Weight',
-  ui_how_many: 'How many? (1-%s)',
-  ui_use_all: 'Use all (%s)',
+  ui_how_many: 'How many? (1-{n})',
+  ui_use_all: 'Use all ({n})',
   ui_invalid_amount: 'Invalid amount.',
   ui_no_entry: 'No entry selected.',
 
@@ -49,14 +49,18 @@ export function setStrings(incoming) {
   }
 }
 
-// Substitutes %s placeholders positionally, matching Lua's string.format
-// usage on the other side of the bundle (LocalesAPI.translate formats with
-// string.format, so a translator editing these keys sees the same syntax
-// whichever side of the boundary the value is finally rendered on).
+// Substitutes {n} placeholders positionally.
+//
+// Deliberately {n} and not %s: Feather.Locale.translate runs every string
+// through Lua's string.format before it reaches this bundle, and these
+// templates are resolved with no arguments (only the UI knows the runtime
+// value). A %s would therefore blow up format() on the Lua side before the
+// string ever got here. {n} means nothing to string.format and survives the
+// trip intact.
 export function t(key, ...args) {
   let out = strings[key] ?? DEFAULTS[key] ?? key;
   for (const arg of args) {
-    out = out.replace('%s', String(arg));
+    out = out.replace('{n}', String(arg));
   }
   return out;
 }

@@ -75,9 +75,18 @@ Feather.Locale.register('en_us', {
 
     ui_quantity = 'Quantity',
     ui_weight = 'Weight',
-    -- %s is the maximum selectable amount.
-    ui_how_many = 'How many? (1-%s)',
-    ui_use_all = 'Use all (%s)',
+    -- `{n}` is the maximum selectable amount, substituted by the UI.
+    --
+    -- Deliberately NOT `%s`. Feather.Locale.translate always runs the result
+    -- through string.format, and these two are the only strings resolved
+    -- without arguments (the client hands them to the NUI as templates,
+    -- because only the UI knows the runtime value). A `%s` here therefore
+    -- raised "bad argument #2 to 'format' (no value)" on every inventory
+    -- open. `{n}` carries no meaning to string.format, so it passes through
+    -- untouched. Any future placeholder rendered UI-side must use this
+    -- convention too.
+    ui_how_many = 'How many? (1-{n})',
+    ui_use_all = 'Use all ({n})',
     ui_invalid_amount = 'Invalid amount.',
     ui_no_entry = 'No entry selected.',
 

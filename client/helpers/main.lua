@@ -15,6 +15,14 @@ end
 -- service's own client cache, so 0 is passed purely to satisfy the shared
 -- signature.
 --
+-- CONSTRAINT: no value in translations/ may contain a `%` format directive
+-- unless every caller of that key passes matching arguments. LocalesAPI.
+-- translate unconditionally runs string.format on the result, so a `%s` in
+-- a string resolved without arguments raises "bad argument #2 to 'format'".
+-- The pcall below keeps that from breaking the caller, but CitizenFX still
+-- prints the traceback, so it must be avoided rather than caught -- see the
+-- `{n}` convention on ui_how_many/ui_use_all in translations/en_us.lua.
+--
 -- @param key Locale key (see translations/)
 -- @param fallback Text to use if the key isn't registered
 -- @return Localized string, or fallback
