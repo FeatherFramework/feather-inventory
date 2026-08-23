@@ -19,9 +19,10 @@
 -- "chamber state" diverging. A single JSON column with a revision counter
 -- makes the whole document one compare-and-set.
 --
--- The flat table is NOT dropped -- it stays as a compatibility projection for
--- existing readers (see InstancesAPI.ReadMetadata's fallback), which is the
--- decision DEPENDENCY_SUPPORT_PLAN §4.4 left open.
+-- DEPENDENCY_SUPPORT_PLAN §4.4 left open whether the flat table survives as a
+-- compatibility projection. Decision: it does not. Nothing consumed it, so
+-- carrying a second write path for a shape no reader wanted would have been
+-- pure cost. The table is left in place unused rather than dropped.
 
 InstancesAPI = {}
 
@@ -118,11 +119,8 @@ end
 ---
 -- Read Metadata
 --
--- Returns the document plus its revision. Falls back to projecting the legacy
--- flat `item_metadata` rows into a document when the column is still null,
--- so an instance written before this migration reads identically to one
--- written after -- that projection is what lets the flat table stay as a
--- compatibility layer rather than requiring a data migration.
+-- Returns the document plus its revision. An instance with no document yet
+-- reads as an empty table, not nil, so callers never branch on absence.
 --
 -- @param instanceId inventory_items.id
 -- @return Result envelope wrapping { document, revision }
@@ -155,9 +153,6 @@ function InstancesAPI.ReadMetadata(instanceId)
         end
     else
         document = {}
-        for _, pair in pairs(InventoryControllers.GetMetadata(numericId) or {}) do
-            document[pair.key] = pair.value
-        end
     end
 
     return Result.Ok({ document = document, revision = tonumber(row.metadata_revision) or 0 })
@@ -355,6 +350,41 @@ function InstancesAPI.FindInstances(inventoryId, definitionName)
     return Result.Ok(ids)
 end
 
+---
+-- Get Item For Character
+--
+-- (Weapons review #10) An instance read scoped to a character -- returns
+-- NOT_FOUND rather than the row if that character does not actually hold it.
+--
+-- Deliberately not a thin alias for GetInstance: the ownership assertion is
+-- the point. A consumer asking "give me this character's weapon" should not
+-- silently receive someone else's by passing the wrong id.
+--
+-- @param characterId
+-- @param instanceId inventory_items.id
+-- @return Result wrapping the normalized instance
+--
+function InstancesAPI.GetItemForCharacter(characterId, instanceId)
+    local charId = tonumber(characterId)
+    local id = tonumber(instanceId)
+    if not charId or not id then
+        return Result.Err(Result.Codes.INVALID_INPUT, 'Character id and instance id are required.')
+    end
+
+    local owned = MySQL.query.await([[
+        SELECT ii.`id` FROM `inventory_items` ii
+        INNER JOIN `inventory` inv ON inv.`id` = ii.`inventory_id`
+        WHERE ii.`id` = ? AND inv.`character_id` = ? LIMIT 1;
+    ]], { id, charId })[1]
+
+    if not owned then
+        return Result.Err(Result.Codes.NOT_FOUND, 'That character does not hold this item.',
+            { instanceId = id, characterId = charId })
+    end
+
+    return InstancesAPI.GetInstance(id)
+end
+
 ------------------------------------------------------------------
 -- Readiness / capability query
 ------------------------------------------------------------------
@@ -379,6 +409,9 @@ function InstancesAPI.GetCapabilities()
             accessModes = true,         -- INV-W4: read/insert/remove/manage
             metadataSizeLimit = true,   -- INV-W4: bounded documents
             transactionMetrics = true,  -- INV-W4: contention counters
+            rowLocking = true,          -- real SELECT ... FOR UPDATE via startTransaction
+            equippedState = true,       -- persisted character equipment slots
+            atomicCreation = true,      -- instance + metadata in one statement
         }
     }
 end

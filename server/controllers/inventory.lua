@@ -92,7 +92,7 @@ function InventoryControllers.InventoryItemCount(inventory, itemId)
 end
 
 function InventoryControllers.GetInventoryItemById(id)
-  local result = MySQL.query.await('SELECT `inventory_items`.`id`, `inventory_items`.`updated_at`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, COALESCE(`inventory_items`.`metadata`, JSON_OBJECTAGG(`item_metadata`.`key`, `item_metadata`.`value`)) AS `item_metadata`, `inventory_items`.`inventory_id` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` LEFT JOIN `item_metadata` ON `item_metadata`.`inventory_items_id` = `inventory_items`.`id` WHERE `inventory_items`.`id`=? GROUP BY `inventory_items`.`metadata`, `inventory_items`.`id`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size` LIMIT 1;', { id })[1]
+  local result = MySQL.query.await('SELECT `inventory_items`.`id`, `inventory_items`.`updated_at`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, `inventory_items`.`metadata` AS `item_metadata`, `inventory_items`.`inventory_id` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` WHERE `inventory_items`.`id`=? GROUP BY `inventory_items`.`metadata`, `inventory_items`.`id`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size` LIMIT 1;', { id })[1]
 
   if result == nil then
     return false
@@ -124,7 +124,7 @@ function InventoryControllers.GetInventoryTotalWeight(inventory)
 end
 
 function InventoryControllers.GetInventoryItems(inventory)
-  local items = MySQL.query.await( 'SELECT `inventory_items`.`id`, `inventory_items`.`updated_at`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, COALESCE(`inventory_items`.`metadata`, JSON_OBJECTAGG(`item_metadata`.`key`, `item_metadata`.`value`)) AS `item_metadata` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` LEFT JOIN `item_metadata` ON `item_metadata`.`inventory_items_id` = `inventory_items`.`id` WHERE `inventory_items`.`inventory_id` = ? GROUP BY `inventory_items`.`metadata`, `inventory_items`.`id`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`;', { inventory })
+  local items = MySQL.query.await( 'SELECT `inventory_items`.`id`, `inventory_items`.`updated_at`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, `inventory_items`.`metadata` AS `item_metadata` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` WHERE `inventory_items`.`inventory_id` = ? GROUP BY `inventory_items`.`metadata`, `inventory_items`.`id`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`;', { inventory })
   for key, value in pairs(items) do
     if value["item_metadata"] and value["item_metadata"] ~= nil then
       items[key]["item_metadata"] = json.decode(value["item_metadata"])
@@ -150,9 +150,18 @@ function InventoryControllers.GetInventoryTotalItemCounts(inventory)
 end
 
 
-function InventoryControllers.CreateInventoryItem(inventory, itemId, slotIndex)
-  local created = MySQL.query.await('INSERT INTO `inventory_items` (`inventory_id`, `item_id`, `slot_index`) VALUES (?, ?, ?) RETURNING *;',
-    { inventory, itemId, slotIndex })
+-- (Weapons review #4) `metadata` is written in the SAME INSERT that creates
+-- the row. Previously the row was created and metadata written afterwards,
+-- key by key, so a failure between the two left an item that existed without
+-- the state that defines it -- a weapon with no ammo count or serial.
+function InventoryControllers.CreateInventoryItem(inventory, itemId, slotIndex, metadata)
+  local encoded = nil
+  if type(metadata) == 'table' and next(metadata) ~= nil then
+    encoded = json.encode(metadata)
+  end
+
+  local created = MySQL.query.await('INSERT INTO `inventory_items` (`inventory_id`, `item_id`, `slot_index`, `metadata`) VALUES (?, ?, ?, ?) RETURNING *;',
+    { inventory, itemId, slotIndex, encoded })
 
   -- (INV-W3) Post-commit: the row exists by the time this fires.
   if created and created[1] then
@@ -380,15 +389,12 @@ function InventoryControllers.SplitSlotItems(inventory, fromSlot, toSlot, quanti
   return moved
 end
 
-function InventoryControllers.GetMetadata(itemId)
-  return MySQL.query.await('SELECT `key`, `value` FROM `item_metadata` WHERE `inventory_items_id`=?', itemId)
-end
-
-function InventoryControllers.SetMetadata(item, key, value)
-  MySQL.query.await(
-    'INSERT INTO `item_metadata` (`inventory_items_id`, `key`, `value`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `value`=?;',
-    { item, key, value, value })
-end
+-- (Weapons review #2) The flat `item_metadata` accessors are gone. Nothing
+-- consumed that table, and a per-key write has neither atomicity nor a
+-- revision, which is exactly what the versioned document on
+-- `inventory_items.metadata` provides. The table itself is left in place
+-- rather than dropped -- an unused table is harmless, and dropping data is
+-- not this migration's business.
 
 -- (INV-W3) Destroy guard + post-commit event. Same chokepoint reasoning as
 -- the move path: guarding here covers every removal route rather than
@@ -411,6 +417,25 @@ function InventoryControllers.DeleteInventoryItem(id)
   -- (INV-08) `LIMIT;` with no number is a SQL syntax error -- this deletes
   -- by unique `id` already, so no LIMIT clause is needed at all.
   MySQL.query.await('DELETE FROM `inventory_items` WHERE `id`=?;', { id })
+end
+
+-- (Weapons review #8) Which instance rows a quantity-based removal will
+-- actually delete. DeleteInventoryItems removes by LIMIT, so without this
+-- the caller has no idea which rows went and can only name the definition
+-- in its removal event. Ordered by id so it matches LIMIT's default order.
+function InventoryControllers.GetInstanceIdsForRemoval(inventory, itemId, quantity)
+  local safeQuantity = math.floor(tonumber(quantity) or 0)
+  if safeQuantity < 1 then
+    return {}
+  end
+  local rows = MySQL.query.await(
+    'SELECT `id` FROM `inventory_items` WHERE `inventory_id`=? AND `item_id`=? ORDER BY `id` LIMIT ' .. safeQuantity .. ';',
+    { inventory, itemId })
+  local ids = {}
+  for _, row in ipairs(rows or {}) do
+    ids[#ids + 1] = tonumber(row.id)
+  end
+  return ids
 end
 
 -- (INV-08) `quantity` was concatenated straight into the query string --

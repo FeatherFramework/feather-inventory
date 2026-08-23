@@ -1,0 +1,153 @@
+-- (Weapons review #5) Persisted equipment slots.
+--
+-- The weapons provider needs GetEquippedForCharacter/SetEquippedForCharacter,
+-- and the review's point is the load-bearing one: this state cannot live only
+-- in weapons' memory, because it has to survive a reconnect and a resource or
+-- server restart. Memory does not.
+--
+-- Kept GENERIC, per MASTER_PLAN §3 -- nothing here knows what a weapon is.
+-- This is "which item instance is in which named slot for this character",
+-- and `slot` is an arbitrary string the consumer chooses ('primary',
+-- 'sidearm', 'holster', 'hat'). Inventory stores and constrains it; the
+-- consumer decides what the names mean. A clothing resource can use the same
+-- table without inventory learning about clothing.
+--
+-- Ownership is enforced here rather than trusted: an instance can only be
+-- equipped by the character whose inventory currently holds it, re-derived
+-- from the row itself. That check is why equipping is not simply a write.
+
+EquipmentAPI = {}
+
+local function EnsureEquipmentSchema()
+    MySQL.query.await([[
+        CREATE TABLE IF NOT EXISTS `character_equipment` (
+            `character_id` BIGINT UNSIGNED NOT NULL,
+            `slot` VARCHAR(50) NOT NULL,
+            `inventory_items_id` BIGINT UNSIGNED NOT NULL,
+            `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (`character_id`, `slot`),
+            -- One instance cannot occupy two slots at once.
+            UNIQUE KEY `UQ_EquipmentInstance` (`inventory_items_id`),
+            CONSTRAINT `FK_EquipmentCharacter` FOREIGN KEY (`character_id`)
+                REFERENCES `characters` (`id`) ON DELETE CASCADE,
+            -- Destroying the item unequips it, rather than leaving a row
+            -- pointing at nothing. This is what makes "consumed while
+            -- equipped" self-healing instead of a dangling reference.
+            CONSTRAINT `FK_EquipmentInstance` FOREIGN KEY (`inventory_items_id`)
+                REFERENCES `inventory_items` (`id`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    ]])
+end
+
+CreateThread(function()
+    EnsureEquipmentSchema()
+end)
+
+---
+-- Get Equipped For Character
+--
+-- @param characterId
+-- @param slot Optional; omit for every slot
+-- @return Result wrapping { [slot] = instanceId } or a single instanceId
+--
+function EquipmentAPI.GetEquippedForCharacter(characterId, slot)
+    local id = tonumber(characterId)
+    if not id then
+        return Result.Err(Result.Codes.INVALID_INPUT, 'Invalid character id.')
+    end
+
+    if slot then
+        local row = MySQL.query.await(
+            'SELECT `inventory_items_id` FROM `character_equipment` WHERE `character_id`=? AND `slot`=? LIMIT 1;',
+            { id, slot })[1]
+        return Result.Ok(row and tonumber(row.inventory_items_id) or nil)
+    end
+
+    local rows = MySQL.query.await(
+        'SELECT `slot`, `inventory_items_id` FROM `character_equipment` WHERE `character_id`=?;', { id })
+    local equipped = {}
+    for _, row in pairs(rows or {}) do
+        equipped[row.slot] = tonumber(row.inventory_items_id)
+    end
+    return Result.Ok(equipped)
+end
+
+---
+-- Set Equipped For Character
+--
+-- Passing `nil` for instanceId clears the slot.
+--
+-- Rejects an instance the character does not actually hold. Equipping is a
+-- claim about something you own, so it is verified against the instance's own
+-- inventory row rather than taken on the caller's word -- the same
+-- re-derive-don't-trust rule every other mutation here follows.
+--
+function EquipmentAPI.SetEquippedForCharacter(characterId, slot, instanceId)
+    local id = tonumber(characterId)
+    if not id or type(slot) ~= 'string' or slot == '' then
+        return Result.Err(Result.Codes.INVALID_INPUT, 'Character id and slot are required.')
+    end
+
+    if instanceId == nil then
+        MySQL.query.await('DELETE FROM `character_equipment` WHERE `character_id`=? AND `slot`=?;', { id, slot })
+        return Result.Ok({ slot = slot, instanceId = nil })
+    end
+
+    local numericInstance = tonumber(instanceId)
+    if not numericInstance then
+        return Result.Err(Result.Codes.INVALID_INPUT, 'Invalid instance id.')
+    end
+
+    local owned = MySQL.query.await([[
+        SELECT ii.`id` FROM `inventory_items` ii
+        INNER JOIN `inventory` inv ON inv.`id` = ii.`inventory_id`
+        WHERE ii.`id` = ? AND inv.`character_id` = ? LIMIT 1;
+    ]], { numericInstance, id })[1]
+
+    if not owned then
+        return Result.Err(Result.Codes.DENIED, 'That item is not in this character\'s inventory.',
+            { instanceId = numericInstance, characterId = id })
+    end
+
+    -- REPLACE rather than INSERT..ON DUPLICATE: the UNIQUE on
+    -- inventory_items_id means moving an already-equipped instance to a
+    -- different slot must clear the old row, which a per-key upsert would not.
+    MySQL.query.await('DELETE FROM `character_equipment` WHERE `inventory_items_id`=?;', { numericInstance })
+    MySQL.query.await(
+        'REPLACE INTO `character_equipment` (`character_id`, `slot`, `inventory_items_id`) VALUES (?, ?, ?);',
+        { id, slot, numericInstance })
+
+    return Result.Ok({ slot = slot, instanceId = numericInstance })
+end
+
+---
+-- Clear Equipped Instance
+--
+-- Unequips an instance wherever it happens to be slotted, without the caller
+-- needing to know which character or slot holds it. This is what a move guard
+-- calls when it decides to force an unequip rather than veto.
+--
+function EquipmentAPI.ClearEquippedInstance(instanceId)
+    local numericInstance = tonumber(instanceId)
+    if not numericInstance then
+        return Result.Err(Result.Codes.INVALID_INPUT, 'Invalid instance id.')
+    end
+    MySQL.query.await('DELETE FROM `character_equipment` WHERE `inventory_items_id`=?;', { numericInstance })
+    return Result.Ok(true)
+end
+
+---
+-- Is Instance Equipped
+--
+-- Cheap enough for a guard to call on every move.
+--
+function EquipmentAPI.IsInstanceEquipped(instanceId)
+    local row = MySQL.query.await(
+        'SELECT `character_id`, `slot` FROM `character_equipment` WHERE `inventory_items_id`=? LIMIT 1;',
+        { tonumber(instanceId) })[1]
+    if not row then
+        return false
+    end
+    return true, { characterId = tonumber(row.character_id), slot = row.slot }
+end

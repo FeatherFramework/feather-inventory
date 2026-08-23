@@ -561,7 +561,18 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
       -- public inventories) a short-lived grant issued by whichever
       -- resource disclosed this UUID after checking its own proximity/
       -- consent condition.
+      -- (Weapons review #9) A public inventory is readable by anyone, but a
+      -- GROUND pile additionally requires the caller to be standing near it
+      -- RIGHT NOW -- not merely to have been near it once when GetGroundUID
+      -- disclosed the UUID. UUIDs do not expire, so without this a cached one
+      -- lets a player loot a pile from anywhere. Checked here, at open, and
+      -- re-checked by CanAccessInventory on every subsequent mutation.
       local uuidId, _, uuidIgnoreLimits, uuidName = InventoryControllers.GetInventoryById(otherInventoryId)
+      if uuidId and InventoryControllers.GetInventoryLocationById(uuidId) == 'ground'
+          and not IsWithinGroundPickupDistance(src, uuidId) then
+        Feather.Notify.RightNotify(src, Translate(src, 'err_too_far', 'You are too far away.'), 3000)
+        uuidId = nil
+      end
       DebugPrint('DEBUG-GROUND', 'InternalOpenInventory: src=%s requested uuid=%s -- resolved inventory.id=%s',
         tostring(src), tostring(otherInventoryId), tostring(uuidId))
       if uuidId and not IsAuthorizedForOwnedInventory(src, character.id, uuidId) then

@@ -1,67 +1,55 @@
--- (INV-W2) Transaction and concurrency layer, per DEPENDENCY_SUPPORT_PLAN §4.4.
+-- (INV-W2, rewritten after the feather-weapons review) Real transactions.
 --
--- READ THIS BEFORE CHANGING ANYTHING HERE -- the design is shaped by a hard
--- constraint in the database layer, not by preference.
+-- CORRECTION, recorded because the previous design rested on a wrong premise
+-- and someone will otherwise wonder why this changed shape:
 --
--- oxmysql exposes `MySQL.transaction.await(queries) -> boolean`: an ARRAY of
--- statements, atomic, returning only success/failure. It does NOT expose an
--- interactive transaction -- there is no way to hold one connection open to
--- `SELECT ... FOR UPDATE`, run Lua logic against what came back, then write
--- inside that same transaction. So the plan's literal "deterministic
--- multi-item row locking" is not achievable with this dependency, and
--- pretending otherwise would ship a lock that does not lock.
+-- This file previously claimed oxmysql exposed no interactive transaction,
+-- and implemented optimistic concurrency with a guard statement that
+-- deliberately provoked ER_SUBQUERY_NO_1_ROW to abort a batch. That claim was
+-- WRONG. It came from `.luals/oxmysql.lua` -- a hand-written editor type stub
+-- that stops at `MySQL.transaction.await` -- rather than from oxmysql's
+-- source. `MySQL.startTransaction(cb)` exists and provides exactly what was
+-- said to be missing:
 --
--- What replaces it is optimistic concurrency, which is strictly why INV-W1
--- put a revision counter on every row:
+--   startTransaction: (cb: (query: (sql, params?) => Promise<T>)
+--                          => Promise<boolean | void>) => Promise<boolean>
 --
---   1. READ phase, outside the transaction -- gather instances and note the
---      `metadata_revision` each one was read at.
---   2. VALIDATE phase -- pure Lua, no database access, no side effects.
---   3. COMMIT phase -- one atomic batch consisting of a GUARD statement
---      followed by the queued writes.
+-- A dedicated connection, `beginTransaction()`, a `query` bound to that
+-- connection so arbitrary logic can run between reads and writes, and `false`
+-- (or a raised error) to roll everything back.
 --
--- The guard is the load-bearing piece. A CAS-style `UPDATE ... WHERE
--- revision = ?` that matches nothing does NOT raise an error, it simply
--- affects zero rows -- and since the batch API reports no per-statement
--- affected counts, a stale write would commit silently alongside its
--- siblings and leave partial state. The guard instead re-checks every
--- recorded revision in a single statement and deliberately provokes
--- ER_SUBQUERY_NO_1_ROW (`SELECT 1 UNION SELECT 2` used as a scalar) when any
--- has moved. That error aborts the batch, so the whole transaction rolls
--- back. Verified against MariaDB 12.3: matching revisions return cleanly,
--- a stale one errors and rolls the transaction back.
+-- So this now uses genuine pessimistic locking: `SELECT ... FOR UPDATE`
+-- inside the transaction, decide, write, commit. Concurrent callers QUEUE on
+-- the row lock instead of racing and retrying, and capacity is re-checked
+-- inside the same transaction that commits the move -- which is what stops
+-- two concurrent transfers from both passing a pre-check.
 --
--- Consequence worth stating plainly: this is optimistic, not pessimistic.
--- Two transactions touching the same rows do not queue -- one commits and
--- the other is told CONFLICT and retries. That is the behaviour the exit
--- gate asks for ("one commit and one explicit conflict"), and it is safe,
--- but it is not a lock and should not be described as one.
+-- Revision compare-and-set is KEPT on top of locking, for a caller that reads
+-- an instance in one request and writes it in a later one. A lock spans a
+-- single transaction; a revision spans a conversation.
+--
+-- CAVEAT, stated rather than buried: oxmysql logs
+-- `startTransaction is "experimental" and may receive breaking changes`. The
+-- calling convention is therefore isolated in exactly one function
+-- (RunInTransaction) so an upstream change is a one-function fix rather than
+-- a rewrite, and /InvTxSmokeTest (DevMode) exercises it end to end.
 
 TransactionAPI = {}
 
-local MAX_ATTEMPTS = 3
+------------------------------------------------------------------
+-- Metrics
+------------------------------------------------------------------
 
-------------------------------------------------------------------
--- Metrics (INV-W4)
-------------------------------------------------------------------
---
--- Counters, not a log. The question worth answering operationally is "is
--- this system contending?", and a rate answers it where individual lines do
--- not. Conflicts are expected under optimistic concurrency -- what matters
--- is whether `retriesExhausted` is climbing, because that is a caller
--- actually losing work rather than merely retrying.
 local Metrics = {
     started = 0,
     committed = 0,
+    rolledBack = 0,
     conflicts = 0,
-    retriesExhausted = 0,
     bodyErrors = 0,
     idempotentHits = 0,
 }
 
 function TransactionAPI.GetMetrics()
-    -- Copied, not returned by reference -- a caller must not be able to
-    -- reset the counters by mutating what it was handed.
     local snapshot = {}
     for key, value in pairs(Metrics) do
         snapshot[key] = value
@@ -73,14 +61,11 @@ end
 -- Idempotency
 ------------------------------------------------------------------
 --
--- Bounded in-memory cache, not a table: an idempotency record only has to
--- outlive the retry window of the request that created it, and persisting it
--- would mean a schema plus a cleanup job for something that is worthless
--- after a restart anyway (a client that retries across a server restart has
--- much larger problems than a duplicated grant).
---
--- Bounded on purpose -- an unbounded cache keyed by caller-supplied strings
--- is a memory-exhaustion vector.
+-- Bounded in-memory cache. The record only has to outlive the retry window of
+-- the request that created it; persisting it would mean a schema plus a
+-- cleanup job for something worthless after a restart. Bounded because an
+-- unbounded cache keyed by caller-supplied strings is a memory-exhaustion
+-- vector.
 local IdempotencyCache = {}
 local IdempotencyOrder = {}
 local MAX_IDEMPOTENCY_ENTRIES = 500
@@ -99,20 +84,48 @@ end
 
 local function IdempotencyPut(key, result)
     if not key then return end
-
     if IdempotencyCache[key] == nil then
         IdempotencyOrder[#IdempotencyOrder + 1] = key
-        -- Evict oldest-first once over the cap.
         while #IdempotencyOrder > MAX_IDEMPOTENCY_ENTRIES do
-            local oldest = table.remove(IdempotencyOrder, 1)
-            IdempotencyCache[oldest] = nil
+            IdempotencyCache[table.remove(IdempotencyOrder, 1)] = nil
         end
     end
+    IdempotencyCache[key] = { result = result, expiresAt = GetGameTimer() + IDEMPOTENCY_TTL_MS }
+end
 
-    IdempotencyCache[key] = {
-        result = result,
-        expiresAt = GetGameTimer() + IDEMPOTENCY_TTL_MS
-    }
+------------------------------------------------------------------
+-- The one place that knows oxmysql's transaction calling convention
+------------------------------------------------------------------
+
+---
+-- Run In Transaction
+--
+-- `body(query)` receives a query function bound to the transaction's own
+-- connection. Returning false, returning a failure envelope, or raising rolls
+-- everything back.
+--
+-- @return committed (boolean), bodyResult (any), bodyError (string|nil)
+--
+local function RunInTransaction(body)
+    local bodyResult, bodyError
+
+    local committed = MySQL.startTransaction(function(query)
+        local ok, result = pcall(body, query)
+        if not ok then
+            bodyError = tostring(result)
+            return false
+        end
+        -- A body returning its own failure envelope is a deliberate
+        -- rejection, not a crash: roll back, but preserve its reason.
+        if type(result) == 'table' and result.ok == false then
+            bodyResult = result
+            return false
+        end
+        bodyResult = result
+        return true
+    end)
+
+    return committed == true, bodyResult, bodyError
 end
 
 ------------------------------------------------------------------
@@ -122,166 +135,327 @@ end
 local Tx = {}
 Tx.__index = Tx
 
-local function NewTx(context)
-    return setmetatable({
-        context = context or {},
-        reads = {},   -- [instanceId] = revision observed during the read phase
-        writes = {},  -- ordered queue of { query, values }
-        touched = {}, -- set of instance ids, for deterministic ordering
-    }, Tx)
+local function NewTx(query, context)
+    return setmetatable({ query = query, context = context or {} }, Tx)
 end
 
 ---
--- Get Instance (read phase)
+-- Get Item For Update
 --
--- Reads an instance and RECORDS the revision it was read at. Every id passed
--- through here is re-verified by the commit guard, so a caller that reads an
--- item, reasons about it, and writes something derived from it is protected
--- even if the write does not touch that item directly -- which is the
--- reload case: ammo count is read, the weapon's metadata is what changes.
+-- Reads an instance and LOCKS its row for the rest of the transaction. Another
+-- transaction touching the same row blocks here until this one finishes --
+-- the guarantee optimistic retry could not give. Name matches what
+-- feather-weapons' adapter expects.
 --
-function Tx:GetInstance(instanceId)
+function Tx:GetItemForUpdate(instanceId)
     local id = tonumber(instanceId)
     if not id then
         return Result.Err(Result.Codes.INVALID_INPUT, 'Invalid instance id.')
     end
 
-    local instance = InstancesAPI.GetInstance(id)
-    if not Result.IsOk(instance) then
-        return instance
+    local rows = self.query([[
+        SELECT ii.`id`, ii.`inventory_id`, ii.`slot_index`, ii.`item_id`,
+               ii.`metadata`, ii.`metadata_revision`,
+               i.`name`, i.`display_name`, i.`weight`, i.`type`,
+               i.`max_quantity`, i.`max_stack_size`, i.`instance_mode`
+        FROM `inventory_items` ii
+        INNER JOIN `items` i ON i.`id` = ii.`item_id`
+        WHERE ii.`id` = ? FOR UPDATE;
+    ]], { id })
+
+    local row = rows and rows[1]
+    if not row then
+        return Result.Err(Result.Codes.NOT_FOUND, 'Item instance does not exist.')
     end
 
-    self.reads[id] = instance.value.metadataRevision
-    self.touched[id] = true
-    return instance
+    local document = {}
+    if row.metadata and row.metadata ~= '' then
+        local parsed, decoded = pcall(json.decode, row.metadata)
+        if parsed and type(decoded) == 'table' then
+            document = decoded
+        end
+    end
+
+    return Result.Ok({
+        id = tonumber(row.id),
+        inventoryId = tonumber(row.inventory_id),
+        slot = row.slot_index ~= nil and tonumber(row.slot_index) or nil,
+        metadata = document,
+        metadataRevision = tonumber(row.metadata_revision) or 0,
+        definition = {
+            id = tonumber(row.item_id),
+            name = row.name,
+            displayName = row.display_name,
+            weight = tonumber(row.weight),
+            type = row.type,
+            maxQuantity = tonumber(row.max_quantity),
+            maxStackSize = tonumber(row.max_stack_size),
+            instanceMode = row.instance_mode or 'stack',
+        }
+    })
 end
 
 ---
--- Set Metadata (write phase, queued)
+-- Get Quantity
 --
--- Queued rather than executed. Nothing this handle records reaches the
--- database until Commit runs the whole batch, which is what makes the
--- validate phase side-effect free and safely re-runnable on conflict.
+-- Counted inside the transaction, so it cannot drift before the decision
+-- based on it commits.
 --
-function Tx:SetMetadata(instanceId, document)
+function Tx:GetQuantity(inventoryId, definitionId)
+    local rows = self.query(
+        'SELECT COUNT(`id`) AS `count` FROM `inventory_items` WHERE `inventory_id`=? AND `item_id`=?;',
+        { inventoryId, definitionId })
+    return tonumber(rows and rows[1] and rows[1].count) or 0
+end
+
+---
+-- Remove Quantity
+--
+-- Consumes `quantity` units of a definition. Rows are selected FOR UPDATE
+-- before deletion so a concurrent transaction cannot consume the same
+-- ammunition -- the duplicate-ammo case the review calls out.
+--
+function Tx:RemoveQuantity(inventoryId, definitionId, quantity)
+    local wanted = math.floor(tonumber(quantity) or 0)
+    if wanted < 1 then
+        return Result.Err(Result.Codes.INVALID_INPUT, 'Quantity must be at least 1.')
+    end
+
+    local rows = self.query(
+        'SELECT `id` FROM `inventory_items` WHERE `inventory_id`=? AND `item_id`=? ORDER BY `id` LIMIT ' ..
+        wanted .. ' FOR UPDATE;', { inventoryId, definitionId })
+
+    if not rows or #rows < wanted then
+        return Result.Err(Result.Codes.LIMIT_EXCEEDED, 'Not enough of that item to remove.',
+            { available = rows and #rows or 0, requested = wanted })
+    end
+
+    local removed = {}
+    for _, row in ipairs(rows) do
+        local id = tonumber(row.id)
+        local allowed, reason = GuardsAPI.CanDestroyInstance(id, self.context)
+        if not allowed then
+            return Result.Err(Result.Codes.DENIED, reason or 'Removal blocked by a guard.', { instanceId = id })
+        end
+        self.query('DELETE FROM `inventory_items` WHERE `id`=?;', { id })
+        removed[#removed + 1] = id
+    end
+
+    self.destroyed = self.destroyed or {}
+    for _, id in ipairs(removed) do
+        self.destroyed[#self.destroyed + 1] =
+            { instanceId = id, definitionId = definitionId, inventoryId = inventoryId }
+    end
+
+    return Result.Ok(removed)
+end
+
+---
+-- Add Quantity
+--
+-- Creates `quantity` new instances, placed by the same rule the
+-- non-transactional paths use (join an under-full stack unless the definition
+-- is `unique`, else claim free compartments). Capacity is evaluated INSIDE the
+-- transaction against locked rows, which is what stops two concurrent
+-- transfers from both passing a pre-check.
+--
+-- `metadata` is written in the SAME statement that creates the row, so a
+-- unique item is never briefly visible without its state -- the atomic
+-- creation the review asks for.
+--
+function Tx:AddQuantity(inventoryId, definitionId, quantity, metadata)
+    local wanted = math.floor(tonumber(quantity) or 0)
+    if wanted < 1 then
+        return Result.Err(Result.Codes.INVALID_INPUT, 'Quantity must be at least 1.')
+    end
+
+    local defRows = self.query(
+        'SELECT `name`, `max_stack_size`, `instance_mode` FROM `items` WHERE `id`=? LIMIT 1;', { definitionId })
+    local def = defRows and defRows[1]
+    if not def then
+        return Result.Err(Result.Codes.NOT_FOUND, 'Item definition does not exist.')
+    end
+
+    local stackSize = math.max(tonumber(def.max_stack_size) or 1, 1)
+    local unique = def.instance_mode == 'unique'
+
+    local encoded
+    if metadata ~= nil then
+        if type(metadata) ~= 'table' then
+            return Result.Err(Result.Codes.INVALID_INPUT, 'Metadata must be a table.')
+        end
+        encoded = json.encode(metadata)
+        if #encoded > 4096 then
+            return Result.Err(Result.Codes.LIMIT_EXCEEDED, 'Metadata document exceeds 4096 bytes.',
+                { size = #encoded, limit = 4096 })
+        end
+    end
+
+    -- Lock the destination's occupied compartments so a concurrent transfer
+    -- cannot claim the same ones between this read and the inserts below.
+    local occupiedRows = self.query([[
+        SELECT `slot_index`, `item_id`, COUNT(*) AS `count`
+        FROM `inventory_items`
+        WHERE `inventory_id`=? AND `slot_index` IS NOT NULL
+        GROUP BY `slot_index`, `item_id` FOR UPDATE;
+    ]], { inventoryId })
+
+    local occupied, joinSlot, joinCount = {}, nil, 0
+    for _, row in ipairs(occupiedRows or {}) do
+        local slot = tonumber(row.slot_index)
+        occupied[slot] = true
+        if not unique and joinSlot == nil and tostring(row.item_id) == tostring(definitionId)
+            and (tonumber(row.count) or 0) < stackSize then
+            joinSlot, joinCount = slot, tonumber(row.count) or 0
+        end
+    end
+
+    local capacityRows = self.query('SELECT `max_slots` FROM `inventory` WHERE `id`=? LIMIT 1;', { inventoryId })
+    local capacity = tonumber(capacityRows and capacityRows[1] and capacityRows[1].max_slots)
+        or tonumber(Config.maxItemSlots) or 0
+
+    local currentSlot, currentCount = joinSlot, joinCount
+    local created = {}
+
+    for _ = 1, wanted do
+        if currentSlot == nil or currentCount >= stackSize then
+            currentSlot = nil
+            for index = 0, capacity - 1 do
+                if not occupied[index] then
+                    occupied[index] = true
+                    currentSlot = index
+                    break
+                end
+            end
+            if currentSlot == nil then
+                return Result.Err(Result.Codes.LIMIT_EXCEEDED, 'Inventory has no available slots.')
+            end
+            currentCount = 0
+        end
+
+        local inserted = self.query(
+            'INSERT INTO `inventory_items` (`inventory_id`, `item_id`, `slot_index`, `metadata`) VALUES (?, ?, ?, ?) RETURNING `id`;',
+            { inventoryId, definitionId, currentSlot, encoded })
+        local newId = inserted and inserted[1] and tonumber(inserted[1].id)
+        if not newId then
+            return Result.Err(Result.Codes.INTERNAL, 'Item instance could not be created.')
+        end
+
+        created[#created + 1] = newId
+        currentCount = currentCount + 1
+    end
+
+    self.created = self.created or {}
+    for _, id in ipairs(created) do
+        self.created[#self.created + 1] =
+            { instanceId = id, definitionId = definitionId, inventoryId = inventoryId }
+    end
+
+    return Result.Ok(created)
+end
+
+---
+-- Set Metadata
+--
+-- Replaces the document and bumps the revision. `expectedRevision` makes it a
+-- compare-and-set, for a value derived from a read taken in an EARLIER
+-- request -- the row lock only covers this transaction.
+--
+function Tx:SetMetadata(instanceId, document, expectedRevision)
     local id = tonumber(instanceId)
     if not id or type(document) ~= 'table' then
         return Result.Err(Result.Codes.INVALID_INPUT, 'Invalid instance id or document.')
     end
 
     local encoded = json.encode(document)
-    self.touched[id] = true
-    self.writes[#self.writes + 1] = {
-        id = id,
-        kind = 'metadata',
-        query = 'UPDATE `inventory_items` SET `metadata`=?, `metadata_revision`=`metadata_revision`+1 WHERE `id`=?;',
-        values = { encoded, id }
-    }
-    return Result.Ok(true)
+    if #encoded > 4096 then
+        return Result.Err(Result.Codes.LIMIT_EXCEEDED, 'Metadata document exceeds 4096 bytes.',
+            { size = #encoded, limit = 4096 })
+    end
+
+    if expectedRevision ~= nil then
+        local current = self.query(
+            'SELECT `metadata_revision` FROM `inventory_items` WHERE `id`=? FOR UPDATE;', { id })
+        local actual = current and current[1] and tonumber(current[1].metadata_revision)
+        if actual == nil then
+            return Result.Err(Result.Codes.NOT_FOUND, 'Item instance does not exist.')
+        end
+        if actual ~= tonumber(expectedRevision) then
+            return Result.Err(Result.Codes.CONFLICT, 'Metadata revision has moved since it was read.',
+                { expected = tonumber(expectedRevision), actual = actual })
+        end
+    end
+
+    self.query('UPDATE `inventory_items` SET `metadata`=?, `metadata_revision`=`metadata_revision`+1 WHERE `id`=?;',
+        { encoded, id })
+
+    local updated = self.query('SELECT `metadata_revision` FROM `inventory_items` WHERE `id`=? LIMIT 1;', { id })
+    local revision = updated and updated[1] and tonumber(updated[1].metadata_revision)
+
+    self.metadataChanged = self.metadataChanged or {}
+    self.metadataChanged[#self.metadataChanged + 1] = { instanceId = id, revision = revision }
+
+    return Result.Ok({ revision = revision })
 end
 
 ---
--- Move Instance (write phase, queued)
+-- Move Instance
 --
--- Preserves instance identity -- the row moves, it is not deleted and
--- recreated -- so metadata, revision and id all survive the move. That is
--- what DEPENDENCY_SUPPORT_PLAN §4.4 means by "preserve instance identity
--- during movement", and it is why a transferred weapon keeps its state.
+-- Relocates a row, preserving identity, metadata and revision. Guarded and
+-- locked before the write.
 --
-function Tx:MoveInstance(instanceId, toInventory, toSlot)
+function Tx:MoveInstance(instanceId, toInventoryId, toSlot)
     local id = tonumber(instanceId)
-    if not id or not toInventory then
+    if not id or not toInventoryId then
         return Result.Err(Result.Codes.INVALID_INPUT, 'Invalid move parameters.')
     end
 
-    -- (INV-W3) Guards run at QUEUE time, in the validate phase, so a veto
-    -- aborts before anything is written rather than after a partial commit.
     local allowed, reason = GuardsAPI.CanMoveInstance(id, self.context)
     if not allowed then
-        return Result.Err(Result.Codes.DENIED, reason or 'Move blocked by a guard.', nil, self.context.correlationId)
+        return Result.Err(Result.Codes.DENIED, reason or 'Move blocked by a guard.')
     end
 
-    self.touched[id] = true
-    self.writes[#self.writes + 1] = {
-        id = id,
-        kind = 'move',
-        toInventory = toInventory,
-        query = 'UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=? WHERE `id`=?;',
-        values = { toInventory, toSlot, id }
-    }
+    local rows = self.query('SELECT `inventory_id` FROM `inventory_items` WHERE `id`=? FOR UPDATE;', { id })
+    local from = rows and rows[1] and tonumber(rows[1].inventory_id)
+    if not from then
+        return Result.Err(Result.Codes.NOT_FOUND, 'Item instance does not exist.')
+    end
+
+    self.query('UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=? WHERE `id`=?;',
+        { toInventoryId, toSlot, id })
+
+    self.moved = self.moved or {}
+    self.moved[#self.moved + 1] =
+        { instanceId = id, fromInventoryId = from, toInventoryId = toInventoryId }
+
     return Result.Ok(true)
 end
 
 ---
--- Destroy Instance (write phase, queued)
+-- Assert Access
 --
-function Tx:DestroyInstance(instanceId)
-    local id = tonumber(instanceId)
-    if not id then
-        return Result.Err(Result.Codes.INVALID_INPUT, 'Invalid instance id.')
+-- Re-checks access INSIDE the transaction. The review's point: an inventory
+-- having been opened earlier is not authority at commit time.
+--
+function Tx:AssertAccess(src, inventoryId, action)
+    local decision = InventoryAPI.CanAccessInventory(src, inventoryId, action, self.context)
+    if not Result.IsOk(decision) then
+        return decision
     end
-
-    local allowed, reason = GuardsAPI.CanDestroyInstance(id, self.context)
-    if not allowed then
-        return Result.Err(Result.Codes.DENIED, reason or 'Destroy blocked by a guard.', nil, self.context.correlationId)
-    end
-
-    self.touched[id] = true
-    self.writes[#self.writes + 1] = {
-        id = id,
-        kind = 'destroy',
-        query = 'DELETE FROM `inventory_items` WHERE `id`=?;',
-        values = { id }
-    }
     return Result.Ok(true)
-end
-
----
--- Build Guard
---
--- One statement that re-checks every revision recorded during the read
--- phase, and errors if any has moved. See the file header for why an error
--- rather than a predicate: the batch API cannot report per-statement
--- affected rows, so a silently-skipped CAS would leave partial state.
---
--- Returns nil when nothing was read -- a write-only transaction has no
--- revision to conflict against and needs no guard.
---
-local function BuildGuard(reads)
-    local clauses, values = {}, {}
-    for id, revision in pairs(reads) do
-        clauses[#clauses + 1] = '(`id`=? AND `metadata_revision`<>?)'
-        values[#values + 1] = id
-        values[#values + 1] = revision
-    end
-
-    if #clauses == 0 then
-        return nil
-    end
-
-    return {
-        query = ('SELECT CASE WHEN (SELECT COUNT(*) FROM `inventory_items` WHERE %s) = 0 '
-            .. 'THEN 1 ELSE (SELECT 1 UNION SELECT 2) END;'):format(table.concat(clauses, ' OR ')),
-        values = values
-    }
 end
 
 ------------------------------------------------------------------
--- Transaction runner
+-- Runner
 ------------------------------------------------------------------
 
 ---
 -- Transaction
 --
--- Runs `fn(tx)` and commits everything it queued as one atomic batch.
---
 -- @param context { actorSource, actorCharacterId, reason, correlationId, idempotencyKey, resource }
---        Per DEPENDENCY_SUPPORT_PLAN §3.2, context improves auditability and
---        NEVER grants authority -- nothing here trusts actorCharacterId to
---        decide access; callers still re-derive that from `source` as every
---        other path in this resource does.
+--        Improves auditability; never grants authority.
 -- @param fn function(tx) -> value | Result
--- @return Result envelope
+-- @return Result
 --
 function TransactionAPI.Transaction(context, fn)
     context = context or {}
@@ -297,102 +471,65 @@ function TransactionAPI.Transaction(context, fn)
 
     Metrics.started = Metrics.started + 1
 
-    local lastConflict
-    for attempt = 1, MAX_ATTEMPTS do
-        local tx = NewTx(context)
+    local handle
+    local committed, bodyResult, bodyError = RunInTransaction(function(query)
+        handle = NewTx(query, context)
+        return fn(handle)
+    end)
 
-        -- Validate phase. pcall so a bug in the caller's closure surfaces as
-        -- a clean envelope instead of taking the RPC handler down with it --
-        -- and, critically, so it aborts BEFORE anything was written, since
-        -- nothing reaches the database until commit.
-        local succeeded, outcome = pcall(fn, tx)
-        if not succeeded then
-            Metrics.bodyErrors = Metrics.bodyErrors + 1
-            -- (INV-W4 diagnostics) Correlation id included so this line can be
-            -- tied back to the originating request rather than floating free.
-            warn(('Transaction body errored (correlationId=%s, reason=%s): %s'):format(
-                tostring(context.correlationId), tostring(context.reason), tostring(outcome)))
-            return Result.Err(Result.Codes.INTERNAL, 'Transaction body errored: ' .. tostring(outcome),
-                nil, context.correlationId)
-        end
-
-        -- A body may bail out early by returning a failure envelope; that is
-        -- a rejection, not a conflict, so it is returned as-is without
-        -- committing or retrying.
-        if type(outcome) == 'table' and outcome.ok == false then
-            return outcome
-        end
-
-        if #tx.writes == 0 then
-            local readOnly = Result.Ok(outcome, context.correlationId)
-            IdempotencyPut(context.idempotencyKey, readOnly)
-            return readOnly
-        end
-
-        -- Deterministic ordering. Two transactions touching the same rows
-        -- queue their writes in the same sequence, so they contend in a
-        -- predictable order rather than deadlocking against each other.
-        -- Sorted by the instance id each write targets, recorded explicitly
-        -- rather than inferred from argument position -- which would silently
-        -- reorder wrongly the moment a statement's parameter order changed.
-        table.sort(tx.writes, function(a, b)
-            return (a.id or 0) < (b.id or 0)
-        end)
-
-        local batch = {}
-        local guard = BuildGuard(tx.reads)
-        if guard then
-            batch[#batch + 1] = guard
-        end
-        for _, write in ipairs(tx.writes) do
-            -- Only query/values go to oxmysql; `id` is bookkeeping for the
-            -- ordering above and is not part of the statement.
-            batch[#batch + 1] = { query = write.query, values = write.values }
-        end
-
-        local committed = pcall(MySQL.transaction.await, batch)
-        if committed then
-            -- (INV-W3) Post-commit events. Emitted here rather than inside the
-            -- queue helpers precisely because a queued write that never
-            -- committed must never announce itself -- §3.3's "domain
-            -- notifications fire only after commit".
-            for _, write in ipairs(tx.writes) do
-                if write.kind == 'metadata' then
-                    GuardsAPI.EmitItemMetadataChanged(write.id, nil, context)
-                elseif write.kind == 'move' then
-                    GuardsAPI.EmitItemMoved(write.id, nil, write.toInventory, context)
-                elseif write.kind == 'destroy' then
-                    GuardsAPI.EmitItemDestroyed(write.id, nil, nil, context)
-                end
-            end
-            GuardsAPI.EmitTransactionCommitted(context, { writes = #tx.writes })
-
-            Metrics.committed = Metrics.committed + 1
-            local result = Result.Ok(outcome, context.correlationId)
-            IdempotencyPut(context.idempotencyKey, result)
-            return result
-        end
-
-        -- Failure here is overwhelmingly the guard firing, i.e. someone else
-        -- committed against a row we had read. Retry the WHOLE closure --
-        -- re-reading is the point, since the caller's decision was made
-        -- against state that has since changed.
-        Metrics.conflicts = Metrics.conflicts + 1
-        lastConflict = attempt
-        DebugPrint('INV-W2', 'Transaction conflict on attempt %d (correlationId=%s)',
-            attempt, tostring(context.correlationId))
+    if bodyError then
+        Metrics.bodyErrors = Metrics.bodyErrors + 1
+        warn(('Transaction body errored (correlationId=%s, reason=%s): %s'):format(
+            tostring(context.correlationId), tostring(context.reason), bodyError))
+        return Result.Err(Result.Codes.INTERNAL, 'Transaction body errored: ' .. bodyError,
+            nil, context.correlationId)
     end
 
-    Metrics.retriesExhausted = Metrics.retriesExhausted + 1
-    warn(('Transaction exhausted %d attempts (correlationId=%s, reason=%s)'):format(
-        MAX_ATTEMPTS, tostring(context.correlationId), tostring(context.reason)))
+    if not committed then
+        Metrics.rolledBack = Metrics.rolledBack + 1
+        if type(bodyResult) == 'table' and bodyResult.ok == false then
+            if bodyResult.error and bodyResult.error.code == Result.Codes.CONFLICT then
+                Metrics.conflicts = Metrics.conflicts + 1
+            end
+            return bodyResult
+        end
+        return Result.Err(Result.Codes.INTERNAL, 'Transaction rolled back.', nil, context.correlationId)
+    end
 
-    return Result.Err(Result.Codes.CONFLICT,
-        ('Transaction contended and was retried %d times without committing.'):format(MAX_ATTEMPTS),
-        { attempts = lastConflict }, context.correlationId)
+    Metrics.committed = Metrics.committed + 1
+
+    -- (INV-W3) Post-commit events, emitted only now: nothing announces itself
+    -- from inside a transaction that might still roll back.
+    if handle then
+        for _, entry in ipairs(handle.created or {}) do
+            GuardsAPI.EmitItemCreated(entry.instanceId, entry.definitionId, entry.inventoryId, context)
+            TriggerEvent('feather-inventory:ItemAdded', entry.instanceId, 1, entry.inventoryId)
+        end
+        for _, entry in ipairs(handle.moved or {}) do
+            GuardsAPI.EmitItemMoved(entry.instanceId, entry.fromInventoryId, entry.toInventoryId, context)
+            if tostring(entry.fromInventoryId) ~= tostring(entry.toInventoryId) then
+                TriggerEvent('feather-inventory:ItemRemoved', entry.instanceId, 1, entry.fromInventoryId)
+                TriggerEvent('feather-inventory:ItemAdded', entry.instanceId, 1, entry.toInventoryId)
+            end
+        end
+        for _, entry in ipairs(handle.metadataChanged or {}) do
+            GuardsAPI.EmitItemMetadataChanged(entry.instanceId, entry.revision, context)
+        end
+        for _, entry in ipairs(handle.destroyed or {}) do
+            GuardsAPI.EmitItemDestroyed(entry.instanceId, entry.definitionId, entry.inventoryId, context)
+            TriggerEvent('feather-inventory:ItemRemoved', entry.instanceId, 1, entry.inventoryId)
+        end
+        GuardsAPI.EmitTransactionCommitted(context, {
+            created = #(handle.created or {}),
+            moved = #(handle.moved or {}),
+            destroyed = #(handle.destroyed or {}),
+        })
+    end
+
+    local result = Result.Ok(bodyResult, context.correlationId)
+    IdempotencyPut(context.idempotencyKey, result)
+    return result
 end
 
--- Surfaced on InventoryAPI too, since DEPENDENCY_SUPPORT_PLAN §4.4 writes
--- the candidate interface as `Inventory.Transaction(context, fn)`.
 InventoryAPI = InventoryAPI or {}
 InventoryAPI.Transaction = TransactionAPI.Transaction
