@@ -31,6 +31,7 @@ const DEFAULTS = {
   ui_invalid_amount: 'Invalid amount.',
   ui_no_entry: 'No entry selected.',
 
+  ui_take_all: 'Take All',
   ui_condition: 'Condition',
   ui_condition_pristine: 'Pristine',
   ui_condition_worn: 'Worn',

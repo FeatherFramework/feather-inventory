@@ -56,6 +56,7 @@ Feather.Locale.register('en_us', {
     -- Confirmations
     ----------------------------------------------------------------
     msg_item_added = 'Item added.',
+    msg_took_what_fit = 'Took what would fit.',
 
     ----------------------------------------------------------------
     -- Ledger UI
@@ -91,6 +92,7 @@ Feather.Locale.register('en_us', {
     ui_no_entry = 'No entry selected.',
 
     -- Condition wear stages (see Config.Condition.Stages) and the detail label.
+    ui_take_all = 'Take All',
     ui_condition = 'Condition',
     ui_condition_pristine = 'Pristine',
     ui_condition_worn = 'Worn',

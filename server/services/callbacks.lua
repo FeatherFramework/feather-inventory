@@ -310,6 +310,77 @@ Feather.RPC.Register('Feather:Inventory:SplitStack', function(params, res, src)
   })
 end)
 
+-- (§10.3 quick-loot) Moves everything from one inventory into the caller's
+-- own, respecting capacity.
+--
+-- Deliberately GREEDY rather than all-or-nothing, which is why it isn't just
+-- UpdateInventory with every id: MoveInventoryItems capacity-checks the whole
+-- batch and rejects it entirely if the lot won't fit, so "take all" from a
+-- pile larger than your remaining room would take nothing at all. Here each
+-- item is attempted independently and failures are skipped -- a heavy item
+-- that doesn't fit must not block the lighter ones behind it.
+--
+-- Reports how many actually moved so the UI can tell "took everything" from
+-- "took what fit", rather than both looking like success.
+Feather.RPC.Register('Feather:Inventory:TakeAll', function(params, res, src)
+  local fromInventory = params.fromInventory
+
+  if not fromInventory then
+    return res({ error = true, message = 'Invalid inventory.' })
+  end
+
+  local player = Feather.Character.GetCharacter({ src = src })
+  local character = player and player.char
+  if not character then
+    return res({ error = true, code = 'no_character', message = 'No character loaded.' })
+  end
+
+  local targetInventory = InventoryControllers.GetInventoryByCharacter(character.id)
+  if not targetInventory then
+    Feather.Notify.RightNotify(src, Translate(src, 'err_invalid_inventory', 'Inventory not available.'), 3000)
+    return res({ error = true, code = 'invalid_inventory', message = 'Inventory not available.' })
+  end
+
+  -- Same ownership rule as every other movement path: re-derived from src,
+  -- never trusted from the client, and re-checked here rather than relying on
+  -- the inventory merely being open.
+  if not InventoryAPI.IsInventoryAccessibleBySrc(src, fromInventory) then
+    warn('Rejected TakeAll: src ' .. src .. ' does not have access to inventory ' .. tostring(fromInventory))
+    Feather.Notify.RightNotify(src, Translate(src, 'err_no_access', 'You do not have access to that inventory.'), 3000)
+    return res({ error = true, code = 'no_access', message = 'You do not have access to that inventory.' })
+  end
+
+  if tostring(fromInventory) == tostring(targetInventory) then
+    return res({ error = true, message = 'Cannot take from your own inventory.' })
+  end
+
+  local sourceItems = InventoryControllers.GetInventoryItems(fromInventory)
+  local moved, skipped = 0, 0
+
+  for _, item in pairs(sourceItems) do
+    local result = InventoryControllers.MoveInventoryItems(fromInventory, targetInventory, { item.id })
+    if result and result.error then
+      skipped = skipped + 1
+    else
+      moved = moved + 1
+    end
+  end
+
+  if moved == 0 and skipped > 0 then
+    Feather.Notify.RightNotify(src, Translate(src, 'err_inventory_full', 'There is no room for that.'), 3000)
+  elseif skipped > 0 then
+    Feather.Notify.RightNotify(src, Translate(src, 'msg_took_what_fit', 'Took what would fit.'), 3000)
+  end
+
+  res({
+    error = false,
+    moved = moved,
+    skipped = skipped,
+    sourceItems = InventoryControllers.GetInventoryItems(fromInventory),
+    targetItems = InventoryControllers.GetInventoryItems(targetInventory)
+  })
+end)
+
 -- (INV-11) Access-list management for owned/shared inventories (storage,
 -- saddlebags, job lockers, ...). Authorization (owner or admin) is checked
 -- inside each InventoryAPI function itself, re-derived from `src` -- these

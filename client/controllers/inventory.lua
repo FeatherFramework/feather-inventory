@@ -17,6 +17,7 @@ local UI_STRING_KEYS = {
   'ui_use', 'ui_give', 'ui_drop', 'ui_split', 'ui_cancel', 'ui_confirm',
   'ui_quantity', 'ui_weight', 'ui_how_many', 'ui_use_all', 'ui_invalid_amount',
   'ui_no_entry',
+  'ui_take_all',
   'ui_condition', 'ui_condition_pristine', 'ui_condition_worn',
   'ui_condition_damaged', 'ui_condition_ruined',
   'ui_paired_hint',

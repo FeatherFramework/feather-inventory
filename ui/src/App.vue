@@ -143,6 +143,26 @@ function onCellMouseDown(bookKey, slotIndex, event) {
 // already assigns one server-side (join a matching under-full stack, else the
 // first free compartment) with capacity, weight and blacklist all enforced on
 // the way. Picking a slot client-side would duplicate that logic and race it.
+// (§10.3 quick-loot) Server-side greedy move -- see the TakeAll RPC for why
+// it isn't UpdateInventory with every id (that check is all-or-nothing, so a
+// pile bigger than your remaining room would yield nothing at all).
+async function onTakeAll() {
+  if (!other.inventoryId) return;
+  try {
+    const { data } = await api.post('Feather:Inventory:TakeAll', {
+      fromInventory: other.inventoryId,
+    });
+    if (data?.error) {
+      console.log('Take all rejected: ' + (data.message || 'unknown error'));
+      return;
+    }
+    if (data?.sourceItems) other.items = data.sourceItems;
+    if (data?.targetItems) player.items = data.targetItems;
+  } catch (e) {
+    console.log(e.message);
+  }
+}
+
 async function quickTransfer(fromKey, stack) {
   const fromBook = bookByKey(fromKey);
   const toBook = fromKey === 'player' ? other : player;
@@ -469,6 +489,8 @@ const quantityActionLabel = computed(() => {
         @cell-mouse-up="(i) => onCellMouseUp('other', i)"
         @cell-dbl-click="(i) => onCellDblClick('other', i)"
         @cell-context-menu="(i, e) => onCellContextMenu('other', i, e)"
+        :can-take-all="true"
+        @take-all="onTakeAll"
       />
     </div>
 
