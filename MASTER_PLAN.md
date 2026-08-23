@@ -238,12 +238,14 @@ This also gives the hotbar design question (§10.2) a cleaner answer: a hotbar c
 
 Two tracks. The `INV-W*` track matches `DEPENDENCY_SUPPORT_PLAN.md` §4.5 exactly (shared vocabulary with the weapons plan). The Inventory-Native track is this resource's own, sequenced by leverage (§10.1 → §10.2 → §10.3), and runs in parallel — neither blocks the other.
 
-### `INV-W1` — Contract and schema foundation
-- Finalize `instance_mode` (`stack`/`unique`) on item definitions.
-- Design and migrate the versioned metadata document; decide whether flat `item_metadata` survives as a compatibility projection.
-- Introduce the shared result envelope/error-code catalog (extending, not replacing, the pattern `GrantItem` already started).
-- Add the normalized item-instance read model and a version/capability readiness export.
-- **Exit gate:** a unique item with versioned metadata can be created, read, and updated without losing its identity.
+### `INV-W1` — Contract and schema foundation — **DONE 2026-08-23**
+- ~~Finalize `instance_mode` (`stack`/`unique`) on item definitions.~~ `items.instance_mode`, backfilled from `max_stack_size <= 1` (64 unique / 2 stack). Enforced at the single chokepoint that decides placement, `GetJoinableSlot` — so "unique cannot stack" covers `AddItem`, `GrantItem` and `MoveInventoryItems` at once rather than as three separately-maintained checks.
+- ~~Design and migrate the versioned metadata document; decide whether flat `item_metadata` survives.~~ `inventory_items.metadata` (JSON) + `metadata_revision`. **Decision: the flat table survives as a read-only compatibility projection.** Reads `COALESCE` the document over a `JSON_OBJECTAGG` of the flat rows, so an instance written before the migration reads identically to one written after and no data migration was needed.
+- ~~Introduce the shared result envelope/error-code catalog.~~ `server/helpers/result.lua` — `{ ok, value | error{code,message,details}, correlationId }` per `DEPENDENCY_SUPPORT_PLAN` §3.1, with `Result.Codes`. Deliberately *extends*: new contract surfaces use it, older functions keep their shapes. `Result.IsOk` exists because a failure envelope is itself a truthy table, so `if call() then` would treat every error as success.
+- ~~Add the normalized item-instance read model and a capability export.~~ `InstancesAPI.GetInstance` / `FindInstances` / `GetCapabilities`. `FindInstances` is scoped to one inventory on purpose — a global search would leak inventories the caller cannot access.
+- **Exit gate — verified against the live schema:** a unique definition returns no joinable slot; a compare-and-set write with the correct revision affects 1 row while a stale one affects 0 and reports `CONFLICT` with expected/actual; and the compatibility projection surfaces flat rows when only they exist, with the document taking precedence when both do.
+
+Also migrated `condition` (§10.3) onto the document, so it inherits compare-and-set — two callers wearing the same item concurrently can no longer clobber one another, which the previous one-key-at-a-time flat write allowed.
 
 ### `INV-W2` — Transactions and concurrency
 - Implement `Inventory.Transaction(context, fn)` with deterministic multi-item row locking and revision-based compare-and-set.

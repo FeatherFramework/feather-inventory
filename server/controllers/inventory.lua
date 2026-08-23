@@ -92,7 +92,7 @@ function InventoryControllers.InventoryItemCount(inventory, itemId)
 end
 
 function InventoryControllers.GetInventoryItemById(id)
-  local result = MySQL.query.await('SELECT `inventory_items`.`id`, `inventory_items`.`updated_at`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, JSON_OBJECTAGG(`item_metadata`.`key`, `item_metadata`.`value`) AS `item_metadata`, `inventory_items`.`inventory_id` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` LEFT JOIN `item_metadata` ON `item_metadata`.`inventory_items_id` = `inventory_items`.`id` WHERE `inventory_items`.`id`=? GROUP BY `inventory_items`.`id`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size` LIMIT 1;', { id })[1]
+  local result = MySQL.query.await('SELECT `inventory_items`.`id`, `inventory_items`.`updated_at`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, COALESCE(`inventory_items`.`metadata`, JSON_OBJECTAGG(`item_metadata`.`key`, `item_metadata`.`value`)) AS `item_metadata`, `inventory_items`.`inventory_id` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` LEFT JOIN `item_metadata` ON `item_metadata`.`inventory_items_id` = `inventory_items`.`id` WHERE `inventory_items`.`id`=? GROUP BY `inventory_items`.`metadata`, `inventory_items`.`id`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size` LIMIT 1;', { id })[1]
 
   if result == nil then
     return false
@@ -124,7 +124,7 @@ function InventoryControllers.GetInventoryTotalWeight(inventory)
 end
 
 function InventoryControllers.GetInventoryItems(inventory)
-  local items = MySQL.query.await( 'SELECT `inventory_items`.`id`, `inventory_items`.`updated_at`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, JSON_OBJECTAGG(`item_metadata`.`key`, `item_metadata`.`value`) AS `item_metadata` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` LEFT JOIN `item_metadata` ON `item_metadata`.`inventory_items_id` = `inventory_items`.`id` WHERE `inventory_items`.`inventory_id` = ? GROUP BY `inventory_items`.`id`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`;', { inventory })
+  local items = MySQL.query.await( 'SELECT `inventory_items`.`id`, `inventory_items`.`updated_at`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, COALESCE(`inventory_items`.`metadata`, JSON_OBJECTAGG(`item_metadata`.`key`, `item_metadata`.`value`)) AS `item_metadata` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` LEFT JOIN `item_metadata` ON `item_metadata`.`inventory_items_id` = `inventory_items`.`id` WHERE `inventory_items`.`inventory_id` = ? GROUP BY `inventory_items`.`metadata`, `inventory_items`.`id`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`;', { inventory })
   for key, value in pairs(items) do
     if value["item_metadata"] and value["item_metadata"] ~= nil then
       items[key]["item_metadata"] = json.decode(value["item_metadata"])
@@ -159,10 +159,27 @@ end
 -- under its stack limit -- new units join it instead of claiming a fresh
 -- slot, same "stack up to max_stack_size" behavior the client used to fake
 -- with lodash chunk/groupBy, now actually persisted.
+-- (INV-W1) A `unique` definition never joins an existing compartment, no
+-- matter what its max_stack_size says. This is the single chokepoint where
+-- "unique instances cannot stack" is actually enforced -- every grant and
+-- transfer path resolves placement through here, so guarding it once covers
+-- AddItem, GrantItem and MoveInventoryItems together rather than three
+-- separately-maintained checks.
+--
+-- The join is what makes that possible: matching on `item_id` alone is
+-- exactly why per-instance state (condition, and later spoilage) could
+-- silently merge into one compartment and lose a value.
 function InventoryControllers.GetJoinableSlot(inventory, itemId, maxStackSize)
-  local result = MySQL.query.await(
-    'SELECT `slot_index`, COUNT(*) AS `count` FROM `inventory_items` WHERE `inventory_id`=? AND `item_id`=? AND `slot_index` IS NOT NULL GROUP BY `slot_index` HAVING COUNT(*) < ? LIMIT 1;',
-    { inventory, itemId, maxStackSize })
+  local result = MySQL.query.await([[
+    SELECT ii.`slot_index`, COUNT(*) AS `count`
+    FROM `inventory_items` ii
+    INNER JOIN `items` i ON i.`id` = ii.`item_id`
+    WHERE ii.`inventory_id`=? AND ii.`item_id`=? AND ii.`slot_index` IS NOT NULL
+      AND i.`instance_mode` <> 'unique'
+    GROUP BY ii.`slot_index`
+    HAVING COUNT(*) < ?
+    LIMIT 1;
+  ]], { inventory, itemId, maxStackSize })
   if not result[1] then
     return nil
   end

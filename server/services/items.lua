@@ -399,15 +399,15 @@ end
 -- @return Integer 0..Max, or nil if this instance has no condition recorded
 --
 ItemsAPI.GetCondition = function(itemId)
-  local item = InventoryControllers.GetInventoryItemById(tonumber(itemId))
-  if not item then
+  -- (INV-W1) Reads through the versioned metadata document, which
+  -- transparently falls back to the legacy flat item_metadata rows for
+  -- instances written before that migration -- so this behaves identically
+  -- either side of it.
+  local metadata = InstancesAPI.ReadMetadata(tonumber(itemId))
+  if not Result.IsOk(metadata) then
     return nil
   end
-  local metadata = item.item_metadata
-  if type(metadata) ~= 'table' then
-    return nil
-  end
-  return tonumber(metadata[ConditionKey()])
+  return tonumber(metadata.value.document[ConditionKey()])
 end
 
 ---
@@ -449,9 +449,21 @@ ItemsAPI.SetCondition = function(itemId, value)
   end
 
   local clamped = math.max(0, math.min(math.floor(numericValue), ConditionMax()))
-  InventoryControllers.SetMetadata(numericId, ConditionKey(), tostring(clamped))
 
-  return { error = false, condition = clamped }
+  -- (INV-W1) Written through MergeMetadata rather than a direct key write, so
+  -- condition inherits the document's compare-and-set semantics: two callers
+  -- wearing the same item concurrently can no longer silently clobber one
+  -- another's value, which the old one-key-at-a-time flat write allowed.
+  local written = InstancesAPI.MergeMetadata(numericId, { [ConditionKey()] = clamped })
+  if not Result.IsOk(written) then
+    return {
+      error = true,
+      code = written.error.code,
+      message = written.error.message
+    }
+  end
+
+  return { error = false, condition = clamped, metadataRevision = written.value.revision }
 end
 
 ---
