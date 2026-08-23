@@ -5,9 +5,13 @@ const props = defineProps({
   x: { type: Number, required: true },
   y: { type: Number, required: true },
   canUse: { type: Boolean, default: false },
+  // Only meaningful for a compartment holding more than one unit -- splitting
+  // a single item, or the whole stack, is just a move (see the server's
+  // SplitStack RPC, which rejects both).
+  canSplit: { type: Boolean, default: false },
 });
 
-const emit = defineEmits(['use', 'give', 'drop', 'close']);
+const emit = defineEmits(['use', 'give', 'drop', 'split', 'close']);
 
 // Keep the menu on-screen near the click point rather than letting it run
 // off the right/bottom edge -- flip anchor side instead of clamping
@@ -30,6 +34,7 @@ const style = computed(() => {
     <div v-if="canUse" class="ctx-item" @click="emit('use')">Use</div>
     <div class="ctx-item" @click="emit('give')">Give</div>
     <div class="ctx-item" @click="emit('drop')">Drop</div>
+    <div v-if="canSplit" class="ctx-item" @click="emit('split')">Split</div>
   </div>
 </template>
 

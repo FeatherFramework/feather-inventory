@@ -272,10 +272,36 @@ function onContextDrop() {
   performDrop(book, items);
 }
 
+// Split always prompts -- there's no sensible "just do it" default for how
+// much to peel off. Capped at items.length - 1: moving the whole stack out
+// would leave an empty compartment behind, which is a move, not a split
+// (the server rejects it too, rather than trusting this cap).
+function onContextSplit() {
+  const { book, items } = contextStack();
+  contextMenu.value = null;
+  if (!book || items.length < 2) return;
+
+  quantityPrompt.value = {
+    action: 'split',
+    book,
+    items,
+    itemName: items[0].display_name,
+    max: items.length - 1,
+  };
+}
+
 function onQuantityConfirm(quantity) {
   const prompt = quantityPrompt.value;
   quantityPrompt.value = null;
   if (!prompt) return;
+
+  if (prompt.action === 'split') {
+    // Split sends the source compartment's item id and a count, not a list
+    // of ids -- the server re-reads the stack from the slot itself rather
+    // than trusting which specific rows the client picked.
+    performSplit(prompt.book, prompt.items[0], quantity);
+    return;
+  }
 
   const chosen = prompt.items.slice(0, quantity);
   if (prompt.action === 'drop') {
@@ -283,6 +309,19 @@ function onQuantityConfirm(quantity) {
   } else {
     performGive(prompt.book, chosen);
   }
+}
+
+function performSplit(book, item, quantity) {
+  api
+    .post('Feather:Inventory:SplitStack', { itemId: item.id, quantity })
+    .then(({ data }) => {
+      if (data?.error) {
+        console.log('Split rejected: ' + (data.message || 'unknown error'));
+        return;
+      }
+      if (data?.sourceItems) book.items = data.sourceItems;
+    })
+    .catch((e) => console.log(e.message));
 }
 
 function performDrop(book, items) {
@@ -325,6 +364,14 @@ async function performGive(book, items) {
 }
 
 const contextCanUse = computed(() => !!contextStack().items[0]?.usable);
+// Only offer Split where there's actually something to split -- a single
+// unit has nothing to peel off.
+const contextCanSplit = computed(() => contextStack().items.length > 1);
+
+const QUANTITY_ACTION_LABELS = { drop: 'Drop', give: 'Give', split: 'Split' };
+const quantityActionLabel = computed(
+  () => QUANTITY_ACTION_LABELS[quantityPrompt.value?.action] || 'Confirm'
+);
 </script>
 
 <template>
@@ -382,16 +429,18 @@ const contextCanUse = computed(() => !!contextStack().items[0]?.usable);
       :x="contextMenu.x"
       :y="contextMenu.y"
       :can-use="contextCanUse"
+      :can-split="contextCanSplit"
       @use="onContextUse"
       @give="onContextGive"
       @drop="onContextDrop"
+      @split="onContextSplit"
       @close="contextMenu = null"
     />
 
     <ItemCountModal
       v-if="quantityPrompt"
       :item-name="quantityPrompt.itemName"
-      :action-label="quantityPrompt.action === 'drop' ? 'Drop' : 'Give'"
+      :action-label="quantityActionLabel"
       :max="quantityPrompt.max"
       @confirm="onQuantityConfirm"
       @cancel="quantityPrompt = null"

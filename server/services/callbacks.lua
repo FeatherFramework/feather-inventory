@@ -108,9 +108,10 @@ Feather.RPC.Register('Feather:Inventory:GiveItem', function(params, res, src)
 end)
 
 -- (Steampunk ledger) Drag-and-drop placement: moves the whole compartment
--- (every row sharing the source item's slot_index -- stack splitting isn't
--- part of this design, see the design handoff) to a specific destination
+-- (every row sharing the source item's slot_index) to a specific destination
 -- slot, swapping with whatever's already there rather than displacing it.
+-- Dragging is deliberately all-or-nothing; peeling part of a stack off is
+-- the separate SplitStack RPC below.
 -- Same ownership pattern as UpdateInventory above: both the source and
 -- destination inventory must actually be accessible to the caller right
 -- now, re-derived from src rather than trusted from the client.
@@ -192,6 +193,64 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
   res({
     sourceItems = InventoryControllers.GetInventoryItems(fromInventory),
     targetItems = InventoryControllers.GetInventoryItems(toInventory)
+  })
+end)
+
+-- (§10.1 split stack) The ledger otherwise only ever moves a whole
+-- compartment (MoveSlotItems, via MoveItem above); this peels part of one
+-- into a free compartment in the same inventory, which is what the design's
+-- existing quantity modal was already shaped for.
+--
+-- Same-inventory only, and that keeps it simple: nothing enters or leaves
+-- the inventory, so there is no weight/quantity/blacklist question to ask
+-- and no ItemAdded/ItemRemoved to fire (same reasoning as MoveItem's
+-- in-place rearrangement branch). The only real constraint is a free
+-- compartment to split into. Ownership is re-derived from the item's own
+-- row, never from the client -- same pattern as MoveItem.
+Feather.RPC.Register('Feather:Inventory:SplitStack', function(params, res, src)
+  local itemId = tonumber(params.itemId)
+  local quantity = tonumber(params.quantity)
+
+  if not itemId or not quantity or quantity < 1 or quantity % 1 ~= 0 then
+    return res({ error = true, message = 'Invalid split.' })
+  end
+
+  local item = InventoryControllers.GetInventoryItemById(itemId)
+  if not item then
+    return res({ error = true, message = 'Item not found.' })
+  end
+
+  local inventory = item.inventory_id
+  local fromSlot = item.slot_index
+  if fromSlot == nil then
+    return res({ error = true, message = 'Item is not placed anywhere yet.' })
+  end
+
+  if not InventoryAPI.IsInventoryAccessibleBySrc(src, inventory) then
+    warn('Rejected SplitStack: src ' .. src .. ' does not have access to inventory ' .. tostring(inventory))
+    Feather.Notify.RightNotify(src, 'You do not have access to that inventory.', 3000)
+    return res({ error = true, message = 'You do not have access to that inventory.' })
+  end
+
+  -- Splitting off the whole stack would just relocate it and leave an empty
+  -- compartment behind -- that's a move, which MoveItem already does.
+  local stack = InventoryControllers.GetItemsInSlot(inventory, fromSlot)
+  if quantity >= #stack then
+    Feather.Notify.RightNotify(src, 'Choose fewer than the whole stack.', 3000)
+    return res({ error = true, message = 'Choose fewer than the whole stack.' })
+  end
+
+  local freeSlot = InventoryControllers.GetFreeSlot(inventory, tonumber(Config.maxItemSlots) or 0)
+  if freeSlot == nil then
+    Feather.Notify.RightNotify(src, 'No free compartment to split into.', 3000)
+    return res({ error = true, message = 'No free compartment to split into.' })
+  end
+
+  InventoryControllers.SplitSlotItems(inventory, fromSlot, freeSlot, quantity)
+
+  res({
+    sourceItems = InventoryControllers.GetInventoryItems(inventory),
+    targetItems = InventoryControllers.GetInventoryItems(inventory)
   })
 end)
 

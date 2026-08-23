@@ -76,3 +76,9 @@ RegisterNUICallback('Feather:Inventory:MoveItem', function(args, cb)
 
   cb(res)
 end)
+
+RegisterNUICallback('Feather:Inventory:SplitStack', function(args, cb)
+  local res = Feather.RPC.CallAsync('Feather:Inventory:SplitStack', args)
+
+  cb(res)
+end)

@@ -211,8 +211,11 @@ end
 -- to (toInventory, toSlot). If toSlot is already occupied, swaps -- the
 -- occupant's rows move to (fromInventory, fromSlot) instead of being
 -- displaced silently. Matches the design's "drop on empty moves, drop on
--- occupied swaps," and moves the whole compartment's stack at once since
--- stack splitting isn't part of this design.
+-- occupied swaps," and moves the whole compartment's stack at once.
+--
+-- Dragging is always all-or-nothing; peeling part of a stack off is the
+-- explicit Split action instead (SplitSlotItems below, driven by the
+-- context menu's quantity prompt).
 function InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory, toSlot)
   local moving = InventoryControllers.GetItemsInSlot(fromInventory, fromSlot)
   local occupant = InventoryControllers.GetItemsInSlot(toInventory, toSlot)
@@ -230,6 +233,31 @@ function InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory
   end
 
   return #moving > 0
+end
+
+-- (§10.1 split stack) The partial form of MoveSlotItems: peels `quantity`
+-- units out of (inventory, fromSlot) into (inventory, toSlot) and leaves the
+-- remainder where it was. Same-inventory only -- splitting across inventories
+-- would be a capacity-affecting transfer and belongs on the MoveItem path
+-- (EvaluateSlotMove), not here.
+--
+-- Rows are re-read from the slot rather than taken from a client-supplied
+-- list, and the UPDATE is scoped by `inventory_id` as well as `id`, so a row
+-- that isn't actually in this inventory can't be dragged in by naming its id.
+function InventoryControllers.SplitSlotItems(inventory, fromSlot, toSlot, quantity)
+  local rows = InventoryControllers.GetItemsInSlot(inventory, fromSlot)
+  local moved = 0
+
+  for _, row in ipairs(rows) do
+    if moved >= quantity then
+      break
+    end
+    MySQL.query.await('UPDATE `inventory_items` SET `slot_index`=? WHERE `id`=? AND `inventory_id`=?;',
+      { toSlot, row.id, inventory })
+    moved = moved + 1
+  end
+
+  return moved
 end
 
 function InventoryControllers.GetMetadata(itemId)
