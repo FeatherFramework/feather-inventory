@@ -1,5 +1,6 @@
 <script setup>
 import { ref } from 'vue';
+import { t } from '@/i18n';
 
 // Quantity prompt for Drop/Give on a stacked compartment (>1 unit) --
 // single-item/non-stackable compartments skip this entirely and act
@@ -37,7 +38,7 @@ function onConfirm() {
   error.value = '';
   const value = clamp(amount.value);
   if (value < 1 || value > props.max) {
-    error.value = 'Invalid amount.';
+    error.value = t('ui_invalid_amount');
     return;
   }
   emit('confirm', value);
@@ -48,7 +49,7 @@ function onConfirm() {
   <div class="qty-backdrop" @click="emit('cancel')" @contextmenu.prevent="emit('cancel')"></div>
   <div class="qty-modal">
     <div class="qty-title">{{ actionLabel }} &mdash; {{ itemName }}</div>
-    <div class="qty-subtitle">How many? (1&#8211;{{ max }})</div>
+    <div class="qty-subtitle">{{ t('ui_how_many', max) }}</div>
 
     <div class="qty-stepper">
       <div class="qty-step-btn" @click="dec">&minus;</div>
@@ -63,12 +64,12 @@ function onConfirm() {
       <div class="qty-step-btn" @click="inc">&plus;</div>
     </div>
 
-    <div class="qty-all" @click="setAll">Use all ({{ max }})</div>
+    <div class="qty-all" @click="setAll">{{ t('ui_use_all', max) }}</div>
 
     <div v-if="error" class="qty-error">{{ error }}</div>
 
     <div class="qty-actions">
-      <div class="qty-btn" @click="emit('cancel')">Cancel</div>
+      <div class="qty-btn" @click="emit('cancel')">{{ t('ui_cancel') }}</div>
       <div class="qty-btn qty-confirm" @click="onConfirm">{{ actionLabel }}</div>
     </div>
   </div>

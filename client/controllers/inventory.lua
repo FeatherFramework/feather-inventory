@@ -3,6 +3,34 @@ local isInvOpen = false
 
 InventoryAction = {}
 
+-- (§10.2 locale migration) Every label the ledger UI renders, resolved in the
+-- player's language here and handed to the NUI as a plain key->string bundle.
+--
+-- Deliberately resolved Lua-side rather than shipping a second locale system
+-- into JavaScript: translations/ stays the single source of truth for every
+-- user-facing string in this resource, and the Vue layer just renders what
+-- it's given. Templates containing %s (ui_how_many, ui_use_all) are passed
+-- through unformatted -- the UI substitutes them, since only it knows the
+-- runtime value.
+local UI_STRING_KEYS = {
+  'ui_personal_effects', 'ui_storage', 'ui_carrying', 'ui_stored', 'ui_all',
+  'ui_use', 'ui_give', 'ui_drop', 'ui_split', 'ui_cancel', 'ui_confirm',
+  'ui_quantity', 'ui_weight', 'ui_how_many', 'ui_use_all', 'ui_invalid_amount',
+  'ui_no_entry',
+  'ui_paired_hint',
+}
+
+local function BuildUIStrings()
+  local strings = {}
+  for _, key in ipairs(UI_STRING_KEYS) do
+    -- No fallback text here on purpose: the Vue side carries its own English
+    -- defaults, so a key missing from translations/ degrades to the UI's
+    -- literal rather than to an empty label.
+    strings[key] = Translate(key, nil)
+  end
+  return strings
+end
+
 function CanOpenInventory()
   if IsEntityDead(PlayerPedId()) then return false end
   if IsPauseMenuActive() then return false end
@@ -25,7 +53,9 @@ InventoryAction.Open = function(otherInventoryId, target)
   if not isInvOpen and CanOpenInventory() then
     local results = Feather.RPC.CallAsync('Feather:Inventory:GetInventoryItems', { otherInventoryId = otherInventoryId })
     if results.error ~= nil then
-      Feather.Notify.RightNotify(results.error, 3000)
+      -- Localized off the server's stable errorCode, falling back to the
+      -- English `error` string it has always sent (§10.2).
+      Feather.Notify.RightNotify(Translate('err_' .. tostring(results.errorCode or ''), results.error), 3000)
       return
     end
 
@@ -54,6 +84,7 @@ InventoryAction.Open = function(otherInventoryId, target)
       maxSlots = Config.maxItemSlots,
       playerMaxSlots = results.inventoryMaxSlots,
       otherMaxSlots = results.otherInventoryMaxSlots,
+      strings = BuildUIStrings(),
       categories = Feather.RPC.CallAsync('Feather:Inventory:GetCategories', {}),
       player = {
         dollars = player_display.dollars,

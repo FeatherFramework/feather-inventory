@@ -492,8 +492,12 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
 
     -- Check if the character is available
     if character == nil then
+      -- `error` stays the developer-facing English string this has always
+      -- returned; `errorCode` is what the client localizes off (§10.2), so
+      -- the open-failure notice isn't hardcoded English on the way out.
       return {
-        error = 'Inventory not available'
+        error = 'Inventory not available',
+        errorCode = 'invalid_inventory'
       }
     end
 
@@ -501,7 +505,8 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
   else
     warn('Invalid Character Source!')
     return {
-      error = 'No Character Available'
+      error = 'No Character Available',
+      errorCode = 'no_character'
     }
   end
 
@@ -528,9 +533,9 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
       if not targetCharacter then
         -- no target connected/loaded; leave otherInventory nil
       elseif not IsWithinRobberyDistance(src, otherInventoryId) then
-        Feather.Notify.RightNotify(src, 'You are too far away.', 3000)
+        Feather.Notify.RightNotify(src, Translate(src, 'err_too_far', 'You are too far away.'), 3000)
       elseif not CanBeLootedDueToStatus(targetCharacter.id) then
-        Feather.Notify.RightNotify(src, 'This player cannot be searched right now.', 3000)
+        Feather.Notify.RightNotify(src, Translate(src, 'err_cannot_search', 'This player cannot be searched right now.'), 3000)
       else
         resolvedId, _, resolvedIgnoreLimits, resolvedName = InventoryControllers.GetInventoryByCharacter(targetCharacter.id)
       end
@@ -545,7 +550,7 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
         tostring(src), tostring(otherInventoryId), tostring(uuidId))
       if uuidId and not IsAuthorizedForOwnedInventory(src, character.id, uuidId) then
         DebugPrint('DEBUG-GROUND', 'InternalOpenInventory: src=%s DENIED for inventory.id=%s', tostring(src), tostring(uuidId))
-        Feather.Notify.RightNotify(src, 'You do not have access to this inventory.', 3000)
+        Feather.Notify.RightNotify(src, Translate(src, 'err_no_access', 'You do not have access to this inventory.'), 3000)
       elseif uuidId then
         resolvedId, resolvedIgnoreLimits, resolvedName = uuidId, uuidIgnoreLimits, uuidName
       end
@@ -553,7 +558,7 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
 
     if resolvedId then
       if OpenInventories[tostring(resolvedId)] ~= nil then
-        Feather.Notify.RightNotify(src, 'This inventory is already opened. Try again later.', 3000)
+        Feather.Notify.RightNotify(src, Translate(src, 'err_already_open', 'This inventory is already opened. Try again later.'), 3000)
       else
         otherInventory, otherInventoryIgnoreLimits, otherName = resolvedId, resolvedIgnoreLimits, resolvedName
         otherInventoryItems = InventoryControllers.GetInventoryItems(otherInventory)

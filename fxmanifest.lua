@@ -17,9 +17,14 @@ shared_scripts {
   "config.lua"
 }
 
+-- translations/ loads in both contexts, immediately after imports.lua defines
+-- `Feather` (which the locale file calls into) and before anything that
+-- displays text. Not a shared_script: shared_scripts load before either
+-- imports.lua runs, so `Feather` wouldn't exist yet.
 server_scripts {
   "@oxmysql/lib/MySQL.lua",
   "/server/imports.lua",
+  "/translations/*.lua",
   "/server/helpers/*.lua",
   "/server/controllers/*.lua",
   "/server/services/*.lua",
@@ -28,6 +33,7 @@ server_scripts {
 
 client_scripts {
   "/client/imports.lua",
+  "/translations/*.lua",
   "/client/helpers/*.lua",
   "/client/controllers/*.lua",
   "/client/services/*.lua",

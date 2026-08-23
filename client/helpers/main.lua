@@ -2,6 +2,35 @@ function IsTable(var)
   return type(var) == 'table'
 end
 
+---
+-- Translate
+--
+-- (§10.2 locale migration) Client-side counterpart of the server helper in
+-- server/helpers/main.lua -- see that one for why the fallback exists
+-- (Feather.Locale.translate returns a literal "does not exist" sentinel
+-- string for an unregistered key, not nil, so a missing key would otherwise
+-- be rendered to the player verbatim).
+--
+-- `src` is meaningless client-side; the language comes from the locale
+-- service's own client cache, so 0 is passed purely to satisfy the shared
+-- signature.
+--
+-- @param key Locale key (see translations/)
+-- @param fallback Text to use if the key isn't registered
+-- @return Localized string, or fallback
+--
+function Translate(key, fallback)
+  if not key then
+    return fallback
+  end
+
+  local ok, translated = pcall(Feather.Locale.translate, 0, key)
+  if not ok or type(translated) ~= 'string' or translated:find('does not exist', 1, true) then
+    return fallback
+  end
+  return translated
+end
+
 -- Only meaningful for a table with no gaps in its integer keys.
 function IsArray(t)
   local i = 0

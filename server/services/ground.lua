@@ -33,7 +33,7 @@ Feather.RPC.Register("Feather:Inventory:GetGroundUID", function(params, res, src
     local dx, dy, dz = tonumber(character.x) - groundX, tonumber(character.y) - groundY, tonumber(character.z) - groundZ
     local maxDistance = Config.Dropped.PromptViewDistance + 1.0 -- small buffer for position staleness (~CORE-32)
     if (dx * dx + dy * dy + dz * dz) > (maxDistance * maxDistance) then
-        Feather.Notify.RightNotify(src, 'You are too far away.', 3000)
+        Feather.Notify.RightNotify(src, Translate(src, 'err_too_far', 'You are too far away.'), 3000)
         return res(nil)
     end
 
@@ -76,7 +76,7 @@ Feather.RPC.Register("Feather:Inventory:DropItemsOnGround", function(params, res
     local dx, dy, dz = tonumber(character.x) - params.x, tonumber(character.y) - params.y, tonumber(character.z) - params.z
     local maxDistance = Config.Dropped.PromptViewDistance + 1.0 -- small buffer for position staleness (~CORE-32)
     if (dx * dx + dy * dy + dz * dz) > (maxDistance * maxDistance) then
-        Feather.Notify.RightNotify(src, 'You are too far away.', 3000)
+        Feather.Notify.RightNotify(src, Translate(src, 'err_too_far', 'You are too far away.'), 3000)
         return res({ error = true, message = 'You are too far away.' })
     end
 
@@ -86,7 +86,7 @@ Feather.RPC.Register("Feather:Inventory:DropItemsOnGround", function(params, res
     -- reached the player; the NUI only logged it to the browser console.
     local dropResult = ItemsAPI.DropItemsOnGround(inventoryID, params.items, params.x, params.y, params.z)
     if dropResult and dropResult.error then
-        Feather.Notify.RightNotify(src, dropResult.message or 'Unable to drop items.', 3000)
+        Feather.Notify.RightNotify(src, TranslateResult(src, dropResult, 'err_drop_failed'), 3000)
     end
     return res(dropResult)
 end)

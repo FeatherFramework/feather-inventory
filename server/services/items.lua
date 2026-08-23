@@ -166,6 +166,7 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   if not acceptance or acceptance.status == false then
     return {
       error = true,
+      code = (acceptance and acceptance.code) or 'inventory_full',
       message = (acceptance and acceptance.message) or 'Inventory cannot hold these items.'
     }
   end
@@ -557,6 +558,7 @@ ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z)
   if updateinv and updateinv.error then
     return {
       error = true,
+      code = updateinv.code,
       message = updateinv.message,
       inv = updateinv
     }

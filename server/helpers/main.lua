@@ -38,3 +38,57 @@ function DebugPrint(tag, fmt, ...)
   end
   print(('[%s] %s'):format(tag, fmt:format(...)))
 end
+
+---
+-- Translate
+--
+-- (§10.2 locale migration) Resolves a locale key in the caller's own
+-- language, falling back to `fallback` when the key isn't registered.
+--
+-- The fallback matters more than it looks: Feather.Locale.translate returns a
+-- literal sentinel STRING for a missing key or locale ("Translation [en_us]
+-- [foo] does not exist"), not nil -- so without this check a typo'd or
+-- unregistered key would be shown to the player verbatim, which is strictly
+-- worse than showing untranslated English.
+--
+-- @param src Player source, used to resolve their language
+-- @param key Locale key (see translations/)
+-- @param fallback Text to use if the key isn't registered
+-- @return Localized string, or fallback
+--
+function Translate(src, key, fallback)
+  if not key then
+    return fallback
+  end
+
+  local ok, translated = pcall(Feather.Locale.translate, src, key)
+  if not ok or type(translated) ~= 'string' or translated:find('does not exist', 1, true) then
+    return fallback
+  end
+  return translated
+end
+
+---
+-- Translate Result
+--
+-- Localizes a result envelope for display: prefers the stable `code`
+-- (err_<code> in translations/) and falls back to the envelope's own
+-- developer-facing English `message`. That indirection is the point -- the
+-- text a player sees is decoupled from the message string services return for
+-- logs and scripting consumers, so neither has to compromise for the other.
+--
+-- @param src Player source
+-- @param result A { code = ..., message = ... } envelope
+-- @param fallbackKey Locale key to use when the envelope carries no code
+-- @return Localized string suitable for Feather.Notify
+--
+function TranslateResult(src, result, fallbackKey)
+  local message = result and result.message
+  local code = result and result.code
+
+  if code then
+    return Translate(src, 'err_' .. code, message or Translate(src, fallbackKey, message))
+  end
+
+  return Translate(src, fallbackKey, message or '')
+end

@@ -31,13 +31,13 @@ Feather.RPC.Register('Feather:Inventory:UpdateInventory', function(params, res, 
 
   if not InventoryAPI.IsInventoryAccessibleBySrc(src, sourceInventory) then
     warn('Rejected UpdateInventory: src ' .. src .. ' does not have access to source inventory ' .. tostring(sourceInventory))
-    Feather.Notify.RightNotify(src, 'You do not have access to that inventory.', 3000)
+    Feather.Notify.RightNotify(src, Translate(src, 'err_no_access', 'You do not have access to that inventory.'), 3000)
     return res({ error = true, message = 'You do not have access to that inventory.' })
   end
 
   if not InventoryAPI.IsInventoryAccessibleBySrc(src, targetInventory) then
     warn('Rejected UpdateInventory: src ' .. src .. ' does not have access to target inventory ' .. tostring(targetInventory))
-    Feather.Notify.RightNotify(src, 'You do not have access to that inventory.', 3000)
+    Feather.Notify.RightNotify(src, Translate(src, 'err_no_access', 'You do not have access to that inventory.'), 3000)
     return res({ error = true, message = 'You do not have access to that inventory.' })
   end
 
@@ -49,7 +49,7 @@ Feather.RPC.Register('Feather:Inventory:UpdateInventory', function(params, res, 
   -- other rejection paths already do.
   local result = InventoryControllers.MoveInventoryItems(sourceInventory, targetInventory, items)
   if result and result.error then
-    Feather.Notify.RightNotify(src, result.message or 'Unable to move items.', 3000)
+    Feather.Notify.RightNotify(src, TranslateResult(src, result, 'err_move_failed'), 3000)
   end
   res(result)
 end)
@@ -74,7 +74,7 @@ Feather.RPC.Register('Feather:Inventory:GiveItem', function(params, res, src)
   local targetPlayer = Feather.Character.GetCharacter({ src = tonumber(target) })
   local targetCharacter = targetPlayer and targetPlayer.char
   if not targetCharacter then
-    Feather.Notify.RightNotify(src, 'That player is not available.', 3000)
+    Feather.Notify.RightNotify(src, Translate(src, 'err_target_unavailable', 'That player is not available.'), 3000)
     return res({ error = true, message = 'That player is not available.' })
   end
 
@@ -84,7 +84,7 @@ Feather.RPC.Register('Feather:Inventory:GiveItem', function(params, res, src)
   -- re-verified here. See IsWithinGiveDistance (inventory_access.lua).
   if not IsWithinGiveDistance(src, tonumber(target)) then
     warn('Rejected GiveItem: src ' .. src .. ' is not close enough to target ' .. tostring(target))
-    Feather.Notify.RightNotify(src, 'You are too far away.', 3000)
+    Feather.Notify.RightNotify(src, Translate(src, 'err_too_far', 'You are too far away.'), 3000)
     return res({ error = true, message = 'You are too far away.' })
   end
 
@@ -96,13 +96,13 @@ Feather.RPC.Register('Feather:Inventory:GiveItem', function(params, res, src)
   local destinationInventoryId = InventoryControllers.GetInventoryByCharacter(targetCharacter.id)
 
   if not sourceInventoryId or not destinationInventoryId then
-    Feather.Notify.RightNotify(src, 'Inventory not available.', 3000)
+    Feather.Notify.RightNotify(src, Translate(src, 'err_invalid_inventory', 'Inventory not available.'), 3000)
     return res({ error = true, message = 'Inventory not available.' })
   end
 
   local giveResult = InventoryControllers.MoveInventoryItems(sourceInventoryId, destinationInventoryId, { item })
   if giveResult and giveResult.error then
-    Feather.Notify.RightNotify(src, giveResult.message or 'Unable to give item.', 3000)
+    Feather.Notify.RightNotify(src, TranslateResult(src, giveResult, 'err_give_failed'), 3000)
   end
   return res(giveResult)
 end)
@@ -134,13 +134,13 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
 
   if not InventoryAPI.IsInventoryAccessibleBySrc(src, fromInventory) then
     warn('Rejected MoveItem: src ' .. src .. ' does not have access to source inventory ' .. tostring(fromInventory))
-    Feather.Notify.RightNotify(src, 'You do not have access to that inventory.', 3000)
+    Feather.Notify.RightNotify(src, Translate(src, 'err_no_access', 'You do not have access to that inventory.'), 3000)
     return res({ error = true, message = 'You do not have access to that inventory.' })
   end
 
   if not InventoryAPI.IsInventoryAccessibleBySrc(src, toInventory) then
     warn('Rejected MoveItem: src ' .. src .. ' does not have access to target inventory ' .. tostring(toInventory))
-    Feather.Notify.RightNotify(src, 'You do not have access to that inventory.', 3000)
+    Feather.Notify.RightNotify(src, Translate(src, 'err_no_access', 'You do not have access to that inventory.'), 3000)
     return res({ error = true, message = 'You do not have access to that inventory.' })
   end
 
@@ -184,7 +184,7 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
     warn('Rejected MoveItem: src ' .. src .. ' -- ' .. tostring(rejectMessage) ..
       ' (from inventory ' .. tostring(fromInventory) .. ' slot ' .. tostring(fromSlot) ..
       ' to inventory ' .. tostring(toInventory) .. ' slot ' .. tostring(toSlot) .. ')')
-    Feather.Notify.RightNotify(src, rejectMessage, 3000)
+    Feather.Notify.RightNotify(src, TranslateResult(src, canMove, 'err_move_failed'), 3000)
     return res({ error = true, message = rejectMessage })
   end
 
@@ -237,7 +237,7 @@ Feather.RPC.Register('Feather:Inventory:SplitStack', function(params, res, src)
 
   if not InventoryAPI.IsInventoryAccessibleBySrc(src, inventory) then
     warn('Rejected SplitStack: src ' .. src .. ' does not have access to inventory ' .. tostring(inventory))
-    Feather.Notify.RightNotify(src, 'You do not have access to that inventory.', 3000)
+    Feather.Notify.RightNotify(src, Translate(src, 'err_no_access', 'You do not have access to that inventory.'), 3000)
     return res({ error = true, message = 'You do not have access to that inventory.' })
   end
 
@@ -245,13 +245,13 @@ Feather.RPC.Register('Feather:Inventory:SplitStack', function(params, res, src)
   -- compartment behind -- that's a move, which MoveItem already does.
   local stack = InventoryControllers.GetItemsInSlot(inventory, fromSlot)
   if quantity >= #stack then
-    Feather.Notify.RightNotify(src, 'Choose fewer than the whole stack.', 3000)
+    Feather.Notify.RightNotify(src, Translate(src, 'err_split_whole_stack', 'Choose fewer than the whole stack.'), 3000)
     return res({ error = true, message = 'Choose fewer than the whole stack.' })
   end
 
   local freeSlot = InventoryControllers.GetFreeSlot(inventory, InventoryControllers.GetInventoryCapacity(inventory))
   if freeSlot == nil then
-    Feather.Notify.RightNotify(src, 'No free compartment to split into.', 3000)
+    Feather.Notify.RightNotify(src, Translate(src, 'err_no_free_compartment', 'No free compartment to split into.'), 3000)
     return res({ error = true, message = 'No free compartment to split into.' })
   end
 

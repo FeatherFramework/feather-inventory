@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue';
+import { t } from '@/i18n';
 
 // One "1899 personal effects ledger" book -- either the player's own
 // inventory or the paired container/ground/robbery-target book. Fully
@@ -9,10 +10,10 @@ import { computed } from 'vue';
 const props = defineProps({
   title: { type: String, required: true },
   subtitle: { type: String, required: true },
-  footerLabel: { type: String, required: true }, // "CARRYING" | "STORED"
+  footerLabel: { type: String, required: true }, // locale KEY: ui_carrying | ui_stored
   capacity: { type: Number, required: true },
   items: { type: Array, required: true }, // flat rows, each with slot_index
-  categories: { type: Array, required: true }, // [{ id: null, label: 'ALL' }, { id, label }, ...]
+  categories: { type: Array, required: true }, // [{ id: null, label: <localized ALL> }, { id, label }, ...]
   activeCategoryId: { default: null },
   selectedIndex: { type: Number, default: -1 },
   paired: { type: Boolean, default: false },
@@ -74,7 +75,7 @@ const selectedCell = computed(() => {
 const detail = computed(() => {
   const cell = selectedCell.value;
   if (!cell || !cell.repItem) {
-    return { label: '—', desc: 'No entry selected.', weight: '—', qtyPlain: '—', img: null };
+    return { label: '—', desc: t('ui_no_entry'), weight: '—', qtyPlain: '—', img: null };
   }
   return {
     label: cell.repItem.display_name,
@@ -188,15 +189,15 @@ function tabLabelSize(count) {
           <div class="ledger-detail-name">{{ detail.label }}</div>
           <div class="ledger-detail-desc">{{ detail.desc }}</div>
           <div class="ledger-detail-footer">
-            <span>Quantity &mdash; {{ detail.qtyPlain }}</span>
-            <span>Weight &mdash; {{ detail.weight }}</span>
+            <span>{{ t('ui_quantity') }} &mdash; {{ detail.qtyPlain }}</span>
+            <span>{{ t('ui_weight') }} &mdash; {{ detail.weight }}</span>
           </div>
         </div>
       </div>
 
       <div class="ledger-carrying">
         <img src="@/assets/ledger/carry-arrow-left.png" class="carry-arrow" />
-        <div class="ledger-carrying-text">{{ footerLabel }}&nbsp;&nbsp;{{ carrying }}&#8195;/&#8195;{{ capacity }} lb.</div>
+        <div class="ledger-carrying-text">{{ t(footerLabel) }}&nbsp;&nbsp;{{ carrying }}&#8195;/&#8195;{{ capacity }} lb.</div>
         <img src="@/assets/ledger/carry-arrow-right.png" class="carry-arrow" />
       </div>
     </div>

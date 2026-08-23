@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue';
+import { t } from '@/i18n';
 
 const props = defineProps({
   x: { type: Number, required: true },
@@ -31,10 +32,10 @@ const style = computed(() => {
 <template>
   <div class="ctx-backdrop" @click="emit('close')" @contextmenu.prevent="emit('close')"></div>
   <div class="ctx-menu" :style="style">
-    <div v-if="canUse" class="ctx-item" @click="emit('use')">Use</div>
-    <div class="ctx-item" @click="emit('give')">Give</div>
-    <div class="ctx-item" @click="emit('drop')">Drop</div>
-    <div v-if="canSplit" class="ctx-item" @click="emit('split')">Split</div>
+    <div v-if="canUse" class="ctx-item" @click="emit('use')">{{ t('ui_use') }}</div>
+    <div class="ctx-item" @click="emit('give')">{{ t('ui_give') }}</div>
+    <div class="ctx-item" @click="emit('drop')">{{ t('ui_drop') }}</div>
+    <div v-if="canSplit" class="ctx-item" @click="emit('split')">{{ t('ui_split') }}</div>
   </div>
 </template>
 

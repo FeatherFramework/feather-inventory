@@ -5,6 +5,7 @@ import '@/assets/tailwind.css';
 import LedgerBook from '@/components/LedgerBook.vue';
 import ContextMenu from '@/components/ContextMenu.vue';
 import ItemCountModal from '@/components/ItemCountModal.vue';
+import { t, setStrings } from '@/i18n';
 
 const visible = ref(false);
 const devmode = ref(false);
@@ -23,13 +24,13 @@ function makeBook(footerLabel) {
   });
 }
 
-const player = makeBook('CARRYING');
-const other = makeBook('STORED');
+const player = makeBook('ui_carrying');
+const other = makeBook('ui_stored');
 const hasOther = computed(() => other.inventoryId !== null);
 
 const rawCategories = ref([]);
 const categoryOptions = computed(() => [
-  { id: null, label: 'ALL' },
+  { id: null, label: t('ui_all') },
   ...rawCategories.value.map((c) => ({ id: c.id, label: String(c.name).toUpperCase() })),
 ]);
 
@@ -56,8 +57,9 @@ const onMessage = (event) => {
 
   visible.value = data.visible;
   rawCategories.value = data.categories || [];
+  setStrings(data.strings);
 
-  player.title = 'PERSONAL EFFECTS';
+  player.title = t('ui_personal_effects');
   player.subtitle = data.player?.characterName || '';
   // Each book has its own capacity now -- fall back to the old global
   // maxSlots so a server that predates the per-book fields still renders.
@@ -69,7 +71,7 @@ const onMessage = (event) => {
   player.selectedIndex = -1;
 
   if (data.otherItems != null) {
-    other.title = String(data.otherName || 'STORAGE').toUpperCase();
+    other.title = String(data.otherName || t('ui_storage')).toUpperCase();
     other.subtitle = '';
     other.capacity = Number(data.otherMaxSlots) || Number(data.maxSlots) || 0;
     other.inventoryId = data.otherInventory;
@@ -370,10 +372,11 @@ const contextCanUse = computed(() => !!contextStack().items[0]?.usable);
 // unit has nothing to peel off.
 const contextCanSplit = computed(() => contextStack().items.length > 1);
 
-const QUANTITY_ACTION_LABELS = { drop: 'Drop', give: 'Give', split: 'Split' };
-const quantityActionLabel = computed(
-  () => QUANTITY_ACTION_LABELS[quantityPrompt.value?.action] || 'Confirm'
-);
+const QUANTITY_ACTION_KEYS = { drop: 'ui_drop', give: 'ui_give', split: 'ui_split' };
+const quantityActionLabel = computed(() => {
+  const key = QUANTITY_ACTION_KEYS[quantityPrompt.value?.action];
+  return key ? t(key) : t('ui_confirm');
+});
 </script>
 
 <template>
@@ -424,7 +427,7 @@ const quantityActionLabel = computed(
       />
     </div>
 
-    <div v-if="hasOther" class="ledger-hint">Drag an entry from one book to the other to move it &bull; ESC closes both</div>
+    <div v-if="hasOther" class="ledger-hint">{{ t('ui_paired_hint') }}</div>
 
     <ContextMenu
       v-if="contextMenu"

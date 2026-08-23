@@ -379,6 +379,9 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
     if not canHold or canHold.status == false then
       return {
         error = true,
+        -- Stable code travels with the message so the RPC layer can localize
+        -- by code (see TranslateResult) instead of matching English text.
+        code = canHold and canHold.code or nil,
         message = canHold and canHold.message or 'Target inventory cannot hold these items.',
         sourceItems = InventoryControllers.GetInventoryItems(sourceInventory),
         targetItems = InventoryControllers.GetInventoryItems(targetInventory)

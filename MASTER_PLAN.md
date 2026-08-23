@@ -149,7 +149,10 @@ This is deliberately a first-class section, not an appendix to the weapons work.
 
 - ~~**Ground item LOD**~~ **Fixed.** Turned out worse than "no culling" — the old `UpdateGroundLocations` handler unconditionally despawned and respawned *every* pile on the map for *every* online player on *every single* drop/pickup/empty event anywhere on the server, not just once at load. Rewrote `GroundItems` from an array to an id-keyed table, reconciled in place on updates (only piles that actually appeared/disappeared touch their entity), and added a 1s-tick LOD thread that spawns/despawns each pile's prop based on the player's own live distance (`Config.Dropped.LoadDistance`, new, validated `>= PromptViewDistance` in `errors.lua`). The pickup-prompt loop's `ipairs`-over-array logic and unguarded `item.entity:GetObj()` had to move to `pairs` + a nil-entity guard to match the new keying.
 - **Hotbar** — still no server or UI implementation. §10.4's scrollable-grid decision gives this a cleaner answer than before: the hotbar can be the always-visible first page of compartments rather than a wholly separate strip, once scrolling exists as a concept in the UI at all.
-- **Locale migration** — server/UI strings still hardcoded.
+- ~~**Locale migration**~~ **Done 2026-08-23.** Every user-facing string in the resource now lives in `translations/en_us.lua` (40 keys), registered via `Feather.Locale.register` in both the server and client contexts. Two display paths, one source of truth:
+    - **Server notifications** translate off a stable `code` on the result envelope (`err_<code>`) rather than off English text, so the message a player sees is decoupled from the developer-facing `message` services still return for logs and scripting consumers. `code` is now propagated through `MoveInventoryItems`, `DropItemsOnGround`, `AddItem`, and `InternalOpenInventory`.
+    - **Ledger UI** labels are resolved *in Lua* and handed to the NUI as a key→string bundle, deliberately rather than standing up a second locale system in JavaScript. `ui/src/i18n.js` holds English defaults purely as a fallback layer — for a key missing from `translations/`, a server older than the `strings` payload field, and the Vite dev server, where there is no Lua side at all.
+    - Both `Translate` helpers guard against `Feather.Locale.translate` returning its literal `"... does not exist"` **sentinel string** (not nil) for an unregistered key — without that check a typo'd key would render to the player verbatim, which is strictly worse than untranslated English.
 - **Frontend state management** — checked 2026-08-23: Pinia is **not** a dependency and is not referenced anywhere in `ui/src`. It was dropped during the Vite migration, so this item is "adopt a store layer if the ledger's `reactive()`-based local state in `App.vue` outgrows it", not "finish a half-done migration". No evidence it has outgrown it yet.
 - **Shift+drag bulk transfer/drop** — not confirmed done; the quantity modal covers "choose a partial amount," but a shift-modifier that skips the modal and acts on the whole stack isn't visible in what's been built so far.
 
@@ -223,7 +226,7 @@ Two tracks. The `INV-W*` track matches `DEPENDENCY_SUPPORT_PLAN.md` §4.5 exactl
 ### Inventory-Native Phase B — README backlog (§10.2)
 - ~~Scrollable grid + per-inventory capacity (§10.4)~~ — **done.** This also resolves README's "Add Inventory specific slot counts" item, and unblocks the hotbar design (it can now be the always-visible first page rather than a separate strip).
 - ~~Ground LOD~~ — done.
-- Hotbar (as the always-visible first page, per §10.4), locale migration, confirmed Pinia migration, shift+drag-all — still open.
+- ~~Locale migration~~ — done. Hotbar (as the always-visible first page, per §10.4), a store layer if the ledger's local state outgrows `reactive()`, and shift+drag-all — still open.
 - **Exit gate:** README's "Next Major version improvements" list is empty or explicitly re-scoped.
 
 ### Inventory-Native Phase C — New ideas (§10.3), prioritized by leverage
@@ -260,7 +263,8 @@ Two tracks. The `INV-W*` track matches `DEPENDENCY_SUPPORT_PLAN.md` §4.5 exactl
 - [x] Debug prints replaced with gated logger
 - [x] Scrollable grid + per-inventory capacity shipped (§10.4, 2026-08-23) — static chrome, scrolling compartments, `inventory.max_slots` self-migration, `RegisterInventory` capacity param, per-book client payload, all six server-side capacity call sites routed through one resolver
 - [x] Ground LOD shipped
-- [ ] Hotbar (as always-visible first page) / locale / Pinia / shift-drag-all (README backlog)
+- [x] Locale migration shipped (§10.2, 2026-08-23) — 40 keys, code-based server notifications, Lua-resolved UI bundle, key parity verified across all three layers
+- [ ] Hotbar (as always-visible first page) / Pinia / shift-drag-all (README backlog)
 - [ ] Condition/durability convention documented and shared with weapons
 - [ ] Perishables, vehicle containers, quick-loot-all, weight meter, search/filter, admin inspection export — each triaged (built/deferred/rejected)
 - [ ] Every export documented against its real contract

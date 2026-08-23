@@ -7,9 +7,9 @@ if Config.DevMode then
         local result = ItemsAPI.AddItem(args[1], tonumber(args[2]), args[3] or nil, source)
 
         if result.error == true then
-            Feather.Notify.RightNotify(source, result.message, 3000)
+            Feather.Notify.RightNotify(source, TranslateResult(source, result, 'err_move_failed'), 3000)
         else
-            Feather.Notify.RightNotify(source, "Item added!", 3000)
+            Feather.Notify.RightNotify(source, Translate(source, 'msg_item_added', 'Item added.'), 3000)
         end
     end, true)
 
@@ -21,9 +21,9 @@ if Config.DevMode then
         }, source)
 
         if result.error == true then
-            Feather.Notify.RightNotify(source, result.message, 3000)
+            Feather.Notify.RightNotify(source, TranslateResult(source, result, 'err_move_failed'), 3000)
         else
-            Feather.Notify.RightNotify(source, "Item added!", 3000)
+            Feather.Notify.RightNotify(source, Translate(source, 'msg_item_added', 'Item added.'), 3000)
         end
     end, true)
 
@@ -42,9 +42,9 @@ if Config.DevMode then
             'dde04bd6-34cc-11ef-a92d-107c61489014')
 
         if result.error == true then
-            Feather.Notify.RightNotify(source, result.message, 3000)
+            Feather.Notify.RightNotify(source, TranslateResult(source, result, 'err_move_failed'), 3000)
         else
-            Feather.Notify.RightNotify(source, "Item added!", 3000)
+            Feather.Notify.RightNotify(source, Translate(source, 'msg_item_added', 'Item added.'), 3000)
         end
     end, true)
 end
