@@ -78,6 +78,25 @@ local function EnsureInstanceSchema()
         MySQL.query.await(
             "ALTER TABLE `inventory_items` ADD COLUMN `row_revision` INT UNSIGNED NOT NULL DEFAULT 0;")
     end
+
+    -- Weight as exact fixed-point rather than a whole number, so an item can
+    -- weigh less than a pound (an apple at 0.25). DECIMAL and not FLOAT
+    -- deliberately: weights are SUMmed across an inventory and compared
+    -- against a limit, and binary floating point accumulates error that makes
+    -- that comparison unreliable exactly at the boundary. Same reasoning the
+    -- schema already applies to money and coordinates.
+    --
+    -- Widening INT -> DECIMAL is lossless (1 becomes 1.00), so this needs no
+    -- data migration. Guarded on the current type so it runs once.
+    local weightType = MySQL.query.await("SHOW COLUMNS FROM `items` LIKE 'weight';")[1]
+    if weightType and tostring(weightType.Type or ''):find('int') then
+        MySQL.query.await("ALTER TABLE `items` MODIFY COLUMN `weight` DECIMAL(6,2) NOT NULL DEFAULT 0;")
+    end
+
+    local limitType = MySQL.query.await("SHOW COLUMNS FROM `inventory` LIKE 'max_weight';")[1]
+    if limitType and tostring(limitType.Type or ''):find('int') then
+        MySQL.query.await("ALTER TABLE `inventory` MODIFY COLUMN `max_weight` DECIMAL(8,2) NULL;")
+    end
 end
 
 CreateThread(function()

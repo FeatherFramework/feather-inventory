@@ -94,7 +94,9 @@ const detail = computed(() => {
   return {
     label: cell.repItem.display_name,
     desc: cell.repItem.description,
-    weight: (Number(cell.repItem.weight) * cell.qty).toFixed(1) + ' lb.',
+    // 2dp: weights can be fractional now, and toFixed(1) would render a
+    // 0.25 lb item as "0.2".
+    weight: (Number(cell.repItem.weight) * cell.qty).toFixed(2) + ' lb.',
     qtyPlain: String(cell.qty),
     img: iconSrc(cell.repItem.name),
     condition: hasCondition
@@ -110,7 +112,7 @@ const hasWeightLimit = computed(() => Number(props.maxWeight) > 0);
 
 const carrying = computed(() => {
   const lb = props.items.reduce((total, item) => total + (Number(item.weight) || 0), 0);
-  return lb.toFixed(1);
+  return lb.toFixed(2);
 });
 
 function iconSrc(name) {

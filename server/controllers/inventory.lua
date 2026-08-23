@@ -120,7 +120,11 @@ function InventoryControllers.GetInventoryTotalWeight(inventory)
     return 0
   end
 
-  return result[1].weight
+  -- tonumber because a DECIMAL column can arrive as a STRING depending on the
+  -- driver -- the same reason every read of characters.x/y/z is wrapped. Lua
+  -- coerces strings in arithmetic but NOT in comparison, so an unguarded
+  -- `weight > limit` would error rather than misbehave quietly.
+  return tonumber(result[1].weight) or 0
 end
 
 function InventoryControllers.GetInventoryItems(inventory)
