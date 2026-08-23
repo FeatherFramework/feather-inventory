@@ -116,15 +116,52 @@ const closeApp = () => {
 
 // --- Drag and drop -------------------------------------------------------
 
-function onCellMouseDown(bookKey, slotIndex) {
+function onCellMouseDown(bookKey, slotIndex, event) {
   contextMenu.value = null;
 
   const book = bookByKey(bookKey);
-  const cellHasItem = book.items.some((i) => i.slot_index === slotIndex);
-  if (!cellHasItem) return;
+  const stack = book.items.filter((i) => i.slot_index === slotIndex);
+  if (stack.length === 0) return;
 
   book.selectedIndex = slotIndex;
+
+  // Shift+click quick-transfers the whole compartment to the other book
+  // instead of starting a drag -- the bulk-transfer half of README's
+  // "shift+drag" item. Only meaningful when a second book is actually open;
+  // otherwise fall through to a normal drag.
+  if (event && event.shiftKey && hasOther.value) {
+    quickTransfer(bookKey, stack);
+    return;
+  }
+
   drag.value = { book: bookKey, slot: slotIndex };
+}
+
+// Deliberately routed through UpdateInventory rather than MoveItem: this has
+// no destination slot to name, and UpdateInventory -> MoveInventoryItems
+// already assigns one server-side (join a matching under-full stack, else the
+// first free compartment) with capacity, weight and blacklist all enforced on
+// the way. Picking a slot client-side would duplicate that logic and race it.
+async function quickTransfer(fromKey, stack) {
+  const fromBook = bookByKey(fromKey);
+  const toBook = fromKey === 'player' ? other : player;
+  if (!fromBook.inventoryId || !toBook.inventoryId) return;
+
+  try {
+    const { data } = await api.post('Feather:Inventory:UpdateInventory', {
+      sourceInventory: fromBook.inventoryId,
+      targetInventory: toBook.inventoryId,
+      items: stack.map((i) => i.id),
+    });
+    if (data?.error) {
+      console.log('Transfer rejected: ' + (data.message || 'unknown error'));
+      return;
+    }
+    if (data?.sourceItems) fromBook.items = data.sourceItems;
+    if (data?.targetItems) toBook.items = data.targetItems;
+  } catch (e) {
+    console.log(e.message);
+  }
 }
 
 function onCellMouseEnter(bookKey, slotIndex) {
@@ -253,12 +290,14 @@ function onContextUse() {
 // ever hold one) skips the modal and just acts, per your call.
 const quantityPrompt = ref(null); // { action: 'drop' | 'give', book, items, itemName, max } | null
 
-function onContextGive() {
+function onContextGive(event) {
   const { book, items } = contextStack();
   contextMenu.value = null;
   if (items.length === 0) return;
 
-  if (items.length > 1) {
+  // Shift skips the quantity prompt and acts on the whole stack -- the
+  // bulk-drop/give half of README's "shift+drag" item.
+  if (items.length > 1 && !(event && event.shiftKey)) {
     quantityPrompt.value = { action: 'give', book, items, itemName: items[0].display_name, max: items.length };
     return;
   }
@@ -266,12 +305,12 @@ function onContextGive() {
   performGive(book, items);
 }
 
-function onContextDrop() {
+function onContextDrop(event) {
   const { book, items } = contextStack();
   contextMenu.value = null;
   if (!book || items.length === 0) return;
 
-  if (items.length > 1) {
+  if (items.length > 1 && !(event && event.shiftKey)) {
     quantityPrompt.value = { action: 'drop', book, items, itemName: items[0].display_name, max: items.length };
     return;
   }
@@ -402,7 +441,7 @@ const quantityActionLabel = computed(() => {
         :drag-slot="drag && drag.book === 'player' ? drag.slot : -1"
         :drag-armed="dragArmedFor('player')"
         :hover-slot="hover && hover.book === 'player' ? hover.slot : -1"
-        @cell-mouse-down="(i) => onCellMouseDown('player', i)"
+        @cell-mouse-down="(i, e) => onCellMouseDown('player', i, e)"
         @cell-mouse-enter="(i) => onCellMouseEnter('player', i)"
         @cell-mouse-up="(i) => onCellMouseUp('player', i)"
         @cell-dbl-click="(i) => onCellDblClick('player', i)"
@@ -424,7 +463,7 @@ const quantityActionLabel = computed(() => {
         :drag-slot="drag && drag.book === 'other' ? drag.slot : -1"
         :drag-armed="dragArmedFor('other')"
         :hover-slot="hover && hover.book === 'other' ? hover.slot : -1"
-        @cell-mouse-down="(i) => onCellMouseDown('other', i)"
+        @cell-mouse-down="(i, e) => onCellMouseDown('other', i, e)"
         @cell-mouse-enter="(i) => onCellMouseEnter('other', i)"
         @cell-mouse-up="(i) => onCellMouseUp('other', i)"
         @cell-dbl-click="(i) => onCellDblClick('other', i)"

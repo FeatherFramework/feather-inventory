@@ -166,7 +166,7 @@ function tabLabelSize(count) {
             class="ledger-cell"
             :style="{ background: cellBg(cell) }"
             :class="{ selected: cell.index === selectedIndex && cell.repItem }"
-            @mousedown.left.prevent="emit('cellMouseDown', cell.index)"
+            @mousedown.left.prevent="(event) => emit('cellMouseDown', cell.index, event)"
             @mouseup.left="emit('cellMouseUp', cell.index)"
             @mouseenter="emit('cellMouseEnter', cell.index)"
             @dblclick="emit('cellDblClick', cell.index)"

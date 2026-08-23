@@ -31,7 +31,7 @@ const DEFAULTS = {
   ui_invalid_amount: 'Invalid amount.',
   ui_no_entry: 'No entry selected.',
 
-  ui_paired_hint: 'Drag an entry from one book to the other to move it • ESC closes both',
+  ui_paired_hint: 'Drag an entry between books to move it • Shift-click to send it across • ESC closes both',
 };
 
 const strings = reactive({ ...DEFAULTS });

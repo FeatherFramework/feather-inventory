@@ -25,9 +25,16 @@ RegisterNUICallback('Feather:Inventory:UpdateInventory', function(args, cb)
 
   local result = Feather.RPC.CallAsync('Feather:Inventory:UpdateInventory', data)
 
+  -- (Rejection surfacing) This used to forward only sourceItems/targetItems,
+  -- dropping error/message/code entirely -- so a rejected bulk transfer
+  -- (weight, capacity, restricted item) looked to the UI exactly like a
+  -- successful one that happened to change nothing. Same bug GiveItem had.
   cb({
-    sourceItems = result.sourceItems,
-    targetItems = result.targetItems
+    error = result and result.error or false,
+    code = result and result.code,
+    message = result and result.message,
+    sourceItems = result and result.sourceItems,
+    targetItems = result and result.targetItems
   })
 end)
 

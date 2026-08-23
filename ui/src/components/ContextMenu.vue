@@ -32,10 +32,10 @@ const style = computed(() => {
 <template>
   <div class="ctx-backdrop" @click="emit('close')" @contextmenu.prevent="emit('close')"></div>
   <div class="ctx-menu" :style="style">
-    <div v-if="canUse" class="ctx-item" @click="emit('use')">{{ t('ui_use') }}</div>
-    <div class="ctx-item" @click="emit('give')">{{ t('ui_give') }}</div>
-    <div class="ctx-item" @click="emit('drop')">{{ t('ui_drop') }}</div>
-    <div v-if="canSplit" class="ctx-item" @click="emit('split')">{{ t('ui_split') }}</div>
+    <div v-if="canUse" class="ctx-item" @click="(event) => emit('use', event)">{{ t('ui_use') }}</div>
+    <div class="ctx-item" @click="(event) => emit('give', event)">{{ t('ui_give') }}</div>
+    <div class="ctx-item" @click="(event) => emit('drop', event)">{{ t('ui_drop') }}</div>
+    <div v-if="canSplit" class="ctx-item" @click="(event) => emit('split', event)">{{ t('ui_split') }}</div>
   </div>
 </template>
 
