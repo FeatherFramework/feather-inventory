@@ -11,7 +11,8 @@ const props = defineProps({
   title: { type: String, required: true },
   subtitle: { type: String, required: true },
   footerLabel: { type: String, required: true }, // locale KEY: ui_carrying | ui_stored
-  capacity: { type: Number, required: true },
+  capacity: { type: Number, required: true }, // compartments
+  maxWeight: { type: Number, default: 0 }, // weight limit -- NOT capacity
   items: { type: Array, required: true }, // flat rows, each with slot_index
   categories: { type: Array, required: true }, // [{ id: null, label: <localized ALL> }, { id, label }, ...]
   activeCategoryId: { default: null },
@@ -197,7 +198,7 @@ function tabLabelSize(count) {
 
       <div class="ledger-carrying">
         <img src="@/assets/ledger/carry-arrow-left.png" class="carry-arrow" />
-        <div class="ledger-carrying-text">{{ t(footerLabel) }}&nbsp;&nbsp;{{ carrying }}&#8195;/&#8195;{{ capacity }} lb.</div>
+        <div class="ledger-carrying-text">{{ t(footerLabel) }}&nbsp;&nbsp;{{ carrying }}&#8195;/&#8195;{{ maxWeight }} lb.</div>
         <img src="@/assets/ledger/carry-arrow-right.png" class="carry-arrow" />
       </div>
     </div>

@@ -46,6 +46,16 @@ function InventoryControllers.GetInventoryCapacity(inventory)
   return configured or tonumber(Config.maxItemSlots) or 0
 end
 
+-- (Carrying-line fix) This inventory's weight limit, NULL falling back to the
+-- Config default -- same shape as GetInventoryCapacity above. Needed by the
+-- client payload because the ledger's carrying line was rendering
+-- "<weight> / <capacity> lb.", comparing total weight against the SLOT count.
+function InventoryControllers.GetInventoryWeightLimit(inventory)
+  local result = MySQL.query.await('SELECT `max_weight` FROM `inventory` WHERE `id`=? LIMIT 1;', { inventory })[1]
+  local configured = result and tonumber(result.max_weight)
+  return configured or tonumber(Config.maxWeight) or 0
+end
+
 function InventoryControllers.GetCustomInventoryById(key, id)
   local field = key..'_id'
   local result = MySQL.query.await('SELECT `id`, `uuid`, `max_weight`, `ignore_item_limit` FROM `inventory` WHERE `'..field..'` = ? LIMIT 1;', { id })[1]
@@ -153,8 +163,14 @@ function InventoryControllers.GetJoinableSlot(inventory, itemId, maxStackSize)
   return result[1].slot_index
 end
 
--- First compartment index in [0, capacity) not occupied by any item at all.
-function InventoryControllers.GetFreeSlot(inventory, capacity)
+-- Set of compartment indices currently holding anything, as { [index] = true }.
+--
+-- Exposed separately from GetFreeSlot because a caller that places several
+-- units before writing any of them (GrantItem batches one INSERT for the
+-- whole grant) cannot re-query per unit -- the database still shows the
+-- pre-grant state, so every lookup would hand back the same free slot. Such
+-- a caller takes this set once and marks its own claims as it goes.
+function InventoryControllers.GetOccupiedSlotSet(inventory)
   local used = MySQL.query.await(
     'SELECT DISTINCT `slot_index` FROM `inventory_items` WHERE `inventory_id`=? AND `slot_index` IS NOT NULL;',
     { inventory })
@@ -162,6 +178,13 @@ function InventoryControllers.GetFreeSlot(inventory, capacity)
   for _, row in pairs(used) do
     occupied[tonumber(row.slot_index)] = true
   end
+  return occupied
+end
+
+-- First compartment index in [0, capacity) not occupied by any item at all.
+-- Safe only for callers that write each placement before asking again.
+function InventoryControllers.GetFreeSlot(inventory, capacity)
+  local occupied = InventoryControllers.GetOccupiedSlotSet(inventory)
   for i = 0, capacity - 1 do
     if not occupied[i] then
       return i
@@ -200,12 +223,38 @@ end
 function InventoryControllers.GetSlotItemBreakdown(inventory, slot)
   return MySQL.query.await([[
     SELECT `items`.`id` AS `item_id`, `items`.`name`, `items`.`weight`,
-           `items`.`max_quantity`, COUNT(*) AS `count`
+           `items`.`max_quantity`, `items`.`max_stack_size`, COUNT(*) AS `count`
     FROM `inventory_items`
     INNER JOIN `items` ON `items`.`id` = `inventory_items`.`item_id`
     WHERE `inventory_items`.`inventory_id`=? AND `inventory_items`.`slot_index`=?
-    GROUP BY `items`.`id`, `items`.`name`, `items`.`weight`, `items`.`max_quantity`;
+    GROUP BY `items`.`id`, `items`.`name`, `items`.`weight`, `items`.`max_quantity`,
+             `items`.`max_stack_size`;
   ]], { inventory, slot })
+end
+
+-- (Stack merge) Moves `quantity` rows from one compartment into another,
+-- across inventories if needed, leaving the remainder behind. MoveSlotItems
+-- relocates a whole compartment and SplitSlotItems is same-inventory only;
+-- this is the general partial move both of those are special cases of.
+--
+-- Rows are re-read from the source slot rather than taken from a caller's
+-- list, and each UPDATE is scoped by the source inventory_id, so a row that
+-- isn't actually there can't be pulled in by naming its id.
+function InventoryControllers.MoveSlotItemsPartial(fromInventory, fromSlot, toInventory, toSlot, quantity)
+  local rows = InventoryControllers.GetItemsInSlot(fromInventory, fromSlot)
+  local moved = 0
+
+  for _, row in ipairs(rows) do
+    if moved >= quantity then
+      break
+    end
+    MySQL.query.await(
+      'UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=? WHERE `id`=? AND `inventory_id`=?;',
+      { toInventory, toSlot, row.id, fromInventory })
+    moved = moved + 1
+  end
+
+  return moved
 end
 
 -- (Capacity model) Number of distinct compartments in use, regardless of what

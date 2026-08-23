@@ -81,6 +81,14 @@ The 2026-08-21 pass could only close the empty-destination half, by reusing `Inv
 
 Verified by simulation across four cases: a swap at the weight limit trading equal weights is correctly **allowed** (the addition-only model wrongly rejected it), a genuinely overloading swap is rejected on the destination side, a swap whose return leg overloads the source is rejected on the source side (previously allowed), and an empty destination degrades to the pure-addition result.
 
+**Found 2026-08-23 (in-game testing), fixed 2026-08-23: three separate stacking bugs.**
+
+- **`GrantItem` could blow straight past `max_stack_size`.** Its placement loop builds one batched `INSERT` executed only after the loop ends, but called `GetFreeSlot` per unit — a *database* read, which the pending batch is invisible to. Every call returned the same free compartment, so every unit past the first full stack piled into one slot: granting 100 apples with `max_stack_size = 20` produced a single compartment holding 78. Now claims against a local set seeded once from the DB and marked as the loop consumes it. `AddItem` was never affected — it writes each row as it goes, so its lookups do see prior placements.
+- **Stacks could be split but never recombined.** `MoveItem` always swapped, so dropping a stack onto a matching one just traded their positions. Dropping onto a stack of the *same* item now tops it up to `max_stack_size`, leaving any remainder behind. Note this needs different validation from a swap: `EvaluateSlotMove` assumes the occupant vacates to make room, but in a merge it stays put, so swap math would credit the destination for weight that never leaves it. A same-inventory merge needs no check at all; a cross-inventory one is a pure addition of the units actually moving.
+- **The carrying line compared weight against the slot count.** It rendered `"<weight> / <capacity> lb."`, so a book holding 100 weight showed `100.0 / 25 lb.` — 25 being the compartment count, not a weight limit. Per-inventory `max_weight` is now resolved server-side and sent per book, alongside the per-book capacity from §10.4.
+
+Open observation, not fixed: `Config.maxWeight` is documented in grams (120000 = 120 kg) but the ledger renders the carrying line with a `lb.` suffix, and seeded item weights (an apple = 1) don't clearly correspond to either. The units want a deliberate decision rather than a silent reinterpretation.
+
 **Found 2026-08-23, fixed 2026-08-23: the resource carried four mutually-inconsistent definitions of "full".** Surfaced by a reported bug — an apple with `max_quantity=100` and `max_stack_size=20` refused the 21st apple in the whole inventory. Root cause was not one bug but a systematic conflation of *stack size* (a per-compartment placement property) with *quantity limit* (an inventory-wide acceptance limit), plus two independent arithmetic errors:
 
 - `AddItem` compared the inventory-wide count of an item against `max_stack_size` — the reported bug.
@@ -258,6 +266,9 @@ Two tracks. The `INV-W*` track matches `DEPENDENCY_SUPPORT_PLAN.md` §4.5 exactl
 - [ ] Robbery system unblocked (cross-resource ask filed with `feather-core`)
 - [x] `AddItem` weight check added
 - [x] `GiveItem` server-side distance check added
+- [x] Stack merge on drop shipped (2026-08-23) — same-item stacks recombine up to max_stack_size, remainder stays
+- [x] `GrantItem` batched-insert over-stacking fixed (2026-08-23) — slots claimed locally, not re-read from a DB the batch hasn't touched
+- [x] Carrying line now shows the weight limit, not the slot count (2026-08-23)
 - [x] Split-stack action shipped (§10.1, 2026-08-23) — same-inventory only, server-enforced cap, UI build + lint verified
 - [x] Rejection reasons confirmed surfaced in UI
 - [x] Debug prints replaced with gated logger

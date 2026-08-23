@@ -16,6 +16,7 @@ function makeBook(footerLabel) {
     subtitle: '',
     footerLabel,
     capacity: 0,
+    maxWeight: 0,
     inventoryId: null,
     ignoreLimits: 0,
     items: [],
@@ -64,6 +65,7 @@ const onMessage = (event) => {
   // Each book has its own capacity now -- fall back to the old global
   // maxSlots so a server that predates the per-book fields still renders.
   player.capacity = Number(data.playerMaxSlots) || Number(data.maxSlots) || 0;
+  player.maxWeight = Number(data.playerMaxWeight) || Number(data.maxWeight) || 0;
   player.inventoryId = data.playerInventory;
   player.ignoreLimits = data.playerIgnoreLimits || 0;
   player.items = data.playerItems || [];
@@ -74,6 +76,7 @@ const onMessage = (event) => {
     other.title = String(data.otherName || t('ui_storage')).toUpperCase();
     other.subtitle = '';
     other.capacity = Number(data.otherMaxSlots) || Number(data.maxSlots) || 0;
+    other.maxWeight = Number(data.otherMaxWeight) || Number(data.maxWeight) || 0;
     other.inventoryId = data.otherInventory;
     other.ignoreLimits = data.otherIgnoreLimits || 0;
     other.items = data.otherItems;
@@ -390,6 +393,7 @@ const quantityActionLabel = computed(() => {
         :subtitle="player.subtitle"
         footer-label="CARRYING"
         :capacity="player.capacity"
+        :max-weight="player.maxWeight"
         :items="player.items"
         :categories="categoryOptions"
         v-model:active-category-id="player.activeCategoryId"
@@ -411,6 +415,7 @@ const quantityActionLabel = computed(() => {
         :subtitle="other.subtitle"
         footer-label="STORED"
         :capacity="other.capacity"
+        :max-weight="other.maxWeight"
         :items="other.items"
         :categories="categoryOptions"
         v-model:active-category-id="other.activeCategoryId"

@@ -166,6 +166,27 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
     })
   end
 
+  -- (Stack merge) Dropping a stack onto another stack of the SAME item tops
+  -- it up rather than swapping the two compartments. Without this there was
+  -- no way to recombine stacks at all -- split was one-way, and any drag
+  -- onto a matching stack just traded their positions.
+  --
+  -- Only a single-definition compartment on each side can merge; a mixed
+  -- slot (not producible through normal play, but not forbidden by the
+  -- schema either) falls through to the swap path rather than guessing.
+  local movingBreakdown = InventoryControllers.GetSlotItemBreakdown(fromInventory, fromSlot)
+  local occupantBreakdown = InventoryControllers.GetSlotItemBreakdown(toInventory, toSlot)
+  local mergeCount = 0
+
+  if #movingBreakdown == 1 and #occupantBreakdown == 1
+      and tostring(movingBreakdown[1].item_id) == tostring(occupantBreakdown[1].item_id) then
+    local stackSize = math.max(tonumber(occupantBreakdown[1].max_stack_size) or 1, 1)
+    local room = stackSize - (tonumber(occupantBreakdown[1].count) or 0)
+    if room > 0 then
+      mergeCount = math.min(tonumber(movingBreakdown[1].count) or 0, room)
+    end
+  end
+
   -- (§6/§10.1 MoveItem weight/capacity bypass -- now closed for both cases)
   -- Every other movement path (UpdateInventory, GiveItem, DropItemsOnGround)
   -- enforces weight/quantity/restricted-item limits via MoveInventoryItems ->
@@ -178,7 +199,26 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
   -- inventories ((current - leaving) + arriving), which closes the swap case
   -- and subsumes the empty-slot one as the degenerate "nothing is leaving"
   -- form of the same calculation.
-  local canMove = InventoryAPI.EvaluateSlotMove(fromInventory, fromSlot, toInventory, toSlot)
+  --
+  -- A merge needs different math from a swap: EvaluateSlotMove assumes the
+  -- occupant vacates to make room, but in a merge it stays put. Validating a
+  -- merge with swap math would credit the destination for weight that never
+  -- leaves it. Within one inventory nothing changes hands at all, so only a
+  -- cross-inventory merge needs checking, as a pure addition of the units
+  -- actually moving.
+  local canMove
+  if mergeCount > 0 then
+    if tostring(fromInventory) ~= tostring(toInventory) then
+      local _, toMaxWeight, toIgnoreLimit = InventoryControllers.GetInventoryById(toInventory, 'id')
+      canMove = InventoryAPI.EvaluateInventoryAcceptance(toInventory, toMaxWeight, toIgnoreLimit,
+        { { item = movingBreakdown[1].name, quantity = mergeCount } })
+    else
+      canMove = { status = true, message = '' }
+    end
+  else
+    canMove = InventoryAPI.EvaluateSlotMove(fromInventory, fromSlot, toInventory, toSlot)
+  end
+
   if not canMove or canMove.status == false then
     local rejectMessage = (canMove and canMove.message) or 'Target inventory cannot hold this item.'
     warn('Rejected MoveItem: src ' .. src .. ' -- ' .. tostring(rejectMessage) ..
@@ -188,7 +228,14 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
     return res({ error = true, message = rejectMessage })
   end
 
-  InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory, toSlot)
+  if mergeCount > 0 then
+    -- Only the units that fit move; any remainder stays where it was, so
+    -- dragging 15 onto a stack with room for 5 tops it up and leaves 10
+    -- behind rather than silently overfilling past max_stack_size.
+    InventoryControllers.MoveSlotItemsPartial(fromInventory, fromSlot, toInventory, toSlot, mergeCount)
+  else
+    InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory, toSlot)
+  end
 
   -- Only fire the cross-resource item-left/item-arrived events (e.g.
   -- feather-weapons unequipping on ItemRemoved) when the item actually left

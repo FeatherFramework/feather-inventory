@@ -69,11 +69,37 @@ function ItemsAPI.GrantItem(itemName, quantity, inventoryId)
   -- now, and it can't change while this grant is being assembled.
   local capacity = InventoryControllers.GetInventoryCapacity(inventory)
 
+  -- (Over-stacking bugfix) This loop builds ONE batched INSERT, executed only
+  -- after it finishes -- so nothing it places is visible to a database read
+  -- taken during it. Calling GetFreeSlot per unit therefore returned the same
+  -- free compartment every single time, and every unit past the first full
+  -- stack landed in that one slot: a grant of 100 apples with max_stack_size
+  -- 20 produced a compartment holding 78, wildly past the stack limit.
+  --
+  -- Claim slots against a local set instead, seeded once from the database
+  -- and marked as this loop consumes them. (AddItem below is unaffected --
+  -- it writes each row as it goes, so its GetFreeSlot calls do see prior
+  -- placements.)
+  local occupied = InventoryControllers.GetOccupiedSlotSet(inventory)
+  if currentSlot ~= nil then
+    occupied[tonumber(currentSlot)] = true
+  end
+
+  local function claimFreeSlot()
+    for index = 0, capacity - 1 do
+      if not occupied[index] then
+        occupied[index] = true
+        return index
+      end
+    end
+    return nil
+  end
+
   local placeholders = {}
   local values = {}
   for index = 1, quantity do
     if currentSlot == nil or currentSlotCount >= maxStackSize then
-      currentSlot = InventoryControllers.GetFreeSlot(inventory, capacity)
+      currentSlot = claimFreeSlot()
       currentSlotCount = 0
       if currentSlot == nil then
         return { error = true, code = 'inventory_full', message = 'Inventory has no available slots.' }

@@ -580,11 +580,13 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
     -- render as the same size as the player's own book -- and, worse, let the
     -- UI offer slots the server would then reject as out of range.
     inventoryMaxSlots = InventoryControllers.GetInventoryCapacity(inventory),
+    inventoryMaxWeight = InventoryControllers.GetInventoryWeightLimit(inventory),
     otherName = otherName,
     otherInventory = otherInventory,
     otherInventoryItems = otherInventoryItems,
     otherInventoryIgnoreLimits = otherInventoryIgnoreLimits,
-    otherInventoryMaxSlots = otherInventory and InventoryControllers.GetInventoryCapacity(otherInventory) or nil
+    otherInventoryMaxSlots = otherInventory and InventoryControllers.GetInventoryCapacity(otherInventory) or nil,
+    otherInventoryMaxWeight = otherInventory and InventoryControllers.GetInventoryWeightLimit(otherInventory) or nil
   }
 end
 
