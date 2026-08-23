@@ -31,7 +31,7 @@ jobs:
         working-directory: ./ui
       - uses: vimtor/action-zip@v1
         with:
-          files: fxmanifest.lua LICENSE.md README.md ui/dist client server shared config.lua
+          files: fxmanifest.lua LICENSE.md README.md ui/dist client server translations config.lua
           recursive: false
           dest: feather-inventory.zip
       - name: get-npm-version
