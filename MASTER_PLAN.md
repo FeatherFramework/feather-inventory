@@ -315,7 +315,7 @@ Two tracks. The `INV-W*` track matches `DEPENDENCY_SUPPORT_PLAN.md` §4.5 exactl
 - [x] Shift+drag bulk transfer/drop shipped (§10.2, 2026-08-23) — shift+click quick-transfer, shift skips the quantity prompt
 - [x] Pinia assessed and **declined for now** (§10.2, 2026-08-23) — no prop drilling, no cross-tree state, no test suite; revisit if the hotbar introduces a second component tree
 - [x] Condition/durability convention shipped (§10.3, 2026-08-23) — generic 0..Max per-instance value, Get/Set/AdjustCondition, wear stages in the ledger; refuses stackable items pending INV-W1's unique-instance model
-- [ ] Condition: per-cell wear icons, and a consumer resource that actually produces wear
+- [ ] **NOTHING PRODUCES WEAR YET** — condition is fully built (API, display, per-cell indicator) but no resource decrements it. That is by design: inventory owns the convention, not the policy. Real wear arrives with `feather-weapons`, which is the first consumer.
 - [ ] **DECISION PENDING** — in-game item-definition editor: does the write API live in `feather-inventory` and the UI in `feather-admin` (recommended, mirrors `GrantItem`), or does it all sit in one resource? Parked 2026-08-23 at the owner's request. Blocks nothing; revisit before any §10.3 tooling work.
 - [x] Quick-loot "Take All" shipped (§10.3, 2026-08-23) — greedy per-item, reports moved/skipped
 - [x] Weight meter — already satisfied by the carrying-line fix; closed rather than left open as if unbuilt
