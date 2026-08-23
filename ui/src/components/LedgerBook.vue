@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from 'vue';
-import { t } from '@/i18n';
+import { t, conditionStage, conditionMax } from '@/i18n';
 
 // One "1899 personal effects ledger" book -- either the player's own
 // inventory or the paired container/ground/robbery-target book. Fully
@@ -76,14 +76,26 @@ const selectedCell = computed(() => {
 const detail = computed(() => {
   const cell = selectedCell.value;
   if (!cell || !cell.repItem) {
-    return { label: '—', desc: t('ui_no_entry'), weight: '—', qtyPlain: '—', img: null };
+    return { label: '—', desc: t('ui_no_entry'), weight: '—', qtyPlain: '—', img: null, condition: null };
   }
+  // (§10.3) Condition rides along in item_metadata, which the server already
+  // sends with every row -- no extra payload field needed. Absent metadata
+  // means this instance has no condition recorded, which is not the same as
+  // zero, so it renders nothing rather than "Ruined".
+  const raw = cell.repItem.item_metadata && cell.repItem.item_metadata.condition;
+  const value = Number(raw);
+  const hasCondition = raw !== undefined && raw !== null && Number.isFinite(value);
+  const stage = hasCondition ? conditionStage(value) : null;
+
   return {
     label: cell.repItem.display_name,
     desc: cell.repItem.description,
     weight: (Number(cell.repItem.weight) * cell.qty).toFixed(1) + ' lb.',
     qtyPlain: String(cell.qty),
     img: iconSrc(cell.repItem.name),
+    condition: hasCondition
+      ? (stage ? `${stage} (${value}/${conditionMax()})` : `${value}/${conditionMax()}`)
+      : null,
   };
 });
 
@@ -197,6 +209,7 @@ function tabLabelSize(count) {
           <div class="ledger-detail-footer">
             <span>{{ t('ui_quantity') }} &mdash; {{ detail.qtyPlain }}</span>
             <span>{{ t('ui_weight') }} &mdash; {{ detail.weight }}</span>
+            <span v-if="detail.condition">{{ t('ui_condition') }} &mdash; {{ detail.condition }}</span>
           </div>
         </div>
       </div>

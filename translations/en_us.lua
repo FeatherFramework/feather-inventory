@@ -90,5 +90,12 @@ Feather.Locale.register('en_us', {
     ui_invalid_amount = 'Invalid amount.',
     ui_no_entry = 'No entry selected.',
 
+    -- Condition wear stages (see Config.Condition.Stages) and the detail label.
+    ui_condition = 'Condition',
+    ui_condition_pristine = 'Pristine',
+    ui_condition_worn = 'Worn',
+    ui_condition_damaged = 'Damaged',
+    ui_condition_ruined = 'Ruined',
+
     ui_paired_hint = 'Drag an entry between books to move it \u{2022} Shift-click to send it across \u{2022} ESC closes both',
 })

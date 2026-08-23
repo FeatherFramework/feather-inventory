@@ -17,8 +17,25 @@ local UI_STRING_KEYS = {
   'ui_use', 'ui_give', 'ui_drop', 'ui_split', 'ui_cancel', 'ui_confirm',
   'ui_quantity', 'ui_weight', 'ui_how_many', 'ui_use_all', 'ui_invalid_amount',
   'ui_no_entry',
+  'ui_condition', 'ui_condition_pristine', 'ui_condition_worn',
+  'ui_condition_damaged', 'ui_condition_ruined',
   'ui_paired_hint',
 }
+
+-- (§10.3) Condition wear stages, thresholds from Config and labels resolved
+-- through the locale like every other UI string. Sent once per open rather
+-- than per item -- the UI picks the matching stage from an item's condition
+-- value itself, so this doesn't grow with inventory size.
+local function BuildConditionStages()
+  local stages = {}
+  for _, stage in ipairs((Config.Condition and Config.Condition.Stages) or {}) do
+    stages[#stages + 1] = {
+      at = tonumber(stage.at) or 0,
+      label = Translate(stage.label, nil)
+    }
+  end
+  return stages
+end
 
 local function BuildUIStrings()
   local strings = {}
@@ -87,6 +104,11 @@ InventoryAction.Open = function(otherInventoryId, target)
       playerMaxWeight = results.inventoryMaxWeight,
       otherMaxWeight = results.otherInventoryMaxWeight,
       strings = BuildUIStrings(),
+      -- (§10.3) Wear stages resolved here rather than duplicated in JS --
+      -- thresholds come from Config, labels through the same locale path as
+      -- every other UI string.
+      conditionStages = BuildConditionStages(),
+      conditionMax = (Config.Condition and Config.Condition.Max) or 100,
       categories = Feather.RPC.CallAsync('Feather:Inventory:GetCategories', {}),
       player = {
         dollars = player_display.dollars,

@@ -5,7 +5,7 @@ import '@/assets/tailwind.css';
 import LedgerBook from '@/components/LedgerBook.vue';
 import ContextMenu from '@/components/ContextMenu.vue';
 import ItemCountModal from '@/components/ItemCountModal.vue';
-import { t, setStrings } from '@/i18n';
+import { t, setStrings, setConditionStages } from '@/i18n';
 
 const visible = ref(false);
 const devmode = ref(false);
@@ -59,6 +59,7 @@ const onMessage = (event) => {
   visible.value = data.visible;
   rawCategories.value = data.categories || [];
   setStrings(data.strings);
+  setConditionStages(data.conditionStages, data.conditionMax);
 
   player.title = t('ui_personal_effects');
   player.subtitle = data.player?.characterName || '';

@@ -31,6 +31,12 @@ const DEFAULTS = {
   ui_invalid_amount: 'Invalid amount.',
   ui_no_entry: 'No entry selected.',
 
+  ui_condition: 'Condition',
+  ui_condition_pristine: 'Pristine',
+  ui_condition_worn: 'Worn',
+  ui_condition_damaged: 'Damaged',
+  ui_condition_ruined: 'Ruined',
+
   ui_paired_hint: 'Drag an entry between books to move it • Shift-click to send it across • ESC closes both',
 };
 
@@ -57,6 +63,35 @@ export function setStrings(incoming) {
 // value). A %s would therefore blow up format() on the Lua side before the
 // string ever got here. {n} means nothing to string.format and survives the
 // trip intact.
+// (§10.3) Wear stages come from Lua (thresholds from Config, labels
+// localized), so the thresholds live in exactly one place. Empty until a
+// payload arrives -- conditionStage() then simply finds no match and the UI
+// shows the raw value, which is the right degradation.
+const conditionStages = reactive({ list: [], max: 100 });
+
+export function setConditionStages(stages, max) {
+  conditionStages.list = Array.isArray(stages) ? [...stages] : [];
+  conditionStages.max = Number(max) || 100;
+}
+
+// Highest matching threshold wins; stages arrive highest-first but this
+// doesn't rely on that ordering.
+export function conditionStage(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  let best = null;
+  for (const stage of conditionStages.list) {
+    if (n >= Number(stage.at) && (best === null || Number(stage.at) > Number(best.at))) {
+      best = stage;
+    }
+  }
+  return best ? best.label : null;
+}
+
+export function conditionMax() {
+  return conditionStages.max;
+}
+
 export function t(key, ...args) {
   let out = strings[key] ?? DEFAULTS[key] ?? key;
   for (const arg of args) {

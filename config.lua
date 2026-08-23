@@ -64,6 +64,30 @@ Config.Dropped = {
 -- weight is 1 lb. That sets the granularity of everything below -- there is
 -- no half-pound item without a schema change.
 Config.maxWeight = 125
+
+-- (§10.3) Item condition / durability.
+--
+-- A generic, per-instance 0..Max wear value stored in `item_metadata` under
+-- `Key`. Inventory owns the CONVENTION -- the key, the range, clamping, and
+-- how a value is displayed -- and deliberately owns none of the policy:
+-- deciding that firing a gun costs 1 condition, or that a repair kit restores
+-- 40, belongs to whichever resource models that behaviour. Doing it once here
+-- generically is strictly better than feather-weapons, a tools resource and a
+-- clothing resource each inventing their own field.
+--
+-- Stages drive the wear label shown in the ledger, highest first; `at` is the
+-- minimum condition value for that stage. Purely presentational -- change
+-- them freely, no server logic reads them.
+Config.Condition = {
+    Key = 'condition',
+    Max = 100,
+    Stages = {
+        { at = 80, label = 'ui_condition_pristine' },
+        { at = 50, label = 'ui_condition_worn' },
+        { at = 20, label = 'ui_condition_damaged' },
+        { at = 0,  label = 'ui_condition_ruined' },
+    }
+}
 -- Config.hotbarLimit = 6
 
 -- (INV-11/INV-12/INV-23) Access control for opening an inventory that isn't

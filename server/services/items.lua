@@ -366,6 +366,120 @@ ItemsAPI.SetMetadata = function(item, metadata)
   }
 end
 
+------------------------------------------------------------------
+-- Condition / durability (§10.3)
+------------------------------------------------------------------
+--
+-- A generic per-instance wear value on top of item_metadata. This resource
+-- owns the convention only -- key, range, clamping, validation, display --
+-- and none of the policy. When an item wears, by how much, and what a worn
+-- item then does are all questions for whichever resource models that
+-- behaviour (feather-weapons, a tools resource, ...). Keeping it generic here
+-- is the whole point: otherwise every consumer invents its own field and
+-- nothing can render a wear indicator for all of them.
+--
+-- Storage-agnostic by design. `condition` is a single small integer, so it
+-- sits in the current flat item_metadata table unchanged, and will survive
+-- INV-W1's move to a versioned metadata document without the convention
+-- itself changing -- which is why MASTER_PLAN sequences this alongside that
+-- work rather than after it.
+
+local function ConditionKey()
+  return (Config.Condition and Config.Condition.Key) or 'condition'
+end
+
+local function ConditionMax()
+  return tonumber(Config.Condition and Config.Condition.Max) or 100
+end
+
+---
+-- Get Condition
+--
+-- @param itemId inventory_items.id
+-- @return Integer 0..Max, or nil if this instance has no condition recorded
+--
+ItemsAPI.GetCondition = function(itemId)
+  local item = InventoryControllers.GetInventoryItemById(tonumber(itemId))
+  if not item then
+    return nil
+  end
+  local metadata = item.item_metadata
+  if type(metadata) ~= 'table' then
+    return nil
+  end
+  return tonumber(metadata[ConditionKey()])
+end
+
+---
+-- Set Condition
+--
+-- Clamps to 0..Config.Condition.Max and writes it to this instance.
+--
+-- REFUSES STACKABLE ITEMS, deliberately. A compartment stacks by item_id
+-- alone (see GetJoinableSlot) -- metadata is invisible to it -- so two units
+-- of a stackable item carrying different conditions would silently merge into
+-- one compartment and one of the values would be lost. Per-instance state on
+-- a stackable definition needs INV-W1's unique-instance model first; until
+-- then this fails closed rather than quietly corrupting a stack. Every
+-- currently-seeded degradable item (weapons, tools) is max_stack_size = 1 and
+-- is unaffected.
+--
+-- @param itemId inventory_items.id
+-- @param value Desired condition; clamped into range
+-- @return { error, code, message, condition }
+--
+ItemsAPI.SetCondition = function(itemId, value)
+  local numericId = tonumber(itemId)
+  local numericValue = tonumber(value)
+  if not numericId or not numericValue then
+    return { error = true, code = 'invalid_quantity', message = 'Invalid item id or condition value.' }
+  end
+
+  local item = InventoryControllers.GetInventoryItemById(numericId)
+  if not item then
+    return { error = true, code = 'invalid_item', message = 'Item does not exist.' }
+  end
+
+  if (tonumber(item.max_stack_size) or 1) > 1 then
+    return {
+      error = true,
+      code = 'condition_not_supported',
+      message = 'Condition cannot be set on a stackable item.'
+    }
+  end
+
+  local clamped = math.max(0, math.min(math.floor(numericValue), ConditionMax()))
+  InventoryControllers.SetMetadata(numericId, ConditionKey(), tostring(clamped))
+
+  return { error = false, condition = clamped }
+end
+
+---
+-- Adjust Condition
+--
+-- Relative change -- the common case, since wear is expressed as "this cost
+-- 5 condition" far more often than as an absolute target. An instance with
+-- no condition recorded yet is treated as full, so a consumer can wear an
+-- item that was never explicitly initialised.
+--
+-- @param itemId inventory_items.id
+-- @param delta Signed change (negative wears, positive repairs)
+-- @return { error, code, message, condition }
+--
+ItemsAPI.AdjustCondition = function(itemId, delta)
+  local numericDelta = tonumber(delta)
+  if not numericDelta then
+    return { error = true, code = 'invalid_quantity', message = 'Invalid condition delta.' }
+  end
+
+  local current = ItemsAPI.GetCondition(itemId)
+  if current == nil then
+    current = ConditionMax()
+  end
+
+  return ItemsAPI.SetCondition(itemId, current + numericDelta)
+end
+
 ItemsAPI.GetItem = function(id)
   local item = InventoryControllers.GetInventoryItemById(id)
   if not item then
