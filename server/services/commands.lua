@@ -127,10 +127,11 @@ if Config.DevMode then
         report('legacy removal respects guard', vetoed.error == true, vetoed.message)
 
         -- Clean up everything this test created.
-        InventoryAPI.Transaction({ reason = 'smoketest_cleanup' }, function(tx)
-            tx:RemoveQuantity(inventory, definition.id, 2)
-            return true
+        local cleanup = InventoryAPI.Transaction({ reason = 'smoketest_cleanup' }, function(tx)
+            return tx:RemoveInstances(inventory, definition.id, { created, mover })
         end)
+        report('exact instance removal', Result.IsOk(cleanup),
+            Result.IsOk(cleanup) and 'removed=2' or (cleanup.error and cleanup.error.message))
         print('[InvTxSmokeTest] done')
     end, true)
 
