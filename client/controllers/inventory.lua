@@ -68,7 +68,9 @@ InventoryAction.Open = function(otherInventoryId, target)
   end
 
   print('Opening Inventory', otherInventoryId or 'character')
-  if not isInvOpen and CanOpenInventory() then
+  -- OpenInventory is also the post-use refresh signal. Refetch while the UI
+  -- is already open so consumed items and changed quantities repaint.
+  if CanOpenInventory() then
     local results = Feather.RPC.CallAsync('Feather:Inventory:GetInventoryItems', { otherInventoryId = otherInventoryId })
     if results.error ~= nil then
       -- Localized off the server's stable errorCode, falling back to the
