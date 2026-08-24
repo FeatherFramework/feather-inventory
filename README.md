@@ -57,17 +57,14 @@ The client export exposes only `Action`.
 
 ## Result shapes
 
-Two conventions exist side by side, deliberately. Newer contract surfaces (`Instances`, `Transaction`, `Equipment`, `CanAccessInventory`) use the **result envelope**; older functions keep the shapes their existing consumers already depend on.
+**Every export returns a result envelope.** There is one convention, not two.
 
 ```lua
--- Envelope (Instances / Transaction / Equipment / CanAccessInventory)
 { ok = true,  value = <result>, correlationId = <id?> }
 { ok = false, error = { code = 'stable_code', message = '...', details = {} }, correlationId = <id?> }
-
--- Legacy (Items / most of Inventory)
-{ error = false, ... }
-{ error = true, code = 'stable_code'?, message = 'English, developer-facing' }
 ```
+
+The API contract version is `2`. Read it from `GetCapabilities().value.contractVersion` and refuse to start against anything lower — a key-existence check cannot detect a changed return shape.
 
 `code` is stable and machine-readable; `message` is developer-facing English. Player-facing text is resolved separately from `translations/` via the matching `err_<code>` key.
 
@@ -93,7 +90,7 @@ AddEventHandler('onResourceStart', function(resource)
 end)
 
 -- Later, when a wagon is spawned or first opened:
-local uuid, inventoryId = Inventory.Inventory.RegisterInventory(
+local registered = Inventory.Inventory.RegisterInventory(
   'wagons',            -- tableName, must match the foreign key you registered
   wagon.id,            -- id, the row in your table
   'Wagon Bed',         -- displayName, shown on the ledger page
@@ -105,10 +102,16 @@ local uuid, inventoryId = Inventory.Inventory.RegisterInventory(
   60                   -- maxSlots (nil = Config.maxItemSlots)
 )
 
-MySQL.update.await('UPDATE wagons SET inventory_uuid = ? WHERE id = ?', { uuid, wagon.id })
+if not registered.ok then
+  print(registered.error.code, registered.error.message)
+  return
+end
+
+MySQL.update.await('UPDATE wagons SET inventory_uuid = ? WHERE id = ?',
+  { registered.value.uuid, wagon.id })
 ```
 
-`RegisterInventory` returns `uuid, id` — the **UUID** is what you store and pass to most `Items` functions; the numeric **id** is what the `Instances`, `Transaction` and access functions take.
+`RegisterInventory` returns `Ok({ uuid, id })` — the **UUID** is what you store and pass to most `Items` functions; the numeric **id** is what the `Instances`, `Transaction` and access functions take. Positional multi-returns became named tables in contract 2; `GetInventory` and `GetCustomInventory` used to return their fields in different orders.
 
 Notes that catch people out:
 
@@ -121,15 +124,19 @@ Notes that catch people out:
 
 ```lua
 -- By UUID or by raw id -- GetInventoryById handles both.
-local id, maxWeight, ignoreItemLimit, name = Inventory.Inventory.GetInventory(uuid)
+local found = Inventory.Inventory.GetInventory(uuid)
+if found.ok then
+  print(found.value.id, found.value.maxWeight, found.value.ignoreItemLimit, found.value.name)
+end
 
 -- Custom inventory, resolved through your own foreign key column.
-local id, uuid, maxWeight, ignoreItemLimit =
-  Inventory.Inventory.GetCustomInventory('wagons', wagon.id)
+local wagonInv = Inventory.Inventory.GetCustomInventory('wagons', wagon.id)
+-- wagonInv.value = { id, uuid, maxWeight, ignoreItemLimit }
 
 -- Everything in a container, as rows the ledger renders.
-for _, item in ipairs(Inventory.Inventory.GetInventoryItems(id)) do
-  print(item.name, item.slot_index, item.item_metadata and item.item_metadata.condition)
+local contents = Inventory.Inventory.GetInventoryItems(id)
+for _, item in ipairs(contents.value) do
+  print(item.name, item.slot_index, item.metadata and item.metadata.condition)
 end
 ```
 
@@ -140,8 +147,11 @@ local items = { { item = 'consumable_apple', quantity = 5 }, { item = 'matches',
 
 -- Player source or inventory UUID:
 local check = Inventory.Inventory.InventoryCanHold(items, source)
-if not check or check.status == false then
-  print(check and check.code, check and check.message)  --> 'weight_limit', 'Max Weight Exceeded.'
+if not check.ok then
+  return  -- the evaluation itself failed
+end
+if check.value.accepted == false then
+  print(check.value.code, check.value.message)  --> 'weight_limit', 'Max Weight Exceeded.'
   return
 end
 
@@ -156,7 +166,9 @@ local check = Inventory.Inventory.EvaluateInventoryAcceptance(
 local move = Inventory.Inventory.EvaluateSlotMove(fromInventoryId, 3, toInventoryId, 7)
 ```
 
-All four return `{ status = boolean, code = string?, message = string }`.
+All four return `Ok({ accepted = boolean, code = string?, message = string })`.
+
+> **A refusal is a success.** "This inventory cannot hold that" is a question that was answered, so it comes back as `ok = true` with `accepted = false`. `ok = false` means the evaluation itself failed — a missing inventory, a database error. Keeping them apart is the point: a dead connection and a full backpack must not take the same branch.
 
 `EvaluateInventoryAcceptance` is the single definition of "can this inventory accept N of these" — quantity cap, slot capacity accounting for stacking, weight, and blacklist. The two `InventoryCanHold*` functions are thin wrappers over it that differ only in how they resolve the inventory.
 
@@ -233,37 +245,46 @@ Throughout this table, `inventoryId` follows the framework's dual convention: **
 ### Definitions and counts
 
 ```lua
-for _, def in ipairs(Inventory.Items.GetDefinitions()) do
-  print(def.name, def.display_name, def.weight, def.max_stack_size, def.category)
+local defs = Inventory.Items.GetDefinitions()
+for _, def in ipairs(defs.value) do
+  -- Skip unique definitions in a generic grant browser -- they carry
+  -- per-instance state and GrantItem refuses them (unique_requires_issuer).
+  if def.instance_mode ~= 'unique' then
+    print(def.name, def.display_name, def.weight, def.max_stack_size, def.category)
+  end
 end
 
-Inventory.Items.ItemExists('consumable_apple')          --> boolean
-Inventory.Items.GetItem(instanceId)                     --> the joined row, or nil
-Inventory.Items.GetItemCount('consumable_apple', source)--> number, or nil on a bad name/inventory
+Inventory.Items.ItemExists('consumable_apple')          --> Ok(boolean)
+Inventory.Items.GetItem(instanceId)                     --> Ok(row) | Err(not_found)
+Inventory.Items.GetItemCount('consumable_apple', source)--> Ok(number)
 
 Inventory.Items.InventoryHasItems({
   { name = 'wood', quantity = 4 },
   { name = 'nails', quantity = 12 },
-}, source)                                              --> boolean
+}, source)                                              --> Ok(boolean)
 ```
 
-> `InventoryHasItems` takes `name`, while the capacity functions take `item`. They are different shapes; this is legacy and worth double-checking when you copy a table between them.
+> **Predicates return `Ok(boolean)`.** `Result.IsOk()` is true for a successful `false`, so read `.value` — and fail closed when `ok` is false. A failure envelope is itself truthy, so testing the envelope rather than its value grants access on a database error.
+
+> `InventoryHasItems` takes `name`, while the capacity functions take `item`. They are different shapes; worth double-checking when you copy a table between them.
 
 ### Granting
 
 `GrantItem` is the **trusted** path — admin tools, rewards, scripted payouts. It validates quantity, catalog membership, slot capacity, weight, per-item quantity cap and the blacklist atomically, and returns stable codes.
 
+> **`GrantItem` refuses `unique` definitions** with `unique_requires_issuer`. It creates rows through a batched `INSERT` with no metadata, so granting a weapon this way would produce an instance with an empty document — present and equippable, with nothing for its owning resource to read. Unique items are issued by whichever resource models them, which creates the instance and its complete document in one transaction. Filter them out of any generic grant UI using `instance_mode` from `GetDefinitions`.
+
 ```lua
 local result = Inventory.Items.GrantItem('consumable_apple', 10, source)
-if result.error then
-  -- 'invalid_item' | 'invalid_quantity' | 'invalid_inventory'
-  -- 'inventory_full' | 'weight_limit' | 'item_restricted' | 'database_error'
-  print(result.code, result.message)
+if not result.ok then
+  -- 'invalid_item' | 'invalid_quantity' | 'invalid_inventory' | 'inventory_full'
+  -- 'weight_limit' | 'item_restricted' | 'database_error' | 'unique_requires_issuer'
+  print(result.error.code, result.error.message)
   return
 end
 
-print(result.displayName, result.quantity)
-for _, instanceId in ipairs(result.instanceIds) do
+print(result.value.displayName, result.value.quantity)
+for _, instanceId in ipairs(result.value.instanceIds) do
   -- Real inventory_items ids, so you can immediately attach metadata.
   Inventory.Instances.MergeMetadata(instanceId, { source = 'daily_reward' })
 end
@@ -272,13 +293,10 @@ end
 `AddItem` is the older path. It accepts initial metadata (written in the same `INSERT`, so an instance is never briefly visible without the state that defines it) and reports `granted`/`requested` so a partial grant is distinguishable from a complete one.
 
 ```lua
-local result = Inventory.Items.AddItem('weapon_revolver_cattleman', 1, {
-  serial = 'CM-4471',
-  ammo = 6,
-}, source)
+local result = Inventory.Items.AddItem('consumable_apple', 10, { picked = true }, source)
 
-if result.error then
-  print(result.message, result.granted, result.requested)
+if not result.ok then
+  print(result.error.code, result.error.message, result.error.details.granted)
 end
 ```
 
@@ -287,8 +305,8 @@ end
 ```lua
 -- Any n units of a definition, no particular order.
 local removed = Inventory.Items.RemoveItemByName('wood', 4, source)
-if not removed.error then
-  print(removed.removed, table.concat(removed.instanceIds, ','))
+if removed.ok then
+  print(removed.value.removed, table.concat(removed.value.instanceIds, ','))
 end
 
 -- One specific instance.
@@ -329,7 +347,7 @@ Inventory.Instances.MergeMetadata(instanceId, { ammo = 5, chambered = true })
 A generic per-instance `0..Config.Condition.Max` wear value stored in the metadata document. This resource owns the **convention** — key, range, clamping, display — and none of the **policy**: when an item wears and by how much belongs to whichever resource models that behaviour.
 
 ```lua
-local condition = Inventory.Items.GetCondition(instanceId)  --> number, or nil if none recorded
+local condition = Inventory.Items.GetCondition(instanceId)  --> Ok(number|nil)
 
 -- Absolute, clamped into range:
 Inventory.Items.SetCondition(instanceId, 80)
@@ -337,10 +355,10 @@ Inventory.Items.SetCondition(instanceId, 80)
 -- Relative -- the common case. An instance with no condition recorded is treated as full,
 -- so you can wear an item that was never explicitly initialised.
 local worn = Inventory.Items.AdjustCondition(instanceId, -5)
-if worn.error then
-  print(worn.code)  --> 'condition_not_supported' on a stackable definition
+if not worn.ok then
+  print(worn.error.code)  --> 'condition_not_supported' on a stackable definition
 else
-  print(worn.condition, worn.revision)
+  print(worn.value.condition, worn.value.revision)
 end
 ```
 
@@ -409,12 +427,15 @@ Inventory.Instances.MergeMetadata(instanceId, { chambered = true, jammed = nil }
 
 ```lua
 local caps = Inventory.GetCapabilities()   -- also Inventory.Instances.GetCapabilities()
-if not caps.features.rowLocking then
+if not caps.ok or (tonumber(caps.value.contractVersion) or 0) < 2 then
+  error('feather-inventory contract 2 or newer is required')
+end
+if not caps.value.features.rowLocking then
   error('feather-inventory is too old: this resource needs row locking')
 end
 ```
 
-Lets a dependent resource fail loudly at startup with a precise missing capability, rather than discovering mid-operation that a contract it assumed is absent. Current flags: `instanceMode`, `metadataDocument`, `instanceRevision`, `instanceReadModel`, `resultEnvelope`, `transactions`, `movementGuards`, `postCommitEvents`, `accessModes`, `metadataSizeLimit`, `transactionMetrics`, `rowLocking`, `equippedState`, `atomicCreation`.
+Check `contractVersion` **before** registering anything against the API. It is a plain integer, deliberately separate from the human-readable semver `version` — a consumer compares it numerically, and `tonumber('2.0.0')` is `nil`. A key-existence check cannot detect a changed return shape, so this is the gate that turns a version mismatch into a clear startup failure rather than a silently misread result. Current flags: `instanceMode`, `metadataDocument`, `instanceRevision`, `instanceReadModel`, `resultEnvelope`, `transactions`, `movementGuards`, `postCommitEvents`, `accessModes`, `metadataSizeLimit`, `transactionMetrics`, `rowLocking`, `equippedState`, `atomicCreation`.
 
 ---
 
@@ -627,7 +648,8 @@ An instance can only occupy one slot at a time (enforced by a unique key), and d
 ## `Categories`
 
 ```lua
-for _, category in ipairs(Inventory.Categories.GetCategories()) do
+local categories = Inventory.Categories.GetCategories()
+for _, category in ipairs(categories.value) do
   print(category.name, category.display_name)
 end
 ```
@@ -650,9 +672,9 @@ The client export is deliberately thin — every mutation is server-authoritativ
 
 ---
 
-## Removed (breaking)
+## Removed (breaking) — contract 2
 
-The framework is alpha and does not carry backwards compatibility. These surfaces existed only to avoid breaking consumers and have been removed:
+The framework is alpha and does not carry backwards compatibility. **The result envelope is now the only convention**; see [Result shapes](#result-shapes). Alongside that, these surfaces existed only to avoid breaking consumers and have been removed:
 
 | Removed | Use instead |
 |---|---|
@@ -663,6 +685,9 @@ The framework is alpha and does not carry backwards compatibility. These surface
 | `metadataRevision` capability flag | `instanceRevision` |
 | `GetItemCount` returning `-1` on failure | Returns `nil` |
 | `item_metadata` payload key on ledger item rows | `metadata` |
+| `{ error = true/false }` returns on `Items`, `Inventory`, `Categories` | `{ ok, value }` / `{ ok, error }` |
+| Positional multi-returns (`RegisterInventory`, `GetInventory`, …) | named tables inside `.value` |
+| Generic `GrantItem` on a `unique` definition | issue it through the resource that owns it |
 
 > **Rebuild your database for this release.** These are schema changes with no in-place migration path, by design — the framework is alpha and servers are rebuilt rather than upgraded. `metadata_revision` is simply no longer created; on a database that already has it the column is left behind, unread and unwritten. The flat `item_metadata` table is likewise removed at its source, by `feather-recipe` no longer creating it.
 
@@ -697,7 +722,7 @@ See [`MASTER_PLAN.md`](./MASTER_PLAN.md) for the full tracked backlog, including
 - **Sound/haptic feedback** — none exists today; wants a period-fit sound-set decision first.
 - **In-game item-definition editor** — ownership decision pending (`feather-inventory` API + `feather-admin` UI is the current recommendation).
 
-Known gaps in the API surface above, all tracked in `MASTER_PLAN.md` §6.1:
+Known gaps in the API surface above, tracked in `MASTER_PLAN.md` §6.1:
 
-- `tx:AddQuantity` enforces slot capacity only — weight, per-item quantity cap and the blacklist are not checked on the transactional grant path. Preflight with `InventoryCanHoldById` until that closes.
-- `ItemMoved` arrives without `definitionId`/`revision`/actor fields on the non-transactional movement path.
+- `ItemMoved` arrives without `definitionId`/`revision`/actor fields on the `MoveInventoryItems` path (give, ground drop, take-all, shift-transfer). Read them defensively, or re-query.
+- `RunGuards` re-reads the instance on a separate connection instead of being handed the row the transaction already locked.

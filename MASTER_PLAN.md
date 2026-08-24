@@ -149,7 +149,7 @@ The `feather-weapons` review landed a second pass over the whole INV-W track. Mo
 
 **Three gaps found reviewing that work (2026-08-24), all open:**
 
-- **`Tx:AddQuantity` enforces slot capacity only — not weight, not `max_quantity`, not the blacklist.** This is the same class of hole §6's capacity unification closed everywhere else, reopened on the newest path: `AcceptanceInTransaction` exists and does all four checks, and `MoveInventoryItems` calls it, but `AddQuantity` hand-rolls a free-slot loop and never calls it. Every transactional grant reaches this — including `MutateItem`'s `additions`, which is exactly how `feather-weapons` will add ammunition. The fix is to call `AcceptanceInTransaction` before the placement loop; it already takes the transaction-bound `query`, so nothing new has to be built. **This is the highest-priority open item in this section.**
+- ~~**`Tx:AddQuantity` enforces slot capacity only.**~~ **Fixed 2026-08-24 (contract 2).** `AcceptanceInTransaction` was promoted from a file-local helper to `InventoryControllers.AcceptanceInTransaction` and is now called before placement, so weight, `max_quantity` and the blacklist are enforced against locked rows on the transactional path too. This became load-bearing rather than merely untidy the moment `GrantItem` began refusing `unique` definitions: every issuer then reaches instances through `CreateInstance`, and a weaker gate on the only remaining route is a bypass around the rule the refusal exists to enforce. The trusted-issuer `actorSource = nil` access exemption is deliberate and unchanged -- it is about authority, not about what an inventory can physically hold.
 - **`MoveInventoryItems` emits `ItemMoved` with no `definitionId` or `revision`.** The review added the `extra` argument to `EmitItemMoved` precisely because a consumer should not have to re-query to learn what just moved — but only the transaction path passes it. The main non-transactional route (give, ground drop, take-all, shift-transfer) still passes `nil` for both. It also passes `{ reason = 'move' }` as `context`, so `actorSource`/`actorCharacterId` are absent on every one of those events.
 - **`RunGuards` reads the instance with `MySQL.query.await` — a different connection — while the caller may hold row locks.** It does not deadlock today, because InnoDB's non-locking consistent read does not block on row locks, but it means a guard is handed a *snapshot* read rather than the locked row the transaction is about to write, and it is the one place in the resource that breaks the rule the guard contract imposes on everyone else ("no MySQL await inside a guard"). Worth passing the already-locked row into the guard instead of re-reading it.
 
@@ -366,9 +366,27 @@ Legacy `feather-inventory:ItemAdded`/`ItemRemoved` still fire alongside the stru
 - [x] Equipped state survives a restart (weapons review) — persisted in `character_equipment`, not consumer memory
 - [x] Legacy removal paths respect destroy guards (weapons review) — `RemoveItemByName`/`RemoveItemById` were bypassing the registry entirely
 - [x] `ItemAdded`/`ItemRemoved` always carry an instance id (weapons review) — `GrantItem` was emitting a definition id
-- [ ] **OPEN, highest priority** — `Tx:AddQuantity` enforces slot capacity only; weight, `max_quantity` and the blacklist are not checked on the transactional grant path (§6.1). `AcceptanceInTransaction` already exists and takes the transaction-bound query
+- [x] `Tx:AddQuantity` now enforces weight, `max_quantity`, blacklist and slot capacity (§6.1, fixed 2026-08-24) — `AcceptanceInTransaction` promoted to the controller namespace and called before placement
 - [ ] **OPEN** — `MoveInventoryItems` emits `ItemMoved` without `definitionId`/`revision`/actor, forcing a consumer to re-query on the most common movement route (§6.1)
 - [ ] **OPEN** — `RunGuards` re-reads the instance on a separate connection instead of being handed the row the transaction already locked (§6.1)
+
+### 6.3 Result envelope everywhere — contract 2 (2026-08-24)
+
+The last and largest of the eight compatibility surfaces. `result.lua` introduced the envelope as an addition rather than a replacement, explicitly to avoid breaking consumers; with the framework in alpha and both consumers coordinated, that reason is spent. **40 exports across `Items`, `Inventory`, `Categories` and the access layer now return one shape**, and five call sites across `feather-weapons` and `feather-admin` were updated to match, shipping together.
+
+Shape decisions, agreed with the owner of both consumer resources rather than chosen unilaterally:
+
+- **Predicates return `Ok(boolean)`.** A database failure stays distinguishable from a valid `false`. The cost is the sharpest edge in the migration -- `Result.IsOk` is true for a successful `false` -- so every caller must read `.value` and fail closed. `InventoryAPI.Accessible` exists purely as that unwrap and is what every internal access check now uses.
+- **Capacity refusal is `Ok({ accepted = false, code, message })`, not `Err`.** The evaluation succeeded; the answer is no. `Err` is reserved for the evaluation itself failing, so a dead connection and a full backpack cannot share a branch.
+- **Guard callbacks are unchanged** -- `true` / `false, reason`. That is a callback signature rather than an API return, and fail-closed behaviour on a throwing guard reads more clearly as a plain boolean.
+- **Positional multi-returns became named tables.** `GetInventory` and `GetCustomInventory` returned their fields in different orders, which is the hazard this removes.
+- **Domain-specific codes are retained** rather than flattened to `Result.Codes` eight. Twenty-one `err_*` keys here and nine `inventory_*` keys in `feather-admin` are named after them, so flattening would have degraded every one of those messages to a generic fallback for no gain. `Result.Err` already documents a domain-specific string as valid.
+
+**Out of scope, deliberately:** the server-to-NUI payloads. They are an internal protocol between this resource's server and its own Vue app, not a public surface; the envelope is unwrapped at that boundary. `TranslateResult` accepts either shape because it sits exactly on that seam.
+
+**`contractVersion = 2`** is now reported in capabilities as a plain integer, separate from the semver `version` string. A key-existence check cannot detect a changed return shape -- every renamed-nothing export is still present -- so this is the only gate that turns a version mismatch into a clear startup failure. It is deliberately not the semver string: consumers compare numerically and `tonumber('2.0.0')` is `nil`, which would collapse the gate to 0 and fail every check instead of none.
+
+**A latent bug this exposed in `feather-weapons`:** its contract gate compared `Config.Inventory.requiredContract` against itself (`1 < 1`) because the provider reported the consumer's own requirement back to it. That gate could never fail and never had. Fixed on the weapons side by reporting the version inventory actually reports, cached at install time.
 
 **Backwards-compatibility removal (§6.2):**
 - [x] Legacy `feather-inventory:ItemAdded`/`ItemRemoved` removed (2026-08-24) — 11 fire sites, zero consumers, every one redundant with a structured emit
@@ -378,7 +396,10 @@ Legacy `feather-inventory:ItemAdded`/`ItemRemoved` still fire alongside the stru
 - [x] `item_metadata` payload alias renamed to `metadata` — no reference to the flat table's name remains
 - [x] Stack-merge path now emits `ItemMoved` and bumps `row_revision` — a real gap the legacy events had been masking
 - [ ] **CROSS-RESOURCE, agreed 2026-08-24** — `feather-recipe` stops creating the flat `item_metadata` table. Removed at the source rather than dropped downstream; this resource neither references it nor issues any `DROP TABLE`
-- [ ] **COORDINATED PASS** — the dual result convention, duplicate `AddItem`/`GrantItem` paths, and the numeric-src/string-UUID `inventoryId` guessing all have consumer call sites; four of them in `feather-weapons`/`feather-admin`, two of which fail silently. Needs all three owners
+- [x] **Dual result convention removed (§6.3, 2026-08-24)** — 40 exports on one envelope, `contractVersion = 2`, five consumer call sites updated in the same coordinated release
+- [x] `GrantItem` refuses `unique` definitions (`unique_requires_issuer`); `GetDefinitions` reports `instance_mode` so a generic grant browser can exclude them
+- [x] `feather-weapons` contract gate fixed — it compared its own required version against itself and could never fail
+- [ ] **STILL OPEN** — duplicate `AddItem`/`GrantItem` grant paths, and the numeric-src/string-UUID `inventoryId` guessing. Neither is a compatibility shim; both are API design cleanups deferred out of the contract-2 release
 - [x] Post-commit events fire only after commit (INV-W3) — emitted from the commit path, never from the queue helpers, so an uncommitted write cannot announce itself
 - [x] All mutation paths enforce live container access (INV-W4) — `CanAccessInventory` re-checks rather than caching, so a late mutation cannot ride a stale authorization
 - [x] Restart leaves no in-memory lock as persistent authority (INV-W4) — audited; all four in-memory structures are empty-on-boot and fail safe
