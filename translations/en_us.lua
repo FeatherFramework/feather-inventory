@@ -35,6 +35,7 @@ Feather.Locale.register('en_us', {
     ----------------------------------------------------------------
     err_invalid_item = 'That item does not exist.',
     err_item_restricted = 'That item cannot be stored there.',
+    err_unique_requires_issuer = 'That item has to be issued, not granted.',
     err_item_limit = 'You cannot carry any more of those.',
     err_inventory_full = 'There is no room for that.',
     err_weight_limit = 'That is too heavy to carry.',

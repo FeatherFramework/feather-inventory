@@ -28,6 +28,7 @@ function ItemsAPI.GrantItem(itemName, quantity, inventoryId)
     return Result.Err('invalid_item', 'Item does not exist.')
   end
 
+
   local inventory, maxWeight, ignoreItemLimit
   if tonumber(inventoryId) then
     local player = Feather.Character.GetCharacter({ src = tonumber(inventoryId) })
