@@ -647,5 +647,44 @@ function TransactionAPI.Transaction(context, fn)
     return result
 end
 
+---
+-- Mutate Item
+--
+-- Cross-resource safe transaction boundary. Function references can cross a
+-- Cfx export, but a Lua transaction handle containing methods cannot. This
+-- accepts data only, then performs the locked mutation entirely inside the
+-- inventory resource.
+--
+function TransactionAPI.MutateItem(context, spec)
+    if type(spec) ~= 'table' or not tonumber(spec.itemInstanceId) then
+        return Result.Err(Result.Codes.INVALID_INPUT, 'A valid item mutation specification is required.')
+    end
+
+    return TransactionAPI.Transaction(context, function(tx)
+        local locked = tx:GetItemForUpdate(spec.itemInstanceId)
+        if not Result.IsOk(locked) then return locked end
+        local item = locked.value
+
+        if spec.expectedRevision ~= nil and tonumber(spec.expectedRevision) ~= tonumber(item.revision) then
+            return Result.Err(Result.Codes.CONFLICT, 'Instance revision has moved since it was read.', {
+                expected = tonumber(spec.expectedRevision), actual = tonumber(item.revision)
+            })
+        end
+
+        for _, removal in ipairs(spec.removals or {}) do
+            local removed = tx:RemoveQuantity(item.inventoryId, removal.definitionId, removal.quantity)
+            if not Result.IsOk(removed) then return removed end
+        end
+
+        local revision = item.revision
+        if spec.metadata ~= nil then
+            local written = tx:SetMetadata(item.id, spec.metadata, item.revision)
+            if not Result.IsOk(written) then return written end
+            revision = written.value.revision
+        end
+
+        return { itemInstanceId = item.id, inventoryId = item.inventoryId, revision = revision }
+    end)
+end
 InventoryAPI = InventoryAPI or {}
 InventoryAPI.Transaction = TransactionAPI.Transaction
