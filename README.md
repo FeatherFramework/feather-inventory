@@ -19,7 +19,7 @@ Feather inventory is designed to provide a realistic and immersive inventory sys
 
 Follow these steps to set up the RedM inventory script in your server:
 
-1. **Prerequisites**: Download the latest release from [Releases](https://github.com/DavFount/feather-inventory/releases)
+1. **Prerequisites**: Download the latest release from [Releases](https://github.com/FeatherFramework/feather-inventory/releases)
 2. **Installation**: Place the script files in your RedM server's resource folder. Ensure the feather-inventory in your [RESOURCE CONFIG FILE]
 3. **Dependencies**: Feather Core - Feather core is the only dependency as of now.
 4. **Configuration**: Adjust the settings in the configuration file to suit your server's gameplay style and preferences.
