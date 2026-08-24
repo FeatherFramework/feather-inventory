@@ -434,7 +434,18 @@ end
 -- honest running status of the INV-W track.
 function InstancesAPI.GetCapabilities()
     return {
-        version = '1.0.0',
+        -- Human-readable, for logs and operators.
+        version = '2.0.0',
+        -- Machine-comparable, for a consumer's startup gate. Deliberately a
+        -- plain integer and NOT the semver string: a consumer compares it
+        -- numerically, and `tonumber('2.0.0')` is nil, which would silently
+        -- collapse to 0 and fail every check.
+        --
+        -- Bumped to 2 for the result-envelope migration. A key-existence
+        -- check cannot detect a changed return shape, so this is the only
+        -- thing standing between a consumer built for contract 1 and a
+        -- resource that now answers in envelopes.
+        contractVersion = 2,
         features = {
             instanceMode = true,        -- INV-W1: stack/unique on definitions
             metadataDocument = true,    -- INV-W1: versioned JSON document
