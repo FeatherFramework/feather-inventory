@@ -566,7 +566,7 @@ end
 -- @param checkItems { { item = name, quantity = n }, ... }
 -- @return true, or false plus a code and message
 --
-local function AcceptanceInTransaction(query, inventory, checkItems)
+function InventoryControllers.AcceptanceInTransaction(query, inventory, checkItems)
   local invRows = query(
     'SELECT `max_weight`, `ignore_item_limit`, `max_slots` FROM `inventory` WHERE `id`=? FOR UPDATE;',
     { inventory })
@@ -741,7 +741,7 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
       checkItems[#checkItems + 1] = { item = name, quantity = quantity }
     end
 
-    local ok, code, message = AcceptanceInTransaction(query, targetInventory, checkItems)
+    local ok, code, message = InventoryControllers.AcceptanceInTransaction(query, targetInventory, checkItems)
     if not ok then
       failureCode, failureMessage = code, message
       return false

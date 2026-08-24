@@ -381,6 +381,28 @@ function Tx:AddQuantity(inventoryId, definitionId, quantity, metadata)
     local stackSize = math.max(tonumber(def.max_stack_size) or 1, 1)
     local unique = def.instance_mode == 'unique'
 
+    -- Weight, per-item quantity cap, blacklist and slot capacity, evaluated
+    -- against locked rows inside this transaction.
+    --
+    -- This path previously enforced slot capacity alone. That was survivable
+    -- while GrantItem was the ordinary way to create items, but once GrantItem
+    -- refuses `unique` definitions (see ItemsAPI.GrantItem) every issuer --
+    -- feather-weapons' Issuance among them -- reaches instances through
+    -- CreateInstance, which lands here. A weaker gate on the only remaining
+    -- path is a bypass around the very rule the refusal exists to enforce.
+    --
+    -- Deliberately NOT folded into the access check above: a trusted issuer
+    -- runs with `actorSource = nil` and is exempt from RequireAccess by
+    -- design, but nothing exempts it from what an inventory can physically
+    -- hold.
+    local accepted, code, message = InventoryControllers.AcceptanceInTransaction(
+        self.query, inventoryId, { { item = def.name, quantity = wanted } })
+    if not accepted then
+        return Result.Err(code or Result.Codes.LIMIT_EXCEEDED,
+            message or 'Inventory cannot accept these items.',
+            { inventoryId = inventoryId, definitionId = definitionId, quantity = wanted })
+    end
+
     local encoded
     if metadata ~= nil then
         if type(metadata) ~= 'table' then
