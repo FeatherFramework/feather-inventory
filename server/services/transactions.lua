@@ -705,7 +705,25 @@ function TransactionAPI.Transaction(context, fn)
         })
     end
 
-    local result = Result.Ok(bodyResult, context.correlationId)
+    -- The body may return either a bare value or a Result, and the docs on
+    -- this function say so. A success envelope must therefore pass THROUGH
+    -- rather than be wrapped again: returning Result.Ok(value) from a body
+    -- otherwise produced Result.Ok(Result.Ok(value)), so a caller reading
+    -- result.value got an envelope where it expected its payload.
+    --
+    -- The failure case was already handled above -- a body returning ok=false
+    -- rolls back and is returned as-is -- which is exactly why the asymmetry
+    -- went unnoticed: only the success path double-wrapped.
+    local result
+    if type(bodyResult) == 'table' and bodyResult.ok == true then
+        result = bodyResult
+        if result.correlationId == nil then
+            result.correlationId = context.correlationId
+        end
+    else
+        result = Result.Ok(bodyResult, context.correlationId)
+    end
+
     IdempotencyPut(context.idempotencyKey, result)
     return result
 end
