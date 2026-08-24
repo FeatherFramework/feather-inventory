@@ -6,7 +6,7 @@ if Config.DevMode then
     RegisterCommand('AddItems', function(source, args)
         local result = ItemsAPI.AddItem(args[1], tonumber(args[2]), args[3] or nil, source)
 
-        if result.error == true then
+        if not Result.IsOk(result) then
             Feather.Notify.RightNotify(source, TranslateResult(source, result, 'err_move_failed'), 3000)
         else
             Feather.Notify.RightNotify(source, Translate(source, 'msg_item_added', 'Item added.'), 3000)
@@ -20,7 +20,7 @@ if Config.DevMode then
             left = 10
         }, source)
 
-        if result.error == true then
+        if not Result.IsOk(result) then
             Feather.Notify.RightNotify(source, TranslateResult(source, result, 'err_move_failed'), 3000)
         else
             Feather.Notify.RightNotify(source, Translate(source, 'msg_item_added', 'Item added.'), 3000)
@@ -124,7 +124,118 @@ if Config.DevMode then
         end)
         local vetoed = ItemsAPI.RemoveItemById(mover)
         GuardsAPI.UnregisterDestroyGuard('smoketest_veto')
-        report('legacy removal respects guard', vetoed.error == true, vetoed.message)
+        report('legacy removal respects guard', not Result.IsOk(vetoed), vetoed.error and vetoed.error.message)
+
+        ------------------------------------------------------------------
+        -- Acceptance gates on the transactional add path.
+        --
+        -- These matter more than their size suggests. GrantItem refuses
+        -- `unique` definitions, so every issuer reaches instances through
+        -- CreateInstance -> Tx:AddQuantity. If that path enforced only slot
+        -- capacity -- which it did until contract 2 -- it would be a
+        -- lower-level bypass around the very gates the refusal exists to
+        -- protect. Each case asserts a REJECTION, so a silently-restored
+        -- bypass fails the suite rather than passing it quietly.
+        ------------------------------------------------------------------
+
+        local function expectRejection(label, expectedCode, spec)
+            local outcome = InventoryAPI.Transaction({ reason = 'smoketest_gate' }, function(tx)
+                return tx:AddQuantity(spec.inventory, spec.definitionId, spec.quantity)
+            end)
+            local code = (not Result.IsOk(outcome)) and outcome.error.code or nil
+            report(label, code == expectedCode,
+                ('expected=%s actual=%s'):format(expectedCode, tostring(code)))
+            return outcome
+        end
+
+        -- 7. Weight. Ask for more weight than any inventory could carry.
+        expectRejection('tx add rejected by weight', 'weight_limit', {
+            inventory = inventory, definitionId = definition.id, quantity = 100000
+        })
+
+        -- 8. Maximum quantity. Exceeds the definition's own max_quantity
+        --    while staying under any weight limit.
+        local maxQuantity = tonumber(definition.max_quantity) or 0
+        expectRejection('tx add rejected by max quantity', 'item_limit', {
+            inventory = inventory, definitionId = definition.id, quantity = maxQuantity + 1
+        })
+
+        -- 9. Blacklist. Restrict the definition for this inventory, attempt a
+        --    single unit, then restore whatever was restricted before.
+        local restoredBlacklist = MySQL.query.await(
+            'SELECT `item_id` FROM `inventory_blacklist` WHERE `inventory_id`=?;', { inventory })
+        MySQL.query.await('INSERT IGNORE INTO `inventory_blacklist` (`inventory_id`, `item_id`) VALUES (?, ?);',
+            { inventory, definition.id })
+        expectRejection('tx add rejected by blacklist', 'item_restricted', {
+            inventory = inventory, definitionId = definition.id, quantity = 1
+        })
+        MySQL.query.await('DELETE FROM `inventory_blacklist` WHERE `inventory_id`=? AND `item_id`=?;',
+            { inventory, definition.id })
+        for _, row in pairs(restoredBlacklist or {}) do
+            MySQL.query.await('INSERT IGNORE INTO `inventory_blacklist` (`inventory_id`, `item_id`) VALUES (?, ?);',
+                { inventory, row.item_id })
+        end
+
+        -- 10. Slot capacity. Temporarily shrink the book to zero compartments
+        --     so nothing can be placed, whatever its weight or quantity.
+        local restoredSlots = MySQL.query.await(
+            'SELECT `max_slots` FROM `inventory` WHERE `id`=? LIMIT 1;', { inventory })[1]
+        MySQL.query.await('UPDATE `inventory` SET `max_slots`=0 WHERE `id`=?;', { inventory })
+        expectRejection('tx add rejected by slot capacity', 'inventory_full', {
+            inventory = inventory, definitionId = definition.id, quantity = 1
+        })
+        MySQL.query.await('UPDATE `inventory` SET `max_slots`=? WHERE `id`=?;',
+            { restoredSlots and restoredSlots.max_slots or nil, inventory })
+
+        ------------------------------------------------------------------
+        -- Unique-instance issuance
+        ------------------------------------------------------------------
+
+        -- 11. GrantItem must refuse a unique definition outright.
+        local uniqueRow = MySQL.query.await(
+            "SELECT `id`, `name` FROM `items` WHERE `instance_mode`='unique' LIMIT 1;")[1]
+        if not uniqueRow then
+            report('unique GrantItem rejected', false, 'no unique definition seeded; cannot test')
+        else
+            local refused = ItemsAPI.GrantItem(uniqueRow.name, 1, inventory)
+            report('unique GrantItem rejected',
+                not Result.IsOk(refused) and refused.error.code == 'unique_requires_issuer',
+                refused.error and refused.error.code)
+
+            -- 12. CreateInstance succeeds with metadata once every gate is met.
+            local issued = TransactionAPI.CreateInstance(
+                { reason = 'smoketest_issue', correlationId = 'smoketest' },
+                { characterId = character.id, definitionId = tonumber(uniqueRow.id),
+                  metadata = { smoketest = true, serial = 'SMOKE-1' } })
+            report('CreateInstance issues unique with metadata', Result.IsOk(issued),
+                Result.IsOk(issued) and ('instance=' .. tostring(issued.value.instanceId))
+                    or (issued.error and issued.error.message))
+
+            if Result.IsOk(issued) then
+                local stored = InstancesAPI.GetInstance(issued.value.instanceId)
+                report('issued instance carries its document',
+                    Result.IsOk(stored) and stored.value.metadata.serial == 'SMOKE-1',
+                    Result.IsOk(stored) and tostring(stored.value.metadata.serial) or 'unreadable')
+                InventoryControllers.DeleteInventoryItem(issued.value.instanceId)
+            end
+
+            -- 13. CreateInstance must roll back when a gate fails. Zero
+            --     compartments, so placement cannot succeed -- and nothing may
+            --     be left behind by the attempt.
+            local beforeIssue = InventoryControllers.InventoryItemCount(inventory, tonumber(uniqueRow.id))
+            MySQL.query.await('UPDATE `inventory` SET `max_slots`=0 WHERE `id`=?;', { inventory })
+            local blocked = TransactionAPI.CreateInstance(
+                { reason = 'smoketest_issue_blocked' },
+                { characterId = character.id, definitionId = tonumber(uniqueRow.id),
+                  metadata = { smoketest = true } })
+            MySQL.query.await('UPDATE `inventory` SET `max_slots`=? WHERE `id`=?;',
+                { restoredSlots and restoredSlots.max_slots or nil, inventory })
+            local afterIssue = InventoryControllers.InventoryItemCount(inventory, tonumber(uniqueRow.id))
+            report('CreateInstance rolls back on a failed gate',
+                not Result.IsOk(blocked) and beforeIssue == afterIssue,
+                ('before=%s after=%s code=%s'):format(beforeIssue, afterIssue,
+                    blocked.error and blocked.error.code or 'committed'))
+        end
 
         -- Clean up everything this test created.
         local cleanup = InventoryAPI.Transaction({ reason = 'smoketest_cleanup' }, function(tx)
@@ -149,7 +260,7 @@ if Config.DevMode then
         local result = ItemsAPI.AddItem(args[1], tonumber(args[2]), args[3] or nil,
             'dde04bd6-34cc-11ef-a92d-107c61489014')
 
-        if result.error == true then
+        if not Result.IsOk(result) then
             Feather.Notify.RightNotify(source, TranslateResult(source, result, 'err_move_failed'), 3000)
         else
             Feather.Notify.RightNotify(source, Translate(source, 'msg_item_added', 'Item added.'), 3000)

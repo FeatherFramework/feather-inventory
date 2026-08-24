@@ -199,7 +199,7 @@ function Tx:GetItemForUpdate(instanceId)
 
     local rows = self.query([[
         SELECT ii.`id`, ii.`inventory_id`, ii.`slot_index`, ii.`item_id`,
-               ii.`metadata`, ii.`metadata_revision`, ii.`row_revision`,
+               ii.`metadata`, ii.`row_revision`,
                i.`name`, i.`display_name`, i.`weight`, i.`type`,
                i.`max_quantity`, i.`max_stack_size`, i.`instance_mode`
         FROM `inventory_items` ii
@@ -225,11 +225,9 @@ function Tx:GetItemForUpdate(instanceId)
         inventoryId = tonumber(row.inventory_id),
         slot = row.slot_index ~= nil and tonumber(row.slot_index) or nil,
         metadata = document,
-        -- `revision` is the general instance revision and the one a
-        -- compare-and-set should carry: it moves for metadata writes AND
-        -- moves. metadataRevision is the narrower "did the document change".
+        -- The instance revision, and the one a compare-and-set carries: it
+        -- moves for metadata writes AND for moves.
         revision = tonumber(row.row_revision) or 0,
-        metadataRevision = tonumber(row.metadata_revision) or 0,
         definition = {
             id = tonumber(row.item_id),
             name = row.name,
@@ -383,6 +381,28 @@ function Tx:AddQuantity(inventoryId, definitionId, quantity, metadata)
     local stackSize = math.max(tonumber(def.max_stack_size) or 1, 1)
     local unique = def.instance_mode == 'unique'
 
+    -- Weight, per-item quantity cap, blacklist and slot capacity, evaluated
+    -- against locked rows inside this transaction.
+    --
+    -- This path previously enforced slot capacity alone. That was survivable
+    -- while GrantItem was the ordinary way to create items, but once GrantItem
+    -- refuses `unique` definitions (see ItemsAPI.GrantItem) every issuer --
+    -- feather-weapons' Issuance among them -- reaches instances through
+    -- CreateInstance, which lands here. A weaker gate on the only remaining
+    -- path is a bypass around the very rule the refusal exists to enforce.
+    --
+    -- Deliberately NOT folded into the access check above: a trusted issuer
+    -- runs with `actorSource = nil` and is exempt from RequireAccess by
+    -- design, but nothing exempts it from what an inventory can physically
+    -- hold.
+    local accepted, code, message = InventoryControllers.AcceptanceInTransaction(
+        self.query, inventoryId, { { item = def.name, quantity = wanted } })
+    if not accepted then
+        return Result.Err(code or Result.Codes.LIMIT_EXCEEDED,
+            message or 'Inventory cannot accept these items.',
+            { inventoryId = inventoryId, definitionId = definitionId, quantity = wanted })
+    end
+
     local encoded
     if metadata ~= nil then
         if type(metadata) ~= 'table' then
@@ -518,10 +538,9 @@ function Tx:SetMetadata(instanceId, document, expectedRevision)
             { size = #encoded, limit = 4096 })
     end
 
-    -- (Weapons review #3) Compared against row_revision, not
-    -- metadata_revision: the caller is asserting "nothing about this instance
-    -- has changed since I read it", and a MOVE is such a change even though
-    -- it leaves the document untouched.
+    -- Compared against row_revision: the caller is asserting "nothing about
+    -- this instance has changed since I read it", and a MOVE is such a change
+    -- even though it leaves the document untouched.
     if expectedRevision ~= nil then
         local current = self.query(
             'SELECT `row_revision` FROM `inventory_items` WHERE `id`=? FOR UPDATE;', { id })
@@ -537,12 +556,12 @@ function Tx:SetMetadata(instanceId, document, expectedRevision)
 
     self.query([[
         UPDATE `inventory_items`
-        SET `metadata`=?, `metadata_revision`=`metadata_revision`+1, `row_revision`=`row_revision`+1
+        SET `metadata`=?, `row_revision`=`row_revision`+1
         WHERE `id`=?;
     ]], { encoded, id })
 
     local updated = self.query(
-        'SELECT `metadata_revision`, `row_revision` FROM `inventory_items` WHERE `id`=? LIMIT 1;', { id })
+        'SELECT `row_revision` FROM `inventory_items` WHERE `id`=? LIMIT 1;', { id })
     local revision = updated and updated[1] and tonumber(updated[1].row_revision)
 
     self.metadataChanged = self.metadataChanged or {}
@@ -668,22 +687,16 @@ function TransactionAPI.Transaction(context, fn)
     if handle then
         for _, entry in ipairs(handle.created or {}) do
             GuardsAPI.EmitItemCreated(entry.instanceId, entry.definitionId, entry.inventoryId, context)
-            TriggerEvent('feather-inventory:ItemAdded', entry.instanceId, 1, entry.inventoryId)
         end
         for _, entry in ipairs(handle.moved or {}) do
             GuardsAPI.EmitItemMoved(entry.instanceId, entry.fromInventoryId, entry.toInventoryId, context,
                 { definitionId = entry.definitionId, revision = entry.revision })
-            if tostring(entry.fromInventoryId) ~= tostring(entry.toInventoryId) then
-                TriggerEvent('feather-inventory:ItemRemoved', entry.instanceId, 1, entry.fromInventoryId)
-                TriggerEvent('feather-inventory:ItemAdded', entry.instanceId, 1, entry.toInventoryId)
-            end
         end
         for _, entry in ipairs(handle.metadataChanged or {}) do
             GuardsAPI.EmitItemMetadataChanged(entry.instanceId, entry.revision, context)
         end
         for _, entry in ipairs(handle.destroyed or {}) do
             GuardsAPI.EmitItemDestroyed(entry.instanceId, entry.definitionId, entry.inventoryId, context)
-            TriggerEvent('feather-inventory:ItemRemoved', entry.instanceId, 1, entry.inventoryId)
         end
         GuardsAPI.EmitTransactionCommitted(context, {
             created = #(handle.created or {}),
@@ -692,7 +705,25 @@ function TransactionAPI.Transaction(context, fn)
         })
     end
 
-    local result = Result.Ok(bodyResult, context.correlationId)
+    -- The body may return either a bare value or a Result, and the docs on
+    -- this function say so. A success envelope must therefore pass THROUGH
+    -- rather than be wrapped again: returning Result.Ok(value) from a body
+    -- otherwise produced Result.Ok(Result.Ok(value)), so a caller reading
+    -- result.value got an envelope where it expected its payload.
+    --
+    -- The failure case was already handled above -- a body returning ok=false
+    -- rolls back and is returned as-is -- which is exactly why the asymmetry
+    -- went unnoticed: only the success path double-wrapped.
+    local result
+    if type(bodyResult) == 'table' and bodyResult.ok == true then
+        result = bodyResult
+        if result.correlationId == nil then
+            result.correlationId = context.correlationId
+        end
+    else
+        result = Result.Ok(bodyResult, context.correlationId)
+    end
+
     IdempotencyPut(context.idempotencyKey, result)
     return result
 end

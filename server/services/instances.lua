@@ -6,23 +6,22 @@
 --
 --   1. `instance_mode` on item definitions -- whether a definition's units are
 --      interchangeable (`stack`) or each unit is its own thing (`unique`).
---   2. A versioned metadata DOCUMENT on each owned row, replacing the flat
---      key/value `item_metadata` table for anything that needs atomic or
---      concurrent-safe state.
+--   2. A versioned metadata DOCUMENT on each owned row -- one JSON column
+--      plus `row_revision`, so the whole document is one compare-and-set
+--      rather than a series of independent per-key writes that can interleave
+--      with someone else's. For a weapon that is the difference between
+--      "ammo count" and "chamber state" agreeing and diverging.
 --   3. A normalized read model, so a consumer gets one predictable shape
 --      instead of the raw joined row whose columns have accreted over time.
 --
--- Why the document, when `item_metadata` already exists: that table stores
--- VARCHAR(100) values and is written one key at a time with no transaction
--- and no version, so a two-key update is two independent writes that can
--- interleave with someone else's. For a weapon that is "ammo count" and
--- "chamber state" diverging. A single JSON column with a revision counter
--- makes the whole document one compare-and-set.
+-- DEPENDENCY_SUPPORT_PLAN §4.4 left open whether the old flat key/value table
+-- survives as a compatibility projection. It does not: nothing consumed it,
+-- and this resource no longer references it in any form.
 --
--- DEPENDENCY_SUPPORT_PLAN §4.4 left open whether the flat table survives as a
--- compatibility projection. Decision: it does not. Nothing consumed it, so
--- carrying a second write path for a shape no reader wanted would have been
--- pure cost. The table is left in place unused rather than dropped.
+-- The table is stopped at its source -- `feather-recipe` no longer creates it
+-- -- rather than dropped from here. Nothing in this file drops a table it
+-- did not create: the columns added below are this resource's own to add and
+-- to remove, but the base schema belongs to the migration that defines it.
 
 InstancesAPI = {}
 
@@ -54,30 +53,32 @@ local function EnsureInstanceSchema()
 
     columns = MySQL.query.await("SHOW COLUMNS FROM `inventory_items` LIKE 'metadata';")
     if #columns < 1 then
-        MySQL.query.await([[
-            ALTER TABLE `inventory_items`
-            ADD COLUMN `metadata` JSON NULL,
-            ADD COLUMN `metadata_revision` INT UNSIGNED NOT NULL DEFAULT 0;
-        ]])
+        MySQL.query.await("ALTER TABLE `inventory_items` ADD COLUMN `metadata` JSON NULL;")
     end
 
-    -- (Weapons review #3) A GENERAL instance revision, bumped by any change
-    -- to the row -- metadata writes, moves, slot changes.
+    -- `row_revision` is THE instance revision, bumped by any change to the
+    -- row -- metadata writes, moves, slot changes.
     --
-    -- metadata_revision alone was insufficient and the review is right about
-    -- why: a caller could read ammunition, another request could MOVE that
-    -- ammunition to a different inventory without touching metadata, and the
-    -- first caller's compare-and-set would still pass -- then delete the ammo
-    -- from its new owner. Movement is a state change the revision has to see.
-    --
-    -- Kept separate from metadata_revision rather than replacing it, so a
-    -- consumer that genuinely only cares whether the DOCUMENT changed can
-    -- still ask that narrower question.
+    -- A metadata-only revision was insufficient: a caller could read
+    -- ammunition, another request could MOVE that ammunition to a different
+    -- inventory without touching metadata, and the first caller's
+    -- compare-and-set would still pass -- then delete the ammo from its new
+    -- owner. Movement is a state change the revision has to see.
     columns = MySQL.query.await("SHOW COLUMNS FROM `inventory_items` LIKE 'row_revision';")
     if #columns < 1 then
         MySQL.query.await(
             "ALTER TABLE `inventory_items` ADD COLUMN `row_revision` INT UNSIGNED NOT NULL DEFAULT 0;")
     end
+
+    -- A `metadata_revision` column used to sit alongside this one, so a
+    -- consumer that only cared whether the DOCUMENT changed could ask that
+    -- narrower question. No consumer ever did, and two counters where one is
+    -- authoritative made every new compare-and-set a coin flip about which to
+    -- compare. It is simply no longer created -- there is deliberately no
+    -- migration to remove it from a database that already has one, because
+    -- this is an alpha framework whose servers are rebuilt rather than
+    -- upgraded in place. On such a database the column is left behind, unread
+    -- and unwritten, defaulting to 0 on insert; a rebuild clears it.
 
     -- Weight as exact fixed-point rather than a whole number, so an item can
     -- weigh less than a pound (an apple at 0.25). DECIMAL and not FLOAT
@@ -169,7 +170,7 @@ function InstancesAPI.ReadMetadata(instanceId)
     end
 
     local row = MySQL.query.await(
-        'SELECT `metadata`, `metadata_revision` FROM `inventory_items` WHERE `id`=? LIMIT 1;', { numericId })[1]
+        'SELECT `metadata`, `row_revision` FROM `inventory_items` WHERE `id`=? LIMIT 1;', { numericId })[1]
     if not row then
         return Result.Err(Result.Codes.NOT_FOUND, 'Item instance does not exist.')
     end
@@ -192,7 +193,7 @@ function InstancesAPI.ReadMetadata(instanceId)
         document = {}
     end
 
-    return Result.Ok({ document = document, revision = tonumber(row.metadata_revision) or 0 })
+    return Result.Ok({ document = document, revision = tonumber(row.row_revision) or 0 })
 end
 
 ---
@@ -232,11 +233,11 @@ function InstancesAPI.WriteMetadata(instanceId, document, expectedRevision, corr
     local affected
     if expectedRevision ~= nil then
         affected = MySQL.update.await(
-            'UPDATE `inventory_items` SET `metadata`=?, `metadata_revision`=`metadata_revision`+1 WHERE `id`=? AND `metadata_revision`=?;',
+            'UPDATE `inventory_items` SET `metadata`=?, `row_revision`=`row_revision`+1 WHERE `id`=? AND `row_revision`=?;',
             { encoded, numericId, tonumber(expectedRevision) })
     else
         affected = MySQL.update.await(
-            'UPDATE `inventory_items` SET `metadata`=?, `metadata_revision`=`metadata_revision`+1 WHERE `id`=?;',
+            'UPDATE `inventory_items` SET `metadata`=?, `row_revision`=`row_revision`+1 WHERE `id`=?;',
             { encoded, numericId })
     end
 
@@ -244,18 +245,18 @@ function InstancesAPI.WriteMetadata(instanceId, document, expectedRevision, corr
         -- Zero affected rows is ambiguous on its own -- the row may not exist,
         -- or the revision may have moved. Distinguish them, because a caller
         -- retries a CONFLICT and gives up on a NOT_FOUND.
-        local exists = MySQL.query.await('SELECT `metadata_revision` FROM `inventory_items` WHERE `id`=? LIMIT 1;',
+        local exists = MySQL.query.await('SELECT `row_revision` FROM `inventory_items` WHERE `id`=? LIMIT 1;',
             { numericId })[1]
         if not exists then
             return Result.Err(Result.Codes.NOT_FOUND, 'Item instance does not exist.', nil, correlationId)
         end
-        return Result.Err(Result.Codes.CONFLICT, 'Metadata revision has moved since it was read.',
-            { expected = tonumber(expectedRevision), actual = tonumber(exists.metadata_revision) }, correlationId)
+        return Result.Err(Result.Codes.CONFLICT, 'Instance revision has moved since it was read.',
+            { expected = tonumber(expectedRevision), actual = tonumber(exists.row_revision) }, correlationId)
     end
 
-    local updated = MySQL.query.await('SELECT `metadata_revision` FROM `inventory_items` WHERE `id`=? LIMIT 1;',
+    local updated = MySQL.query.await('SELECT `row_revision` FROM `inventory_items` WHERE `id`=? LIMIT 1;',
         { numericId })[1]
-    return Result.Ok({ revision = updated and tonumber(updated.metadata_revision) or nil }, correlationId)
+    return Result.Ok({ revision = updated and tonumber(updated.row_revision) or nil }, correlationId)
 end
 
 ---
@@ -317,7 +318,7 @@ function InstancesAPI.GetInstance(instanceId)
     end
 
     local row = MySQL.query.await([[
-        SELECT ii.`id`, ii.`inventory_id`, ii.`slot_index`, ii.`metadata_revision`, ii.`row_revision`,
+        SELECT ii.`id`, ii.`inventory_id`, ii.`slot_index`, ii.`row_revision`,
                i.`id` AS `definition_id`, i.`name`, i.`display_name`, i.`description`,
                i.`weight`, i.`usable`, i.`type`, i.`category_id`,
                i.`max_quantity`, i.`max_stack_size`, i.`instance_mode`
@@ -341,7 +342,6 @@ function InstancesAPI.GetInstance(instanceId)
         slot = row.slot_index ~= nil and tonumber(row.slot_index) or nil,
         metadata = metadata.value.document,
         revision = tonumber(row.row_revision) or 0,
-        metadataRevision = metadata.value.revision,
         definition = {
             id = tonumber(row.definition_id),
             name = row.name,
@@ -434,11 +434,22 @@ end
 -- honest running status of the INV-W track.
 function InstancesAPI.GetCapabilities()
     return {
-        version = '1.0.0',
+        -- Human-readable, for logs and operators.
+        version = '2.0.0',
+        -- Machine-comparable, for a consumer's startup gate. Deliberately a
+        -- plain integer and NOT the semver string: a consumer compares it
+        -- numerically, and `tonumber('2.0.0')` is nil, which would silently
+        -- collapse to 0 and fail every check.
+        --
+        -- Bumped to 2 for the result-envelope migration. A key-existence
+        -- check cannot detect a changed return shape, so this is the only
+        -- thing standing between a consumer built for contract 1 and a
+        -- resource that now answers in envelopes.
+        contractVersion = 2,
         features = {
             instanceMode = true,        -- INV-W1: stack/unique on definitions
             metadataDocument = true,    -- INV-W1: versioned JSON document
-            metadataRevision = true,    -- INV-W1: compare-and-set
+            instanceRevision = true,    -- INV-W1: compare-and-set on row_revision
             instanceReadModel = true,   -- INV-W1: normalized reads
             resultEnvelope = true,      -- INV-W1: shared { ok, value|error }
             transactions = true,        -- INV-W2: optimistic, revision-guarded

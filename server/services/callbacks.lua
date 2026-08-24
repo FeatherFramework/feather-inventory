@@ -1,7 +1,13 @@
 Feather.RPC.Register('Feather:Inventory:GetInventoryItems', function(params, res, src)
   local otherInventoryId = params['otherInventoryId']
 
-  res(InventoryAPI.InternalOpenInventory(src, otherInventoryId))
+  -- The NUI payload keeps its own shape; the envelope is unwrapped at this
+  -- boundary rather than pushed into the Vue app.
+  local opened = InventoryAPI.InternalOpenInventory(src, otherInventoryId)
+  if not Result.IsOk(opened) then
+    return res({ error = opened.error.message, errorCode = opened.error.code })
+  end
+  res(opened.value)
 end)
 
 Feather.RPC.Register('Feather:Inventory:Server:CloseInventory', function(params, res, src)
@@ -11,7 +17,8 @@ end)
 -- Called when player uses item from their inventory. Close Inventory after use.
 Feather.RPC.Register('Feather:Inventory:UseItem', function(params, res, src)
   local itemId = params['itemId']
-  res(ItemsAPI.UseItem(itemId, src))
+  local used = ItemsAPI.UseItem(itemId, src)
+  res(Result.IsOk(used) and { error = false } or { error = true, code = used.error.code, message = used.error.message })
 end)
 
 -- (INV-01) sourceInventory/targetInventory/items were all trusted outright
@@ -29,13 +36,13 @@ Feather.RPC.Register('Feather:Inventory:UpdateInventory', function(params, res, 
     return res({ error = true, message = 'No items specified.' })
   end
 
-  if not InventoryAPI.IsInventoryAccessibleBySrc(src, sourceInventory) then
+  if not InventoryAPI.Accessible(src, sourceInventory) then
     warn('Rejected UpdateInventory: src ' .. src .. ' does not have access to source inventory ' .. tostring(sourceInventory))
     Feather.Notify.RightNotify(src, Translate(src, 'err_no_access', 'You do not have access to that inventory.'), 3000)
     return res({ error = true, message = 'You do not have access to that inventory.' })
   end
 
-  if not InventoryAPI.IsInventoryAccessibleBySrc(src, targetInventory) then
+  if not InventoryAPI.Accessible(src, targetInventory) then
     warn('Rejected UpdateInventory: src ' .. src .. ' does not have access to target inventory ' .. tostring(targetInventory))
     Feather.Notify.RightNotify(src, Translate(src, 'err_no_access', 'You do not have access to that inventory.'), 3000)
     return res({ error = true, message = 'You do not have access to that inventory.' })
@@ -132,13 +139,13 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
   local fromInventory = movingItem.inventory_id
   local fromSlot = movingItem.slot_index
 
-  if not InventoryAPI.IsInventoryAccessibleBySrc(src, fromInventory) then
+  if not InventoryAPI.Accessible(src, fromInventory) then
     warn('Rejected MoveItem: src ' .. src .. ' does not have access to source inventory ' .. tostring(fromInventory))
     Feather.Notify.RightNotify(src, Translate(src, 'err_no_access', 'You do not have access to that inventory.'), 3000)
     return res({ error = true, message = 'You do not have access to that inventory.' })
   end
 
-  if not InventoryAPI.IsInventoryAccessibleBySrc(src, toInventory) then
+  if not InventoryAPI.Accessible(src, toInventory) then
     warn('Rejected MoveItem: src ' .. src .. ' does not have access to target inventory ' .. tostring(toInventory))
     Feather.Notify.RightNotify(src, Translate(src, 'err_no_access', 'You do not have access to that inventory.'), 3000)
     return res({ error = true, message = 'You do not have access to that inventory.' })
@@ -213,14 +220,15 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
       canMove = InventoryAPI.EvaluateInventoryAcceptance(toInventory, toMaxWeight, toIgnoreLimit,
         { { item = movingBreakdown[1].name, quantity = mergeCount } })
     else
-      canMove = { status = true, message = '' }
+      canMove = Result.Ok({ accepted = true, message = '' })
     end
   else
     canMove = InventoryAPI.EvaluateSlotMove(fromInventory, fromSlot, toInventory, toSlot)
   end
 
-  if not canMove or canMove.status == false then
-    local rejectMessage = (canMove and canMove.message) or 'Target inventory cannot hold this item.'
+  if not Result.IsOk(canMove) or canMove.value.accepted == false then
+    local failure = Result.IsOk(canMove) and canMove.value or canMove.error
+    local rejectMessage = (failure and failure.message) or 'Target inventory cannot hold this item.'
     warn('Rejected MoveItem: src ' .. src .. ' -- ' .. tostring(rejectMessage) ..
       ' (from inventory ' .. tostring(fromInventory) .. ' slot ' .. tostring(fromSlot) ..
       ' to inventory ' .. tostring(toInventory) .. ' slot ' .. tostring(toSlot) .. ')')
@@ -232,18 +240,25 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
     -- Only the units that fit move; any remainder stays where it was, so
     -- dragging 15 onto a stack with room for 5 tops it up and leaves 10
     -- behind rather than silently overfilling past max_stack_size.
-    InventoryControllers.MoveSlotItemsPartial(fromInventory, fromSlot, toInventory, toSlot, mergeCount)
+    --
+    -- The merge path announces its own movement. Every other route emits
+    -- ItemMoved from inside the controller that performs it, but
+    -- MoveSlotItemsPartial had no emit at all -- for as long as the legacy
+    -- ItemAdded/ItemRemoved pair existed here, that gap was invisible,
+    -- because those two were firing in its place. Removing them surfaced it.
+    local _, mergedIds = InventoryControllers.MoveSlotItemsPartial(
+      fromInventory, fromSlot, toInventory, toSlot, mergeCount)
+    if tostring(fromInventory) ~= tostring(toInventory) then
+      for _, id in ipairs(mergedIds) do
+        GuardsAPI.EmitItemMoved(id, fromInventory, toInventory,
+          { reason = 'slot_merge', actorSource = src },
+          { definitionId = tonumber(movingBreakdown[1].item_id) })
+      end
+    end
   else
+    -- MoveSlotItems emits ItemMoved itself, post-commit, and only when the
+    -- item actually changed inventory.
     InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory, toSlot)
-  end
-
-  -- Only fire the cross-resource item-left/item-arrived events (e.g.
-  -- feather-weapons unequipping on ItemRemoved) when the item actually left
-  -- an inventory -- rearranging compartments within the same book isn't a
-  -- removal.
-  if tostring(fromInventory) ~= tostring(toInventory) then
-    TriggerEvent('feather-inventory:ItemRemoved', itemId, 1, fromInventory)
-    TriggerEvent('feather-inventory:ItemAdded', itemId, 1, toInventory)
   end
 
   res({
@@ -282,7 +297,7 @@ Feather.RPC.Register('Feather:Inventory:SplitStack', function(params, res, src)
     return res({ error = true, message = 'Item is not placed anywhere yet.' })
   end
 
-  if not InventoryAPI.IsInventoryAccessibleBySrc(src, inventory) then
+  if not InventoryAPI.Accessible(src, inventory) then
     warn('Rejected SplitStack: src ' .. src .. ' does not have access to inventory ' .. tostring(inventory))
     Feather.Notify.RightNotify(src, Translate(src, 'err_no_access', 'You do not have access to that inventory.'), 3000)
     return res({ error = true, message = 'You do not have access to that inventory.' })
@@ -344,7 +359,7 @@ Feather.RPC.Register('Feather:Inventory:TakeAll', function(params, res, src)
   -- Same ownership rule as every other movement path: re-derived from src,
   -- never trusted from the client, and re-checked here rather than relying on
   -- the inventory merely being open.
-  if not InventoryAPI.IsInventoryAccessibleBySrc(src, fromInventory) then
+  if not InventoryAPI.Accessible(src, fromInventory) then
     warn('Rejected TakeAll: src ' .. src .. ' does not have access to inventory ' .. tostring(fromInventory))
     Feather.Notify.RightNotify(src, Translate(src, 'err_no_access', 'You do not have access to that inventory.'), 3000)
     return res({ error = true, code = 'no_access', message = 'You do not have access to that inventory.' })
@@ -386,19 +401,31 @@ end)
 -- inside each InventoryAPI function itself, re-derived from `src` -- these
 -- RPCs are thin wrappers, not a separate trust boundary.
 Feather.RPC.Register('Feather:Inventory:GrantAccess', function(params, res, src)
-  res(InventoryAPI.GrantInventoryAccess(src, params.inventoryId, params.targetCharacterId))
+  -- Unwrapped at the NUI boundary; the browser keeps the { error, ... } shape.
+  local outcome = InventoryAPI.GrantInventoryAccess(src, params.inventoryId, params.targetCharacterId)
+  res(Result.IsOk(outcome) and { error = false, value = outcome.value }
+    or { error = true, code = outcome.error.code, message = outcome.error.message })
 end)
 
 Feather.RPC.Register('Feather:Inventory:RevokeAccess', function(params, res, src)
-  res(InventoryAPI.RevokeInventoryAccess(src, params.inventoryId, params.targetCharacterId))
+  -- Unwrapped at the NUI boundary; the browser keeps the { error, ... } shape.
+  local outcome = InventoryAPI.RevokeInventoryAccess(src, params.inventoryId, params.targetCharacterId)
+  res(Result.IsOk(outcome) and { error = false, value = outcome.value }
+    or { error = true, code = outcome.error.code, message = outcome.error.message })
 end)
 
 Feather.RPC.Register('Feather:Inventory:SetPublic', function(params, res, src)
-  res(InventoryAPI.SetInventoryPublic(src, params.inventoryId, params.isPublic and true or false))
+  -- Unwrapped at the NUI boundary; the browser keeps the { error, ... } shape.
+  local outcome = InventoryAPI.SetInventoryPublic(src, params.inventoryId, params.isPublic and true or false)
+  res(Result.IsOk(outcome) and { error = false, value = outcome.value }
+    or { error = true, code = outcome.error.code, message = outcome.error.message })
 end)
 
 Feather.RPC.Register('Feather:Inventory:ListAccess', function(params, res, src)
-  res(InventoryAPI.ListInventoryAccess(src, params.inventoryId))
+  -- Unwrapped at the NUI boundary; the browser keeps the { error, ... } shape.
+  local outcome = InventoryAPI.ListInventoryAccess(src, params.inventoryId)
+  res(Result.IsOk(outcome) and { error = false, value = outcome.value }
+    or { error = true, code = outcome.error.code, message = outcome.error.message })
 end)
 
 -- (Debug gate) "Uncategorized" is where an item ends up when nobody's

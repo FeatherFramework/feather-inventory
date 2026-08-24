@@ -90,7 +90,21 @@ end
 -- @param fallbackKey Locale key to use when the envelope carries no code
 -- @return Localized string suitable for Feather.Notify
 --
+-- Resolves a player-facing string from either a result envelope or one of the
+-- older `{ code, message }` tables the RPC layer still builds for the NUI.
+--
+-- Accepting both is deliberate and is NOT a compatibility shim: the envelope
+-- is the API contract, while the NUI payloads are an internal protocol that
+-- deliberately keeps its own shape. This helper sits exactly on that seam.
+--
+-- A refusal envelope (`Ok{ accepted = false, code }`) carries its code in
+-- `value`, while a failure envelope carries it in `error` -- both mean "tell
+-- the player why", so both resolve here.
 function TranslateResult(src, result, fallbackKey)
+  if type(result) == 'table' and result.ok ~= nil then
+    result = (result.ok and result.value) or result.error or {}
+  end
+
   local message = result and result.message
   local code = result and result.code
 

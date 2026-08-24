@@ -16,7 +16,7 @@ end
 function ItemControllers.GetItemDefinitionByName(itemName)
   return MySQL.single.await([[
     SELECT i.id, i.name, i.display_name, i.description, i.max_quantity,
-           i.max_stack_size, i.weight, i.usable, i.type,
+           i.max_stack_size, i.weight, i.usable, i.type, i.instance_mode,
            i.category_id, COALESCE(c.name, 'other') AS category
     FROM items i
     LEFT JOIN categories c ON c.id = i.category_id
@@ -28,7 +28,7 @@ end
 function ItemControllers.GetItemDefinitions()
   return MySQL.query.await([[
     SELECT i.id, i.name, i.display_name, i.description, i.max_quantity,
-           i.max_stack_size, i.weight, i.usable, i.type,
+           i.max_stack_size, i.weight, i.usable, i.type, i.instance_mode,
            i.category_id, COALESCE(c.name, 'other') AS category
     FROM items i
     LEFT JOIN categories c ON c.id = i.category_id

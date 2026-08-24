@@ -82,11 +82,11 @@ const detail = computed(() => {
   if (!cell || !cell.repItem) {
     return { label: '—', desc: t('ui_no_entry'), weight: '—', qtyPlain: '—', img: null, condition: null };
   }
-  // (§10.3) Condition rides along in item_metadata, which the server already
+  // (§10.3) Condition rides along in metadata, which the server already
   // sends with every row -- no extra payload field needed. Absent metadata
   // means this instance has no condition recorded, which is not the same as
   // zero, so it renders nothing rather than "Ruined".
-  const raw = cell.repItem.item_metadata && cell.repItem.item_metadata.condition;
+  const raw = cell.repItem.metadata && cell.repItem.metadata.condition;
   const value = Number(raw);
   const hasCondition = raw !== undefined && raw !== null && Number.isFinite(value);
   const stage = hasCondition ? conditionStage(value) : null;
@@ -136,7 +136,7 @@ function onIconError(event) {
 // render no bar at all rather than an empty one reading as "ruined".
 function cellCondition(cell) {
   if (!cell.repItem) return null;
-  const raw = cell.repItem.item_metadata && cell.repItem.item_metadata.condition;
+  const raw = cell.repItem.metadata && cell.repItem.metadata.condition;
   if (raw === undefined || raw === null) return null;
   const value = Number(raw);
   if (!Number.isFinite(value)) return null;
