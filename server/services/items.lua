@@ -128,7 +128,6 @@ function ItemsAPI.GrantItem(itemName, quantity, inventoryId)
   local instanceIds = {}
   for index, row in ipairs(inserted) do
     instanceIds[index] = tonumber(row.id)
-    TriggerEvent('feather-inventory:ItemAdded', tonumber(row.id), 1, inventory)
     GuardsAPI.EmitItemCreated(tonumber(row.id), definition.id, inventory, { reason = 'grant' })
   end
 
@@ -143,7 +142,7 @@ end
 
 -- Grants `quantity` of `itemName` to an inventory, enforcing the per-item
 -- quantity cap, slot capacity, and weight limit (see
--- EvaluateInventoryAcceptance). Fires feather-inventory:ItemAdded once per
+-- EvaluateInventoryAcceptance). Emits Feather:Inventory:ItemCreated once per
 -- unit granted. `max_stack_size` governs only how many compartments those
 -- units are spread across, never how many the inventory may hold.
 ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
@@ -246,14 +245,12 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
     -- (Weapons review #4) Metadata goes in with the INSERT rather than being
     -- written key-by-key afterwards, so the instance is never briefly visible
     -- without the state that defines it.
-    local item = InventoryControllers.CreateInventoryItem(inventory, itemId, currentSlot, metadata)
+    --
+    -- CreateInventoryItem emits Feather:Inventory:ItemCreated itself, carrying
+    -- the new instance id, so nothing is announced from here.
+    InventoryControllers.CreateInventoryItem(inventory, itemId, currentSlot, metadata)
     currentSlotCount = currentSlotCount + 1
     granted = granted + 1
-
-    -- (Weapons review #8) `itemId` here is the DEFINITION id from
-    -- GetItemByName; the instance is item[1].id. Emitting the definition
-    -- was the inconsistency the review caught.
-    TriggerEvent('feather-inventory:ItemAdded', item[1].id, 1, inventory)
   end
 
   -- (Capacity model unification) The loop above can still come up short if
@@ -357,7 +354,6 @@ ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
   end
 
   for _, instanceId in ipairs(doomed) do
-    TriggerEvent('feather-inventory:ItemRemoved', instanceId, 1, inventory)
     GuardsAPI.EmitItemDestroyed(instanceId, itemId, inventory, { reason = 'remove_by_name' })
   end
 
@@ -391,44 +387,18 @@ ItemsAPI.RemoveItemById = function(id)
 
   InventoryControllers.DeleteInventoryItem(item.id)
 
-  TriggerEvent('feather-inventory:ItemRemoved', item.id, 1, item.inventory_id)
   GuardsAPI.EmitItemDestroyed(item.id, item.item_id, item.inventory_id, { reason = 'remove_by_id' })
   return {
     error = false,
   }
 end
 
-ItemsAPI.SetMetadata = function(item, metadata)
-  if item == nil or type(item) ~= 'number' then
-    warn('Item ID is required.')
-    return {
-      error = true,
-      message = "Item ID is required."
-    }
-  end
-  if metadata == nil or type(metadata) ~= 'table' then
-    warn(
-      "Invalid format for meta data. Meta data must be a table of key value pairs. Example: { quality = 'poor', durability = 50, maxDurability = 100 }")
-    return {
-      error = true,
-      message =
-      "Invalid format for meta data. Meta data must be a table of key value pairs. Example: { quality = 'poor', durability = 50, maxDurability = 100 }"
-    }
-  end
-
-  -- (Weapons review #2) Routed through the versioned document. The flat
-  -- item_metadata table is no longer written or read by this resource --
-  -- nothing consumed it, and a per-key write has no atomicity or revision.
-  local written = InstancesAPI.MergeMetadata(item, metadata)
-  if not Result.IsOk(written) then
-    return { error = true, code = written.error.code, message = written.error.message }
-  end
-
-  return {
-    error = false,
-    metadataRevision = written.value.revision
-  }
-end
+-- ItemsAPI.SetMetadata was removed. It had become a pure passthrough to
+-- InstancesAPI.MergeMetadata that made the result strictly worse on the way
+-- out -- unwrapping the envelope into { error, code, message } and dropping
+-- the correlation id. Call InstancesAPI.MergeMetadata (patch) or
+-- InstancesAPI.WriteMetadata (replace, with optional compare-and-set)
+-- directly instead.
 
 ------------------------------------------------------------------
 -- Condition / durability (§10.3)
@@ -522,7 +492,7 @@ ItemsAPI.SetCondition = function(itemId, value)
     }
   end
 
-  return { error = false, condition = clamped, metadataRevision = written.value.revision }
+  return { error = false, condition = clamped, revision = written.value.revision }
 end
 
 ---
@@ -560,11 +530,22 @@ ItemsAPI.GetItem = function(id)
   return item
 end
 
+---
+-- Get Item Count
+--
+-- @return The number held, or `nil` when the item or inventory is invalid.
+--
+-- Returns nil rather than the old -1 sentinel. -1 is a plausible-looking
+-- number, so a failure survived arithmetic and picked a different wrong
+-- answer depending on how the caller asked: `count > 0` read an error as
+-- "has none", `count ~= 0` read the same error as "has some". nil is not a
+-- number, so a caller that forgets to check fails loudly instead.
+--
 ItemsAPI.GetItemCount = function(itemName, inventoryId)
   local itemId, _, _ = ItemControllers.GetItemByName(itemName)
   if not itemId then
     warn('Invalid itemName. Please make sure it is in the items table in your database.')
-    return -1
+    return nil
   end
 
   local inventory, _, _ = nil, nil, nil
@@ -582,10 +563,10 @@ ItemsAPI.GetItemCount = function(itemName, inventoryId)
   -- nil, which is always false. An invalid inventoryId silently fell
   -- through to InventoryItemCount(nil, itemId) instead of ever hitting this
   -- rejection (harmless there -- a nil inventory_id just matches nothing in
-  -- SQL -- but not the intended "return -1" contract).
+  -- SQL -- but not the intended "unresolvable inventory" contract).
   if not inventory then
     warn('Invalid inventory ID.')
-    return -1
+    return nil
   end
 
   local itemCount = InventoryControllers.InventoryItemCount(inventory, itemId)

@@ -199,7 +199,7 @@ function Tx:GetItemForUpdate(instanceId)
 
     local rows = self.query([[
         SELECT ii.`id`, ii.`inventory_id`, ii.`slot_index`, ii.`item_id`,
-               ii.`metadata`, ii.`metadata_revision`, ii.`row_revision`,
+               ii.`metadata`, ii.`row_revision`,
                i.`name`, i.`display_name`, i.`weight`, i.`type`,
                i.`max_quantity`, i.`max_stack_size`, i.`instance_mode`
         FROM `inventory_items` ii
@@ -225,11 +225,9 @@ function Tx:GetItemForUpdate(instanceId)
         inventoryId = tonumber(row.inventory_id),
         slot = row.slot_index ~= nil and tonumber(row.slot_index) or nil,
         metadata = document,
-        -- `revision` is the general instance revision and the one a
-        -- compare-and-set should carry: it moves for metadata writes AND
-        -- moves. metadataRevision is the narrower "did the document change".
+        -- The instance revision, and the one a compare-and-set carries: it
+        -- moves for metadata writes AND for moves.
         revision = tonumber(row.row_revision) or 0,
-        metadataRevision = tonumber(row.metadata_revision) or 0,
         definition = {
             id = tonumber(row.item_id),
             name = row.name,
@@ -518,10 +516,9 @@ function Tx:SetMetadata(instanceId, document, expectedRevision)
             { size = #encoded, limit = 4096 })
     end
 
-    -- (Weapons review #3) Compared against row_revision, not
-    -- metadata_revision: the caller is asserting "nothing about this instance
-    -- has changed since I read it", and a MOVE is such a change even though
-    -- it leaves the document untouched.
+    -- Compared against row_revision: the caller is asserting "nothing about
+    -- this instance has changed since I read it", and a MOVE is such a change
+    -- even though it leaves the document untouched.
     if expectedRevision ~= nil then
         local current = self.query(
             'SELECT `row_revision` FROM `inventory_items` WHERE `id`=? FOR UPDATE;', { id })
@@ -537,12 +534,12 @@ function Tx:SetMetadata(instanceId, document, expectedRevision)
 
     self.query([[
         UPDATE `inventory_items`
-        SET `metadata`=?, `metadata_revision`=`metadata_revision`+1, `row_revision`=`row_revision`+1
+        SET `metadata`=?, `row_revision`=`row_revision`+1
         WHERE `id`=?;
     ]], { encoded, id })
 
     local updated = self.query(
-        'SELECT `metadata_revision`, `row_revision` FROM `inventory_items` WHERE `id`=? LIMIT 1;', { id })
+        'SELECT `row_revision` FROM `inventory_items` WHERE `id`=? LIMIT 1;', { id })
     local revision = updated and updated[1] and tonumber(updated[1].row_revision)
 
     self.metadataChanged = self.metadataChanged or {}
@@ -668,22 +665,16 @@ function TransactionAPI.Transaction(context, fn)
     if handle then
         for _, entry in ipairs(handle.created or {}) do
             GuardsAPI.EmitItemCreated(entry.instanceId, entry.definitionId, entry.inventoryId, context)
-            TriggerEvent('feather-inventory:ItemAdded', entry.instanceId, 1, entry.inventoryId)
         end
         for _, entry in ipairs(handle.moved or {}) do
             GuardsAPI.EmitItemMoved(entry.instanceId, entry.fromInventoryId, entry.toInventoryId, context,
                 { definitionId = entry.definitionId, revision = entry.revision })
-            if tostring(entry.fromInventoryId) ~= tostring(entry.toInventoryId) then
-                TriggerEvent('feather-inventory:ItemRemoved', entry.instanceId, 1, entry.fromInventoryId)
-                TriggerEvent('feather-inventory:ItemAdded', entry.instanceId, 1, entry.toInventoryId)
-            end
         end
         for _, entry in ipairs(handle.metadataChanged or {}) do
             GuardsAPI.EmitItemMetadataChanged(entry.instanceId, entry.revision, context)
         end
         for _, entry in ipairs(handle.destroyed or {}) do
             GuardsAPI.EmitItemDestroyed(entry.instanceId, entry.definitionId, entry.inventoryId, context)
-            TriggerEvent('feather-inventory:ItemRemoved', entry.instanceId, 1, entry.inventoryId)
         end
         GuardsAPI.EmitTransactionCommitted(context, {
             created = #(handle.created or {}),

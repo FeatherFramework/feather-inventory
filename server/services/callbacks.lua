@@ -232,18 +232,25 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
     -- Only the units that fit move; any remainder stays where it was, so
     -- dragging 15 onto a stack with room for 5 tops it up and leaves 10
     -- behind rather than silently overfilling past max_stack_size.
-    InventoryControllers.MoveSlotItemsPartial(fromInventory, fromSlot, toInventory, toSlot, mergeCount)
+    --
+    -- The merge path announces its own movement. Every other route emits
+    -- ItemMoved from inside the controller that performs it, but
+    -- MoveSlotItemsPartial had no emit at all -- for as long as the legacy
+    -- ItemAdded/ItemRemoved pair existed here, that gap was invisible,
+    -- because those two were firing in its place. Removing them surfaced it.
+    local _, mergedIds = InventoryControllers.MoveSlotItemsPartial(
+      fromInventory, fromSlot, toInventory, toSlot, mergeCount)
+    if tostring(fromInventory) ~= tostring(toInventory) then
+      for _, id in ipairs(mergedIds) do
+        GuardsAPI.EmitItemMoved(id, fromInventory, toInventory,
+          { reason = 'slot_merge', actorSource = src },
+          { definitionId = tonumber(movingBreakdown[1].item_id) })
+      end
+    end
   else
+    -- MoveSlotItems emits ItemMoved itself, post-commit, and only when the
+    -- item actually changed inventory.
     InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory, toSlot)
-  end
-
-  -- Only fire the cross-resource item-left/item-arrived events (e.g.
-  -- feather-weapons unequipping on ItemRemoved) when the item actually left
-  -- an inventory -- rearranging compartments within the same book isn't a
-  -- removal.
-  if tostring(fromInventory) ~= tostring(toInventory) then
-    TriggerEvent('feather-inventory:ItemRemoved', itemId, 1, fromInventory)
-    TriggerEvent('feather-inventory:ItemAdded', itemId, 1, toInventory)
   end
 
   res({

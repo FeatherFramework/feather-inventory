@@ -92,14 +92,14 @@ function InventoryControllers.InventoryItemCount(inventory, itemId)
 end
 
 function InventoryControllers.GetInventoryItemById(id)
-  local result = MySQL.query.await('SELECT `inventory_items`.`id`, `inventory_items`.`updated_at`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, `inventory_items`.`metadata` AS `item_metadata`, `inventory_items`.`inventory_id` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` WHERE `inventory_items`.`id`=? GROUP BY `inventory_items`.`metadata`, `inventory_items`.`id`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size` LIMIT 1;', { id })[1]
+  local result = MySQL.query.await('SELECT `inventory_items`.`id`, `inventory_items`.`updated_at`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, `inventory_items`.`metadata` AS `metadata`, `inventory_items`.`inventory_id` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` WHERE `inventory_items`.`id`=? GROUP BY `inventory_items`.`metadata`, `inventory_items`.`id`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size` LIMIT 1;', { id })[1]
 
   if result == nil then
     return false
   end
 
-  if result["item_metadata"] and result["item_metadata"] ~= nil then
-    result["item_metadata"] = json.decode(result["item_metadata"])
+  if result["metadata"] and result["metadata"] ~= nil then
+    result["metadata"] = json.decode(result["metadata"])
   end
 
   return result
@@ -128,10 +128,10 @@ function InventoryControllers.GetInventoryTotalWeight(inventory)
 end
 
 function InventoryControllers.GetInventoryItems(inventory)
-  local items = MySQL.query.await( 'SELECT `inventory_items`.`id`, `inventory_items`.`updated_at`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, `inventory_items`.`metadata` AS `item_metadata` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` WHERE `inventory_items`.`inventory_id` = ? GROUP BY `inventory_items`.`metadata`, `inventory_items`.`id`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`;', { inventory })
+  local items = MySQL.query.await( 'SELECT `inventory_items`.`id`, `inventory_items`.`updated_at`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, `inventory_items`.`metadata` AS `metadata` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` WHERE `inventory_items`.`inventory_id` = ? GROUP BY `inventory_items`.`metadata`, `inventory_items`.`id`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`;', { inventory })
   for key, value in pairs(items) do
-    if value["item_metadata"] and value["item_metadata"] ~= nil then
-      items[key]["item_metadata"] = json.decode(value["item_metadata"])
+    if value["metadata"] and value["metadata"] ~= nil then
+      items[key]["metadata"] = json.decode(value["metadata"])
     end
   end
 
@@ -283,21 +283,30 @@ end
 -- Rows are re-read from the source slot rather than taken from a caller's
 -- list, and each UPDATE is scoped by the source inventory_id, so a row that
 -- isn't actually there can't be pulled in by naming its id.
+-- Returns the count moved and the instance ids that moved. The ids matter:
+-- this is the stack-merge path, and it is the caller's only way to announce
+-- what happened -- see the ItemMoved emit in the MoveItem RPC.
 function InventoryControllers.MoveSlotItemsPartial(fromInventory, fromSlot, toInventory, toSlot, quantity)
   local rows = InventoryControllers.GetItemsInSlot(fromInventory, fromSlot)
   local moved = 0
+  local movedIds = {}
 
   for _, row in ipairs(rows) do
     if moved >= quantity then
       break
     end
+    -- row_revision bumps here for the same reason it does on every other
+    -- movement path: a merge relocates the instance, so a compare-and-set
+    -- holding a pre-merge revision has to conflict rather than write into
+    -- an item that has since changed hands.
     MySQL.query.await(
-      'UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=? WHERE `id`=? AND `inventory_id`=?;',
+      'UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=?, `row_revision`=`row_revision`+1 WHERE `id`=? AND `inventory_id`=?;',
       { toInventory, toSlot, row.id, fromInventory })
     moved = moved + 1
+    movedIds[moved] = tonumber(row.id)
   end
 
-  return moved
+  return moved, movedIds
 end
 
 -- (Capacity model) Number of distinct compartments in use, regardless of what
@@ -434,12 +443,14 @@ function InventoryControllers.SplitSlotItems(inventory, fromSlot, toSlot, quanti
   return moved
 end
 
--- (Weapons review #2) The flat `item_metadata` accessors are gone. Nothing
--- consumed that table, and a per-key write has neither atomicity nor a
--- revision, which is exactly what the versioned document on
--- `inventory_items.metadata` provides. The table itself is left in place
--- rather than dropped -- an unused table is harmless, and dropping data is
--- not this migration's business.
+-- Metadata lives entirely on `inventory_items.metadata` -- a versioned JSON
+-- document with compare-and-set on `row_revision`. The old flat key/value
+-- table is neither read nor written here, and this resource no longer uses
+-- its name anywhere: the payload field the ledger reads is `metadata`, not
+-- the `item_metadata` alias it carried while both existed.
+--
+-- The table itself is being removed at its source -- `feather-recipe` stops
+-- creating it -- rather than dropped from here. See MASTER_PLAN §6.2.
 
 -- (INV-W3) Destroy guard + post-commit event. Same chokepoint reasoning as
 -- the move path: guarding here covers every removal route rather than
@@ -803,8 +814,6 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
   end
 
   for _, id in ipairs(movedIds) do
-    TriggerEvent('feather-inventory:ItemRemoved', id, 1, sourceInventory)
-    TriggerEvent('feather-inventory:ItemAdded', id, 1, targetInventory)
     GuardsAPI.EmitItemMoved(id, sourceInventory, targetInventory, { reason = 'move' })
   end
 
