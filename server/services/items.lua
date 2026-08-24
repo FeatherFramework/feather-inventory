@@ -28,6 +28,23 @@ function ItemsAPI.GrantItem(itemName, quantity, inventoryId)
     return Result.Err('invalid_item', 'Item does not exist.')
   end
 
+  -- A `unique` definition carries per-instance state -- a weapon's serial and
+  -- ammunition, a tool's condition -- and this path cannot supply it. Rows are
+  -- created below by a batched INSERT with no metadata, so granting a weapon
+  -- through the generic catalog produces an instance with an empty document:
+  -- present and equippable, but with nothing for its owning resource to read.
+  --
+  -- Refused at the source rather than left for each admin-style consumer to
+  -- remember. Unique definitions are issued by whichever resource models them
+  -- (feather-weapons' Issuance.Issue), which creates the instance and its
+  -- complete initial document in one transaction.
+  if definition.instance_mode == 'unique' then
+    return Result.Err('unique_requires_issuer',
+      ('%s is a unique item and must be issued by the resource that owns it, not granted generically.')
+        :format(definition.name),
+      { itemName = definition.name, instanceMode = 'unique' })
+  end
+
 
   local inventory, maxWeight, ignoreItemLimit
   if tonumber(inventoryId) then
