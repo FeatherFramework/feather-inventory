@@ -85,10 +85,11 @@ Feather.RPC.Register("Feather:Inventory:DropItemsOnGround", function(params, res
     -- {error, message} on capacity rejection (INV-14) -- it just never
     -- reached the player; the NUI only logged it to the browser console.
     local dropResult = ItemsAPI.DropItemsOnGround(inventoryID, params.items, params.x, params.y, params.z)
-    if dropResult and dropResult.error then
+    if not Result.IsOk(dropResult) then
         Feather.Notify.RightNotify(src, TranslateResult(src, dropResult, 'err_drop_failed'), 3000)
+        return res({ error = true, code = dropResult.error.code, message = dropResult.error.message })
     end
-    return res(dropResult)
+    return res({ error = false, inv = dropResult.value.inventory })
 end)
 
 -- (INV-04) Was a RegisterServerEvent, making it network-reachable -- any

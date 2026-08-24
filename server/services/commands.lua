@@ -6,7 +6,7 @@ if Config.DevMode then
     RegisterCommand('AddItems', function(source, args)
         local result = ItemsAPI.AddItem(args[1], tonumber(args[2]), args[3] or nil, source)
 
-        if result.error == true then
+        if not Result.IsOk(result) then
             Feather.Notify.RightNotify(source, TranslateResult(source, result, 'err_move_failed'), 3000)
         else
             Feather.Notify.RightNotify(source, Translate(source, 'msg_item_added', 'Item added.'), 3000)
@@ -20,7 +20,7 @@ if Config.DevMode then
             left = 10
         }, source)
 
-        if result.error == true then
+        if not Result.IsOk(result) then
             Feather.Notify.RightNotify(source, TranslateResult(source, result, 'err_move_failed'), 3000)
         else
             Feather.Notify.RightNotify(source, Translate(source, 'msg_item_added', 'Item added.'), 3000)
@@ -124,7 +124,7 @@ if Config.DevMode then
         end)
         local vetoed = ItemsAPI.RemoveItemById(mover)
         GuardsAPI.UnregisterDestroyGuard('smoketest_veto')
-        report('legacy removal respects guard', vetoed.error == true, vetoed.message)
+        report('legacy removal respects guard', not Result.IsOk(vetoed), vetoed.error and vetoed.error.message)
 
         -- Clean up everything this test created.
         local cleanup = InventoryAPI.Transaction({ reason = 'smoketest_cleanup' }, function(tx)
@@ -149,7 +149,7 @@ if Config.DevMode then
         local result = ItemsAPI.AddItem(args[1], tonumber(args[2]), args[3] or nil,
             'dde04bd6-34cc-11ef-a92d-107c61489014')
 
-        if result.error == true then
+        if not Result.IsOk(result) then
             Feather.Notify.RightNotify(source, TranslateResult(source, result, 'err_move_failed'), 3000)
         else
             Feather.Notify.RightNotify(source, Translate(source, 'msg_item_added', 'Item added.'), 3000)

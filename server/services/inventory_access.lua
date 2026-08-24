@@ -215,6 +215,16 @@ InventoryAPI.GetInventoryOwner = function(inventoryId)
     return result and result.owner_character_id
 end
 
+-- Envelope form of the above, for external callers (contract 2). The bare
+-- form stays for this file's own hot paths, which run inside access checks.
+InventoryAPI.GetInventoryOwnerResult = function(inventoryId)
+    local owner = InventoryAPI.GetInventoryOwner(inventoryId)
+    if owner == nil then
+        return Result.Err(Result.Codes.NOT_FOUND, 'That inventory has no owner.')
+    end
+    return Result.Ok(owner)
+end
+
 InventoryAPI.GetInventoryOwnerAndVisibility = function(inventoryId)
     local result = MySQL.query.await('SELECT `owner_character_id`, `is_public` FROM `inventory` WHERE `id`=? LIMIT 1;', { inventoryId })[1]
     if not result then
@@ -225,13 +235,13 @@ end
 
 InventoryAPI.HasInventoryAccessGrant = function(characterId, inventoryId)
     if not characterId or not inventoryId then
-        return false
+        return Result.Ok(false)
     end
     local result = MySQL.query.await(
         'SELECT `id` FROM `inventory_access` WHERE `inventory_id`=? AND `character_id`=? LIMIT 1;',
         { inventoryId, characterId }
     )[1]
-    return result ~= nil
+    return Result.Ok(result ~= nil)
 end
 
 ---
@@ -244,55 +254,52 @@ end
 InventoryAPI.GrantInventoryAccess = function(src, inventoryId, targetCharacterId)
     local ownerCharacterId = InventoryAPI.GetInventoryOwner(inventoryId)
     if not ownerCharacterId then
-        return { error = true, message = 'This inventory has no owner and cannot have its access list managed.' }
+        return Result.Err(Result.Codes.DENIED, "This inventory has no owner and cannot have its access list managed.")
     end
     if not IsOwnerOrAdmin(src, ownerCharacterId) then
-        return { error = true, message = 'You do not own this inventory.' }
+        return Result.Err(Result.Codes.DENIED, "You do not own this inventory.")
     end
 
     MySQL.query.await(
         'INSERT IGNORE INTO `inventory_access` (`inventory_id`, `character_id`, `granted_by_character_id`) VALUES (?, ?, ?);',
         { inventoryId, targetCharacterId, GetOwnCharacterId(src) }
     )
-    return { error = false }
+    return Result.Ok(true)
 end
 
 InventoryAPI.RevokeInventoryAccess = function(src, inventoryId, targetCharacterId)
     local ownerCharacterId = InventoryAPI.GetInventoryOwner(inventoryId)
     if not IsOwnerOrAdmin(src, ownerCharacterId) then
-        return { error = true, message = 'You do not own this inventory.' }
+        return Result.Err(Result.Codes.DENIED, "You do not own this inventory.")
     end
 
     MySQL.query.await(
         'DELETE FROM `inventory_access` WHERE `inventory_id`=? AND `character_id`=?;',
         { inventoryId, targetCharacterId }
     )
-    return { error = false }
+    return Result.Ok(true)
 end
 
 InventoryAPI.SetInventoryPublic = function(src, inventoryId, isPublic)
     local ownerCharacterId = InventoryAPI.GetInventoryOwner(inventoryId)
     if not IsOwnerOrAdmin(src, ownerCharacterId) then
-        return { error = true, message = 'You do not own this inventory.' }
+        return Result.Err(Result.Codes.DENIED, "You do not own this inventory.")
     end
 
     MySQL.query.await('UPDATE `inventory` SET `is_public`=? WHERE `id`=?;', { isPublic and 1 or 0, inventoryId })
-    return { error = false }
+    return Result.Ok(true)
 end
 
 InventoryAPI.ListInventoryAccess = function(src, inventoryId)
     local ownerCharacterId = InventoryAPI.GetInventoryOwner(inventoryId)
     if not IsOwnerOrAdmin(src, ownerCharacterId) then
-        return { error = true, message = 'You do not own this inventory.' }
+        return Result.Err(Result.Codes.DENIED, "You do not own this inventory.")
     end
 
-    return {
-        error = false,
-        characters = MySQL.query.await(
-            'SELECT `character_id`, `granted_by_character_id`, `created_at` FROM `inventory_access` WHERE `inventory_id`=?;',
-            { inventoryId }
-        )
-    }
+    return Result.Ok(MySQL.query.await(
+        'SELECT `character_id`, `granted_by_character_id`, `created_at` FROM `inventory_access` WHERE `inventory_id`=?;',
+        { inventoryId }
+    ))
 end
 
 ------------------------------------------------------------------
@@ -318,11 +325,12 @@ local TemporaryGrants = {} -- [tostring(src)][tostring(inventoryId)] = expiresAt
 --
 InventoryAPI.GrantTemporaryAccess = function(src, inventoryId, ttlSeconds)
     if not src or not inventoryId then
-        return
+        return Result.Err(Result.Codes.INVALID_INPUT, 'A player source and inventory id are required.')
     end
     local key = tostring(src)
     TemporaryGrants[key] = TemporaryGrants[key] or {}
     TemporaryGrants[key][tostring(inventoryId)] = GetGameTimer() + ((tonumber(ttlSeconds) or Config.Access.TemporaryGrantTTL) * 1000)
+    return Result.Ok(true)
 end
 
 InventoryAPI.RevokeTemporaryAccess = function(src, inventoryId)
@@ -330,6 +338,7 @@ InventoryAPI.RevokeTemporaryAccess = function(src, inventoryId)
     if grants then
         grants[tostring(inventoryId)] = nil
     end
+    return Result.Ok(true)
 end
 
 InventoryAPI.HasTemporaryAccess = function(src, inventoryId)
@@ -344,7 +353,7 @@ InventoryAPI.HasTemporaryAccess = function(src, inventoryId)
         DebugPrint('DEBUG-ACCESS', 'HasTemporaryAccess: src=%s inventoryId=%s expiresAt=%s now=%s grantKeysForSrc=[%s]',
             tostring(src), tostring(inventoryId), tostring(expiresAt), tostring(now), table.concat(keys, ', '))
     end
-    return expiresAt ~= nil and expiresAt > now
+    return Result.Ok(expiresAt ~= nil and expiresAt > now)
 end
 
 AddEventHandler('playerDropped', function()
@@ -426,7 +435,7 @@ InventoryAPI.CanAccessInventory = function(src, inventoryId, action, context)
     -- a robbery target on every call rather than trusting an open lock
     -- (INV-11/INV-23). Re-checked here rather than cached, so a mutation
     -- arriving late cannot ride an authorization that was true a minute ago.
-    if not InventoryAPI.IsInventoryAccessibleBySrc(src, inventoryId) then
+    if not InventoryAPI.Accessible(src, inventoryId) then
         return Result.Err(Result.Codes.DENIED, 'You do not have access to that inventory.',
             { action = action }, context.correlationId)
     end
@@ -448,8 +457,12 @@ end
 
 function IsAuthorizedForOwnedInventory(src, callerCharacterId, inventoryId)
     local ownerCharacterId, isPublic = InventoryAPI.GetInventoryOwnerAndVisibility(inventoryId)
-    local hasGrant = InventoryAPI.HasInventoryAccessGrant(callerCharacterId, inventoryId)
-    local hasTemp = InventoryAPI.HasTemporaryAccess(src, inventoryId)
+    -- Predicates return envelopes (contract 2); unwrap fail-closed -- a
+    -- failure envelope is truthy, so testing it directly would grant access.
+    local grantResult = InventoryAPI.HasInventoryAccessGrant(callerCharacterId, inventoryId)
+    local tempResult = InventoryAPI.HasTemporaryAccess(src, inventoryId)
+    local hasGrant = Result.IsOk(grantResult) and grantResult.value == true
+    local hasTemp = Result.IsOk(tempResult) and tempResult.value == true
     DebugPrint('DEBUG-ACCESS', 'IsAuthorizedForOwnedInventory: src=%s callerCharacterId=%s inventoryId=%s owner=%s isPublic=%s hasAccessGrant=%s hasTemporaryAccess=%s',
         tostring(src), tostring(callerCharacterId), tostring(inventoryId), tostring(ownerCharacterId), tostring(isPublic), tostring(hasGrant), tostring(hasTemp))
 

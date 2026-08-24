@@ -9,23 +9,23 @@ ItemsAPI = {}
 UsableItemCallbacks = {}
 
 function ItemsAPI.GetDefinitions()
-  return ItemControllers.GetItemDefinitions()
+  return Result.Ok(ItemControllers.GetItemDefinitions())
 end
 
 -- Atomically grants catalog items without metadata. Intended for trusted
 -- server resources such as administration, rewards, and scripted payouts.
 function ItemsAPI.GrantItem(itemName, quantity, inventoryId)
   if type(itemName) ~= 'string' or itemName == '' then
-    return { error = true, code = 'invalid_item', message = 'Invalid item name.' }
+    return Result.Err('invalid_item', 'Invalid item name.')
   end
   quantity = tonumber(quantity)
   if not quantity or quantity < 1 or quantity % 1 ~= 0 or quantity > 10000 then
-    return { error = true, code = 'invalid_quantity', message = 'Invalid quantity.' }
+    return Result.Err('invalid_quantity', 'Invalid quantity.')
   end
 
   local definition = ItemControllers.GetItemDefinitionByName(itemName)
   if not definition then
-    return { error = true, code = 'invalid_item', message = 'Item does not exist.' }
+    return Result.Err('invalid_item', 'Item does not exist.')
   end
 
   local inventory, maxWeight, ignoreItemLimit
@@ -39,7 +39,7 @@ function ItemsAPI.GrantItem(itemName, quantity, inventoryId)
     inventory, maxWeight, ignoreItemLimit = InventoryControllers.GetInventoryById(inventoryId)
   end
   if not inventory then
-    return { error = true, code = 'invalid_inventory', message = 'Inventory does not exist.' }
+    return Result.Err('invalid_inventory', 'Inventory does not exist.')
   end
 
   -- (Capacity model unification) Was three separate checks here, two of them
@@ -52,12 +52,12 @@ function ItemsAPI.GrantItem(itemName, quantity, inventoryId)
   -- allowed to hold.
   local acceptance = InventoryAPI.EvaluateInventoryAcceptance(inventory, maxWeight, ignoreItemLimit,
     { { item = definition.name, quantity = quantity } })
-  if not acceptance or acceptance.status == false then
-    return {
-      error = true,
-      code = (acceptance and acceptance.code) or 'inventory_full',
-      message = (acceptance and acceptance.message) or 'Inventory cannot hold these items.'
-    }
+  if not Result.IsOk(acceptance) then
+    return acceptance
+  end
+  if acceptance.value.accepted == false then
+    return Result.Err(acceptance.value.code or 'inventory_full',
+      acceptance.value.message or 'Inventory cannot hold these items.')
   end
 
   -- Steampunk ledger: same slot-assignment as AddItem below -- join an
@@ -102,7 +102,7 @@ function ItemsAPI.GrantItem(itemName, quantity, inventoryId)
       currentSlot = claimFreeSlot()
       currentSlotCount = 0
       if currentSlot == nil then
-        return { error = true, code = 'inventory_full', message = 'Inventory has no available slots.' }
+        return Result.Err('inventory_full', 'Inventory has no available slots.')
       end
     end
 
@@ -122,7 +122,7 @@ function ItemsAPI.GrantItem(itemName, quantity, inventoryId)
     ('INSERT INTO inventory_items (inventory_id, item_id, slot_index) VALUES %s RETURNING `id`;')
     :format(table.concat(placeholders, ', ')), values)
   if not succeeded or type(inserted) ~= 'table' or #inserted == 0 then
-    return { error = true, code = 'database_error', message = 'Items could not be granted.' }
+    return Result.Err('database_error', 'Items could not be granted.')
   end
 
   local instanceIds = {}
@@ -131,13 +131,12 @@ function ItemsAPI.GrantItem(itemName, quantity, inventoryId)
     GuardsAPI.EmitItemCreated(tonumber(row.id), definition.id, inventory, { reason = 'grant' })
   end
 
-  return {
-    error = false,
+  return Result.Ok({
     itemName = definition.name,
     displayName = definition.display_name,
     quantity = quantity,
     instanceIds = instanceIds
-  }
+  })
 end
 
 -- Grants `quantity` of `itemName` to an inventory, enforcing the per-item
@@ -149,10 +148,7 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   quantity = tonumber(quantity)
   if not quantity or quantity < 1 or quantity % 1 ~= 0 then
     warn('Invalid quantity. Must be creater than 0.')
-    return {
-      error = true,
-      message = "Invalid quantity. Must be creater than 0."
-    }
+    return Result.Err(Result.Codes.INVALID_INPUT, "Quantity must be greater than 0.")
   end
 
   -- max_quantity/weight are read by EvaluateInventoryAcceptance itself now;
@@ -160,10 +156,7 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   local itemId, _, _, max_stack_size = ItemControllers.GetItemByName(itemName)
   if not itemId then
     warn('Invalid itemName. Please make sure it is in the items table in your database.')
-    return {
-      error = true,
-      message = "Invalid itemName. Please make sure it is in the items table in your database."
-    }
+    return Result.Err(Result.Codes.NOT_FOUND, "Item does not exist in the items table.")
   end
   -- Same normalization GrantItem and EvaluateInventoryAcceptance apply -- the
   -- placement loop below compares against this, so a nil would crash it.
@@ -186,10 +179,7 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
 
   if not inventory then
     warn('Invalid inventory ID.')
-    return {
-      error = true,
-      message = "Invalid inventory ID."
-    }
+    return Result.Err("invalid_inventory", "Inventory does not exist.")
   end
 
   -- (Capacity model unification) Quantity, slot, and weight limits are now
@@ -202,22 +192,18 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   -- whole book rather than starting a second stack.
   local acceptance = InventoryAPI.EvaluateInventoryAcceptance(inventory, maxWeight, ignore_item_limit,
     { { item = itemName, quantity = quantity } })
-  if not acceptance or acceptance.status == false then
-    return {
-      error = true,
-      code = (acceptance and acceptance.code) or 'inventory_full',
-      message = (acceptance and acceptance.message) or 'Inventory cannot hold these items.'
-    }
+  if not Result.IsOk(acceptance) then
+    return acceptance
+  end
+  if acceptance.value.accepted == false then
+    return Result.Err(acceptance.value.code or "inventory_full",
+      acceptance.value.message or "Inventory cannot hold these items.")
   end
 
   if metadata ~= nil and type(metadata) ~= 'table' then
     warn(
       "Invalid format for meta data. Meta data must be a table of key value pairs. Example: { quality = 'poor', durability = 50, maxDurability = 100 }")
-    return {
-      error = true,
-      message =
-      "Invalid format for meta data. Meta data must be a table of key value pairs. Example: { quality = 'poor', durability = 50, maxDurability = 100 }"
-    }
+    return Result.Err(Result.Codes.INVALID_INPUT, "Metadata must be a table of key/value pairs.")
   end
 
   -- Steampunk ledger: each granted unit needs a real compartment (slot_index),
@@ -260,38 +246,23 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   -- doing "charge the player, then AddItem" would silently under-deliver on.
   -- Report what actually landed instead.
   if granted < quantity then
-    return {
-      error = true,
-      message = 'Inventory has no available slots.',
-      granted = granted,
-      requested = quantity
-    }
+    return Result.Err("inventory_full", "Inventory has no available slots.", { granted = granted, requested = quantity })
   end
 
-  return {
-    error = false,
-    granted = granted,
-    requested = quantity
-  }
+  return Result.Ok({ granted = granted, requested = quantity })
 end
 
 -- Removes n number of items by name. (No specific order)
 ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
   if quantity < 1 then
     warn('Invalid quantity. Must be creater than 0.')
-    return {
-      error = true,
-      message = "Invalid quantity. Must be creater than 0."
-    }
+    return Result.Err(Result.Codes.INVALID_INPUT, "Quantity must be greater than 0.")
   end
 
   local itemId, _, _ = ItemControllers.GetItemByName(itemName)
   if not itemId then
     warn('Invalid itemName. Please make sure it is in the items table in your database.')
-    return {
-      error = true,
-      message = "Invalid itemName. Please make sure it is in the items table in your database."
-    }
+    return Result.Err(Result.Codes.NOT_FOUND, "Item does not exist in the items table.")
   end
 
   local inventory, _, _ = nil, nil, nil
@@ -306,18 +277,12 @@ ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
   end
   if not inventory then
     warn('Invalid inventory ID.')
-    return {
-      error = true,
-      message = "Invalid inventory ID."
-    }
+    return Result.Err("invalid_inventory", "Inventory does not exist.")
   end
 
   local itemCount = InventoryControllers.InventoryItemCount(inventory, itemId)
   if itemCount < quantity then
-    return {
-      error = true,
-      message = "Withdrawing more items than available."
-    }
+    return Result.Err("item_limit", "Withdrawing more items than available.")
   end
 
   -- (Tier 1 audit sweep) Was `inventory.id` -- `inventory` here is already
@@ -341,11 +306,7 @@ ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
   for _, instanceId in ipairs(doomed) do
     local allowed, reason = GuardsAPI.CanDestroyInstance(instanceId, { reason = 'remove_by_name' })
     if not allowed then
-      return {
-        error = true,
-        code = 'denied',
-        message = reason or 'Removal blocked by a guard.'
-      }
+      return Result.Err(Result.Codes.DENIED, reason or "Removal blocked by a guard.")
     end
   end
 
@@ -357,40 +318,27 @@ ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
     GuardsAPI.EmitItemDestroyed(instanceId, itemId, inventory, { reason = 'remove_by_name' })
   end
 
-  return {
-    error = false,
-    removed = #doomed,
-    instanceIds = doomed
-  }
+  return Result.Ok({ removed = #doomed, instanceIds = doomed })
 end
 
 -- Removes a specific item from the players inventory.
 ItemsAPI.RemoveItemById = function(id)
   local item = InventoryControllers.GetInventoryItemById(id)
   if not item then
-    return {
-      error = true,
-      message = "Item not available."
-    }
+    return Result.Err(Result.Codes.NOT_FOUND, "Item not available.")
   end
   -- (Weapons review #4) Guarded, like every other removal path. An equipped
   -- weapon must not be destroyable through a legacy API without weapons
   -- getting a chance to veto or unequip first.
   local allowed, reason = GuardsAPI.CanDestroyInstance(item.id, { reason = 'remove_by_id' })
   if not allowed then
-    return {
-      error = true,
-      code = 'denied',
-      message = reason or 'Removal blocked by a guard.'
-    }
+    return Result.Err(Result.Codes.DENIED, reason or "Removal blocked by a guard.")
   end
 
   InventoryControllers.DeleteInventoryItem(item.id)
 
   GuardsAPI.EmitItemDestroyed(item.id, item.item_id, item.inventory_id, { reason = 'remove_by_id' })
-  return {
-    error = false,
-  }
+  return Result.Ok(true)
 end
 
 -- ItemsAPI.SetMetadata was removed. It had become a pure passthrough to
@@ -434,9 +382,9 @@ ItemsAPI.GetCondition = function(itemId)
   -- (INV-W1) Reads through the versioned metadata document.
   local metadata = InstancesAPI.ReadMetadata(tonumber(itemId))
   if not Result.IsOk(metadata) then
-    return nil
+    return metadata
   end
-  return tonumber(metadata.value.document[ConditionKey()])
+  return Result.Ok(tonumber(metadata.value.document[ConditionKey()]))
 end
 
 ---
@@ -461,20 +409,16 @@ ItemsAPI.SetCondition = function(itemId, value)
   local numericId = tonumber(itemId)
   local numericValue = tonumber(value)
   if not numericId or not numericValue then
-    return { error = true, code = 'invalid_quantity', message = 'Invalid item id or condition value.' }
+    return Result.Err('invalid_quantity', 'Invalid item id or condition value.')
   end
 
   local item = InventoryControllers.GetInventoryItemById(numericId)
   if not item then
-    return { error = true, code = 'invalid_item', message = 'Item does not exist.' }
+    return Result.Err('invalid_item', 'Item does not exist.')
   end
 
   if (tonumber(item.max_stack_size) or 1) > 1 then
-    return {
-      error = true,
-      code = 'condition_not_supported',
-      message = 'Condition cannot be set on a stackable item.'
-    }
+    return Result.Err("condition_not_supported", "Condition cannot be set on a stackable item.")
   end
 
   local clamped = math.max(0, math.min(math.floor(numericValue), ConditionMax()))
@@ -485,14 +429,10 @@ ItemsAPI.SetCondition = function(itemId, value)
   -- another's value, which the old one-key-at-a-time flat write allowed.
   local written = InstancesAPI.MergeMetadata(numericId, { [ConditionKey()] = clamped })
   if not Result.IsOk(written) then
-    return {
-      error = true,
-      code = written.error.code,
-      message = written.error.message
-    }
+    return written
   end
 
-  return { error = false, condition = clamped, revision = written.value.revision }
+  return Result.Ok({ condition = clamped, revision = written.value.revision })
 end
 
 ---
@@ -510,7 +450,7 @@ end
 ItemsAPI.AdjustCondition = function(itemId, delta)
   local numericDelta = tonumber(delta)
   if not numericDelta then
-    return { error = true, code = 'invalid_quantity', message = 'Invalid condition delta.' }
+    return Result.Err('invalid_quantity', 'Invalid condition delta.')
   end
 
   local current = ItemsAPI.GetCondition(itemId)
@@ -524,10 +464,10 @@ end
 ItemsAPI.GetItem = function(id)
   local item = InventoryControllers.GetInventoryItemById(id)
   if not item then
-    return nil
+    return Result.Err(Result.Codes.NOT_FOUND, "Item instance does not exist.")
   end
 
-  return item
+  return Result.Ok(item)
 end
 
 ---
@@ -544,8 +484,8 @@ end
 ItemsAPI.GetItemCount = function(itemName, inventoryId)
   local itemId, _, _ = ItemControllers.GetItemByName(itemName)
   if not itemId then
-    warn('Invalid itemName. Please make sure it is in the items table in your database.')
-    return nil
+    warn("Invalid itemName. Please make sure it is in the items table in your database.")
+    return Result.Err(Result.Codes.NOT_FOUND, "Item does not exist in the items table.")
   end
 
   local inventory, _, _ = nil, nil, nil
@@ -565,13 +505,11 @@ ItemsAPI.GetItemCount = function(itemName, inventoryId)
   -- rejection (harmless there -- a nil inventory_id just matches nothing in
   -- SQL -- but not the intended "unresolvable inventory" contract).
   if not inventory then
-    warn('Invalid inventory ID.')
-    return nil
+    warn("Invalid inventory ID.")
+    return Result.Err("invalid_inventory", "Inventory does not exist.")
   end
 
-  local itemCount = InventoryControllers.InventoryItemCount(inventory, itemId)
-
-  return itemCount
+  return Result.Ok(InventoryControllers.InventoryItemCount(inventory, itemId))
 end
 
 -- (INV-15) Was inverted -- returned false when the item *was* found and true
@@ -579,7 +517,7 @@ end
 -- backwards.
 ItemsAPI.ItemExists = function(itemName)
   local itemId, _, _ = ItemControllers.GetItemByName(itemName)
-  return itemId ~= nil and itemId ~= false
+  return Result.Ok(itemId ~= nil and itemId ~= false)
 end
 
 ItemsAPI.InventoryHasItems = function(items, inventoryId)
@@ -597,25 +535,25 @@ ItemsAPI.InventoryHasItems = function(items, inventoryId)
     inventory, _, _ = InventoryControllers.GetInventoryById(inventoryId)
   end
   if not inventory then
-    return false
+    return Result.Err("invalid_inventory", "Inventory does not exist.")
   end
   local playerItems = InventoryControllers.InventoryItemCounts(inventory)
 
   -- Error Checks
   if not IsTable(items) then
     warn('items must be a table! e.g. {{name = "apple", quantity = 2}, {name = "lemon", quantity = 1}}')
-    return false
+    return Result.Err(Result.Codes.INVALID_INPUT, 'items must be a table of { name, quantity } entries.')
   end
 
   for _, v in pairs(items) do
     if not IsTable(v) then
       warn('items must be a table! e.g. {{name = "apple", quantity = 2}, {name = "lemon", quantity = 1}}')
-      return false
+      return Result.Err(Result.Codes.INVALID_INPUT, 'items must be a table of { name, quantity } entries.')
     end
 
     if v.name == nil or tonumber(v.quantity) == nil then
       warn('items must be a table! e.g. {{name = "apple", quantity = 2}, {name = "lemon", quantity = 1}}')
-      return false
+      return Result.Err(Result.Codes.INVALID_INPUT, 'items must be a table of { name, quantity } entries.')
     end
   end
 
@@ -633,30 +571,34 @@ ItemsAPI.InventoryHasItems = function(items, inventoryId)
     end
   end
 
-  return count >= numberOfItems
+  return Result.Ok(count >= numberOfItems)
 end
 
 -- Lets other resources (e.g. feather-weapons, for every weapon item) attach
 -- a "use" behavior to an item by name. Looked up by ItemsAPI.UseItem below
 -- when a player actually uses the item from their inventory.
 ItemsAPI.RegisterUsableItem = function(itemName, callback)
+  if type(itemName) ~= 'string' or itemName == '' or type(callback) ~= 'function' then
+    return Result.Err(Result.Codes.INVALID_INPUT, 'An item name and a callback function are required.')
+  end
   if UsableItemCallbacks[itemName] then
-    warn('An Item by that name has laready been registered. Item: ' .. itemName)
-    return
+    warn('An item by that name has already been registered. Item: ' .. itemName)
+    return Result.Err(Result.Codes.CONFLICT, 'An item by that name is already registered.', { itemName = itemName })
   end
 
   UsableItemCallbacks[itemName] = callback
+  return Result.Ok(true)
 end
 
 ItemsAPI.UseItem = function(itemID, src)
   local item = InventoryControllers.GetInventoryItemById(itemID)
   if not item then
-    warn('Item not found in the database! ItemID: ' .. itemID)
-    return false
+    warn('Item not found in the database! ItemID: ' .. tostring(itemID))
+    return Result.Err(Result.Codes.NOT_FOUND, 'Item instance does not exist.')
   end
   if tonumber(src) == nil then
     warn('Invalid Player Source')
-    return false
+    return Result.Err(Result.Codes.INVALID_INPUT, 'A valid player source is required.')
   end
 
   -- (INV-02) This ownership check was commented out, so any client could
@@ -668,14 +610,14 @@ ItemsAPI.UseItem = function(itemID, src)
   local player = Feather.Character.GetCharacter({ src = src })
   local character = player and player.char
   if not character then
-    warn('No character loaded for src: ' .. src)
-    return false
+    warn('No character loaded for src: ' .. tostring(src))
+    return Result.Err("no_character", 'No character is loaded for that player.')
   end
 
   local inventory = InventoryControllers.GetInventoryByCharacter(character.id)
   if not inventory or tostring(item.inventory_id) ~= tostring(inventory) then
-    warn('Rejected UseItem: src ' .. src .. ' does not own item ' .. tostring(itemID))
-    return false
+    warn('Rejected UseItem: src ' .. tostring(src) .. ' does not own item ' .. tostring(itemID))
+    return Result.Err(Result.Codes.DENIED, 'That item is not in your inventory.')
   end
 
   -- if item.type == 'item_weapon' then
@@ -690,19 +632,17 @@ ItemsAPI.UseItem = function(itemID, src)
     end)
   else
     warn('No usable callback defined for item: ' .. item.name)
+    return Result.Err(Result.Codes.UNSUPPORTED, 'That item has no registered use behaviour.', { itemName = item.name })
   end
   -- end
 
-  return true
+  return Result.Ok(true)
 end
 
 
 ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z)
   if type(items) ~= 'table' or #items == 0 then
-    return {
-      error = true,
-      message = 'No items specified.'
-    }
+    return Result.Err(Result.Codes.INVALID_INPUT, "No items specified.")
   end
 
   -- (INV-03) The old check only validated items[1]'s name/count via
@@ -717,10 +657,7 @@ ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z)
     local item = InventoryControllers.GetInventoryItemById(id)
     if not item or tostring(item.inventory_id) ~= tostring(inventoryId) then
       warn('Rejected DropItemsOnGround: item ' .. tostring(id) .. ' does not belong to inventory ' .. tostring(inventoryId))
-      return {
-        error = true,
-        message = 'One or more items are not in your inventory.'
-      }
+      return Result.Err(Result.Codes.DENIED, "One or more items are not in your inventory.")
     end
   end
 
@@ -751,19 +688,14 @@ ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z)
   -- itself rejected the move (e.g. capacity) -- the ground pile row would
   -- exist but the item never actually left the source inventory, with no
   -- error surfaced to the client to explain why.
+  -- MoveInventoryItems is a controller, not an export -- it keeps its own
+  -- { error, code, message } shape, which this converts at the API boundary.
   if updateinv and updateinv.error then
-    return {
-      error = true,
-      code = updateinv.code,
-      message = updateinv.message,
-      inv = updateinv
-    }
+    return Result.Err(updateinv.code or Result.Codes.INTERNAL,
+      updateinv.message or "Items could not be dropped.", { inventory = updateinv })
   end
 
   UpdateClientWithGroundLocations(-1)
 
-  return {
-    error = false,
-    inv = updateinv
-  }
+  return Result.Ok({ inventory = updateinv })
 end

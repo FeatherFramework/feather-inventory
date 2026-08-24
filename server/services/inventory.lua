@@ -24,19 +24,18 @@ end
 
 InventoryAPI.RegisterForeignKey = function(tableName, foreignKeyType, primaryKeyName)
   if not tableName or not foreignKeyType or not primaryKeyName then
-    warn(
-      'All parameters are required!')
-    return
+    warn('All parameters are required!')
+    return Result.Err(Result.Codes.INVALID_INPUT, 'tableName, foreignKeyType and primaryKeyName are all required.')
   end
 
   if not IsSafeIdentifier(tableName) or not IsSafeIdentifier(primaryKeyName) then
     warn('Invalid tableName or primaryKeyName. Must be a valid SQL identifier.')
-    return
+    return Result.Err(Result.Codes.INVALID_INPUT, 'tableName and primaryKeyName must be valid SQL identifiers.')
   end
 
   if RegisteredForeignKeys[tableName] then
     warn('This foreign key has already been registered by a different resource.')
-    return
+    return Result.Err(Result.Codes.CONFLICT, 'That foreign key is already registered by another resource.', { tableName = tableName })
   end
 
   local foreignKey = string.lower(tableName) .. '_id'
@@ -63,6 +62,7 @@ InventoryAPI.RegisterForeignKey = function(tableName, foreignKeyType, primaryKey
   -- actually reads, so the "already registered by a different resource"
   -- check never triggered.
   RegisteredForeignKeys[tableName] = true
+  return Result.Ok(true)
 end
 
 ---
@@ -91,24 +91,22 @@ end
 --
 InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItemLimits, maxWeight, restrictedItems, ownerCharacterId, isPublic, maxSlots)
   if not tableName or not id then
-    warn(
-      'All parameters are required!')
-    return
+    warn('All parameters are required!')
+    return Result.Err(Result.Codes.INVALID_INPUT, 'tableName and id are required.')
   end
 
   -- (INV-18) Same rationale as RegisterForeignKey -- tableName is
   -- concatenated into DDL/DML below via `foreignKey`.
   if not IsSafeIdentifier(tableName) then
     warn('Invalid tableName. Must be a valid SQL identifier.')
-    return
+    return Result.Err(Result.Codes.INVALID_INPUT, 'tableName must be a valid SQL identifier.')
   end
 
   local foreignKey = string.lower(tableName) .. '_id'
   local column = MySQL.query.await("SHOW COLUMNS FROM `inventory` LIKE ?;", { foreignKey })
   if #(column) < 1 then
-    warn(
-      'A foreign key for this script has not been registered. Please refer to the documentation to register a foreign key.')
-    return
+    warn('A foreign key for this script has not been registered. Please refer to the documentation to register a foreign key.')
+    return Result.Err(Result.Codes.DEPENDENCY_MISSING, 'No foreign key is registered for that table. Call RegisterForeignKey first.', { tableName = tableName })
   end
 
   -- Check if inventory already exists
@@ -150,7 +148,7 @@ InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItem
       MySQL.query.await('UPDATE `inventory` SET `max_slots`=? WHERE `id`=?;', { tonumber(maxSlots), inventory[1].id })
     end
 
-    return inventory[1].uuid, inventory[1].id
+    return Result.Ok({ uuid = inventory[1].uuid, id = inventory[1].id })
   end
 
   -- Create new inventory
@@ -158,10 +156,10 @@ InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItem
   inventory = MySQL.query.await(query, { id, tableName, displayName or 'storage', maxWeight or nil, ignoreItemLimits or false, ownerCharacterId or nil, isPublic and 1 or 0, maxSlots and tonumber(maxSlots) or nil })
 
   if not inventory or not inventory[1] then
-    return nil
+    return Result.Err(Result.Codes.INTERNAL, 'Inventory could not be created.')
   end
 
-  return inventory[1].uuid, inventory[1].id
+  return Result.Ok({ uuid = inventory[1].uuid, id = inventory[1].id })
 end
 
 ---
@@ -220,7 +218,7 @@ end
 -- @param maxWeight Inventory's max_weight, or nil to fall back to Config.maxWeight
 -- @param ignoreItemLimit Inventory's ignore_item_limit flag, any DB representation
 -- @param items Table of {item=name, quantity=n}, already shape-validated
--- @return { status = boolean, message = string }
+-- @return Result< { accepted = boolean, code = string?, message = string } >
 --
 local function EvaluateInventoryAcceptance(inventory, maxWeight, ignoreItemLimit, items)
   -- (§10.4) Per-inventory, not the global Config default -- a storage wagon
@@ -244,18 +242,18 @@ local function EvaluateInventoryAcceptance(inventory, maxWeight, ignoreItemLimit
     -- result.
     local itemId, maxQuantity, itemWeight, maxStackSize = ItemControllers.GetItemByName(entry.item)
     if not itemId then
-      return { status = false, code = 'invalid_item', message = 'Item does not exist.' }
+      return Result.Ok({ accepted = false, code = 'invalid_item', message = 'Item does not exist.' })
     end
 
     if InventoryControllers.IsItemRestricted(inventory, itemId) then
-      return { status = false, code = 'item_restricted', message = 'Item is restricted.' }
+      return Result.Ok({ accepted = false, code = 'item_restricted', message = 'Item is restricted.' })
     end
 
     -- (INV-10) `Boolean` is a lookup table (see helpers/main.lua), not a
     -- function -- calling it as `Boolean(x)` errored every time this ran.
     if not ignoreLimits then
       if (InventoryControllers.InventoryItemCount(inventory, itemId) + quantity) > (tonumber(maxQuantity) or 0) then
-        return { status = false, code = 'item_limit', message = 'Max Quantity Exceeded.' }
+        return Result.Ok({ accepted = false, code = 'item_limit', message = 'Max Quantity Exceeded.' })
       end
     end
 
@@ -275,7 +273,7 @@ local function EvaluateInventoryAcceptance(inventory, maxWeight, ignoreItemLimit
     if overflow > 0 then
       local slotsNeeded = math.ceil(overflow / stackSize)
       if slotsNeeded > freeSlots then
-        return { status = false, code = 'inventory_full', message = 'Inventory has no available slots.' }
+        return Result.Ok({ accepted = false, code = 'inventory_full', message = 'Inventory has no available slots.' })
       end
       -- Decrement so several items in one request compete for the same free
       -- compartments instead of each being checked against the full count.
@@ -292,10 +290,10 @@ local function EvaluateInventoryAcceptance(inventory, maxWeight, ignoreItemLimit
   local weightLimit = tonumber(maxWeight) or tonumber(Config.maxWeight)
   if weightLimit and weightLimit > 0
       and (InventoryControllers.GetInventoryTotalWeight(inventory) + addedWeight) > weightLimit then
-    return { status = false, code = 'weight_limit', message = 'Max Weight Exceeded.' }
+    return Result.Ok({ accepted = false, code = 'weight_limit', message = 'Max Weight Exceeded.' })
   end
 
-  return { status = true, message = '' }
+  return Result.Ok({ accepted = true, code = nil, message = '' })
 end
 
 -- Exposed for the grant paths in items.lua, which resolve their own
@@ -312,7 +310,7 @@ InventoryAPI.EvaluateInventoryAcceptance = EvaluateInventoryAcceptance
 -- inventory at its weight limit can always accept a swap for something no
 -- heavier, but an addition-only check rejects it.
 --
--- @return { status = boolean, code = string?, message = string }
+-- @return Result< { accepted = boolean, code = string?, message = string } >
 --
 local function EvaluateSlotMoveSide(inventory, maxWeight, ignoreItemLimit, arriving, leaving)
   local ignoreLimits = Boolean[ignoreItemLimit] == true
@@ -331,7 +329,7 @@ local function EvaluateSlotMoveSide(inventory, maxWeight, ignoreItemLimit, arriv
     local count = tonumber(row.count) or 0
 
     if InventoryControllers.IsItemRestricted(inventory, row.item_id) then
-      return { status = false, code = 'item_restricted', message = 'Item is restricted.' }
+      return Result.Ok({ accepted = false, code = 'item_restricted', message = 'Item is restricted.' })
     end
 
     if not ignoreLimits then
@@ -341,7 +339,7 @@ local function EvaluateSlotMoveSide(inventory, maxWeight, ignoreItemLimit, arriv
       local current = InventoryControllers.InventoryItemCount(inventory, row.item_id)
       local alsoLeaving = leavingCountByItem[tostring(row.item_id)] or 0
       if (current - alsoLeaving + count) > (tonumber(row.max_quantity) or 0) then
-        return { status = false, code = 'item_limit', message = 'Max Quantity Exceeded.' }
+        return Result.Ok({ accepted = false, code = 'item_limit', message = 'Max Quantity Exceeded.' })
       end
     end
 
@@ -353,11 +351,11 @@ local function EvaluateSlotMoveSide(inventory, maxWeight, ignoreItemLimit, arriv
   if weightLimit and weightLimit > 0 then
     local projected = InventoryControllers.GetInventoryTotalWeight(inventory) - leavingWeight + arrivingWeight
     if projected > weightLimit then
-      return { status = false, code = 'weight_limit', message = 'Max Weight Exceeded.' }
+      return Result.Ok({ accepted = false, code = 'weight_limit', message = 'Max Weight Exceeded.' })
     end
   end
 
-  return { status = true, message = '' }
+  return Result.Ok({ accepted = true, code = nil, message = '' })
 end
 
 ---
@@ -389,27 +387,27 @@ end
 -- @param fromSlot Its compartment index
 -- @param toInventory Raw inventory.id being moved into
 -- @param toSlot Destination compartment index
--- @return { status = boolean, code = string?, message = string }
+-- @return Result< { accepted = boolean, code = string?, message = string } >
 --
 InventoryAPI.EvaluateSlotMove = function(fromInventory, fromSlot, toInventory, toSlot)
   -- Same-inventory rearrangement changes nothing about what that inventory
   -- holds in total -- no weight, quantity, or restriction can differ.
   if tostring(fromInventory) == tostring(toInventory) then
-    return { status = true, message = '' }
+    return Result.Ok({ accepted = true, code = nil, message = '' })
   end
 
   local fromId, fromMaxWeight, fromIgnoreLimit = InventoryControllers.GetInventoryById(fromInventory, 'id')
   local toId, toMaxWeight, toIgnoreLimit = InventoryControllers.GetInventoryById(toInventory, 'id')
   if not fromId or not toId then
     warn('Invalid inventory ID.')
-    return { status = false, code = 'invalid_inventory', message = 'Inventory does not exist.' }
+    return Result.Ok({ accepted = false, code = 'invalid_inventory', message = 'Inventory does not exist.' })
   end
 
   local moving = InventoryControllers.GetSlotItemBreakdown(fromInventory, fromSlot)
   local occupant = InventoryControllers.GetSlotItemBreakdown(toInventory, toSlot)
 
   local destination = EvaluateSlotMoveSide(toInventory, toMaxWeight, toIgnoreLimit, moving, occupant)
-  if destination.status == false then
+  if not Result.IsOk(destination) or destination.value.accepted == false then
     return destination
   end
 
@@ -425,11 +423,11 @@ end
 --
 -- @param items Table of items and their quantity. e.g. { {item="apple", quantity=5}, {item="matches", quantity=10} }
 -- @param inventoryId Player Source or Inventory UUID
--- @return True if inventory can hold items, false if not
+-- @return Result< { accepted = boolean, code = string?, message = string } >
 --
 InventoryAPI.InventoryCanHold = function(items, inventoryId)
   if not IsValidItemRequestList(items) then
-    return nil
+    return Result.Err(Result.Codes.INVALID_INPUT, 'items must be a table of { item, quantity } entries.')
   end
 
   local inventory, maxWeight, ignore_item_limit = nil, nil, nil
@@ -444,7 +442,7 @@ InventoryAPI.InventoryCanHold = function(items, inventoryId)
   end
   if not inventory then
     warn('Invalid inventory ID.')
-    return nil
+    return Result.Err("invalid_inventory", "Inventory does not exist.")
   end
 
   return EvaluateInventoryAcceptance(inventory, maxWeight, ignore_item_limit, items)
@@ -467,17 +465,17 @@ end
 --
 -- @param items Table of items and their quantity, same shape as InventoryCanHold
 -- @param inventoryId Raw inventory.id
--- @return True if inventory can hold items, false if not
+-- @return Result< { accepted = boolean, code = string?, message = string } >
 --
 InventoryAPI.InventoryCanHoldById = function(items, inventoryId)
   if not IsValidItemRequestList(items) then
-    return nil
+    return Result.Err(Result.Codes.INVALID_INPUT, 'items must be a table of { item, quantity } entries.')
   end
 
   local inventory, maxWeight, ignore_item_limit = InventoryControllers.GetInventoryById(inventoryId, 'id')
   if not inventory then
     warn('Invalid inventory ID.')
-    return nil
+    return Result.Err("invalid_inventory", "Inventory does not exist.")
   end
 
   return EvaluateInventoryAcceptance(inventory, maxWeight, ignore_item_limit, items)
@@ -508,22 +506,16 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
 
     -- Check if the character is available
     if character == nil then
-      -- `error` stays the developer-facing English string this has always
-      -- returned; `errorCode` is what the client localizes off (§10.2), so
-      -- the open-failure notice isn't hardcoded English on the way out.
-      return {
-        error = 'Inventory not available',
-        errorCode = 'invalid_inventory'
-      }
+      -- One envelope, no parallel error/errorCode pair. The client still
+      -- localizes off the stable `code` (§10.2); the message stays
+      -- developer-facing English.
+      return Result.Err("invalid_inventory", "Inventory not available.")
     end
 
     inventory, _, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
   else
     warn('Invalid Character Source!')
-    return {
-      error = 'No Character Available',
-      errorCode = 'no_character'
-    }
+    return Result.Err("no_character", "No character is loaded for that player.")
   end
 
   local inventoryItems, otherInventoryItems = InventoryControllers.GetInventoryItems(inventory), nil
@@ -598,7 +590,7 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
     end
   end
 
-  return {
+  return Result.Ok({
     inventory = inventory,
     inventoryItems = inventoryItems,
     inventoryIgnoreLimits = inventoryIgnoreLimits,
@@ -614,7 +606,7 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
     otherInventoryIgnoreLimits = otherInventoryIgnoreLimits,
     otherInventoryMaxSlots = otherInventory and InventoryControllers.GetInventoryCapacity(otherInventory) or nil,
     otherInventoryMaxWeight = otherInventory and InventoryControllers.GetInventoryWeightLimit(otherInventory) or nil
-  }
+  })
 end
 
 ---
@@ -630,8 +622,14 @@ end
 -- @return True if src may read/write this inventory right now
 --
 InventoryAPI.IsInventoryAccessibleBySrc = function(src, inventoryId)
+  -- Predicate returning an envelope (contract 2): `ok` says whether the
+  -- question could be answered, `value` is the answer. Callers MUST fail
+  -- closed on `ok == false` -- a failure envelope is truthy, so testing the
+  -- envelope itself would grant access on a database error.
+  local function deny() return Result.Ok(false) end
+  local function allow() return Result.Ok(true) end
   if not src or not inventoryId then
-    return false
+    return deny()
   end
 
   local player = Feather.Character.GetCharacter({ src = src })
@@ -639,13 +637,13 @@ InventoryAPI.IsInventoryAccessibleBySrc = function(src, inventoryId)
   if character then
     local ownInventoryId = InventoryControllers.GetInventoryByCharacter(character.id)
     if ownInventoryId and tostring(ownInventoryId) == tostring(inventoryId) then
-      return true
+      return allow()
     end
   end
 
   local opened = OpenInventories[tostring(inventoryId)]
   if not opened or opened.src ~= tostring(src) then
-    return false
+    return deny()
   end
 
   -- (INV-11/INV-23) The lock only proves src was authorized to open this
@@ -662,31 +660,47 @@ InventoryAPI.IsInventoryAccessibleBySrc = function(src, inventoryId)
       or not IsWithinRobberyDistance(src, opened.uuid)
       or not CanBeLootedDueToStatus(targetCharacter.id)
     then
-      return false
+      return deny()
     end
   end
 
-  return true
+  return allow()
 end
 
-InventoryAPI.OpenInventory = function (src, InventoryId, target)
+InventoryAPI.OpenInventory = function(src, InventoryId, target)
+  if not src then
+    return Result.Err(Result.Codes.INVALID_INPUT, 'A player source is required.')
+  end
   TriggerClientEvent('Feather:Inventory:OpenInventory', src, InventoryId, target)
+  return Result.Ok(true)
 end
 
 InventoryAPI.CloseInventory = function(src)
+  if not src then
+    return Result.Err(Result.Codes.INVALID_INPUT, 'A player source is required.')
+  end
   TriggerClientEvent('Feather:Inventory:CloseInventory', src)
+  return Result.Ok(true)
 end
 
 InventoryAPI.GetInventory = function(inventoryID)
-  return InventoryControllers.GetInventoryById(inventoryID)
+  local id, maxWeight, ignoreItemLimit, name = InventoryControllers.GetInventoryById(inventoryID)
+  if not id then
+    return Result.Err(Result.Codes.NOT_FOUND, 'Inventory does not exist.')
+  end
+  return Result.Ok({ id = id, maxWeight = maxWeight, ignoreItemLimit = ignoreItemLimit, name = name })
 end
 
-InventoryAPI.GetCustomInventory = function (key, inventoryID)
-  return InventoryControllers.GetCustomInventoryById(key, inventoryID)
+InventoryAPI.GetCustomInventory = function(key, inventoryID)
+  local id, uuid, maxWeight, ignoreItemLimit = InventoryControllers.GetCustomInventoryById(key, inventoryID)
+  if not id then
+    return Result.Err(Result.Codes.NOT_FOUND, 'Inventory does not exist.')
+  end
+  return Result.Ok({ id = id, uuid = uuid, maxWeight = maxWeight, ignoreItemLimit = ignoreItemLimit })
 end
 
 InventoryAPI.GetInventoryItems = function(inventoryID)
-  return InventoryControllers.GetInventoryItems(inventoryID)
+  return Result.Ok(InventoryControllers.GetInventoryItems(inventoryID))
 end
 
 ---

@@ -1,5 +1,5 @@
 CategoriesAPI = {}
 
 CategoriesAPI.GetCategories = function()
-  return CategoryControllers.GetCategories()
+  return Result.Ok(CategoryControllers.GetCategories())
 end
