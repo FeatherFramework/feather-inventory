@@ -302,6 +302,56 @@ function Tx:RemoveQuantity(inventoryId, definitionId, quantity)
 end
 
 ---
+-- Remove Named Instances
+--
+-- Atomically removes caller-selected rows after verifying their inventory and
+-- definition. This lets cross-resource callers commit the exact instances
+-- used in their preflight calculation instead of repeating a name lookup.
+--
+function Tx:RemoveInstances(inventoryId, definitionId, instanceIds)
+    if type(instanceIds) ~= 'table' or #instanceIds < 1 then
+        return Result.Err(Result.Codes.INVALID_INPUT, 'At least one item instance is required.')
+    end
+
+    local denied = self:RequireAccess(inventoryId, InventoryAPI.AccessModes.REMOVE)
+    if denied then return denied end
+
+    local removed = {}
+    for _, instanceId in ipairs(instanceIds) do
+        local id = tonumber(instanceId)
+        if not id then return Result.Err(Result.Codes.INVALID_INPUT, 'Invalid item instance id.') end
+        local allowed, reason = GuardsAPI.CanDestroyInstance(id, self.context)
+        if not allowed then
+            return Result.Err(Result.Codes.DENIED, reason or 'Removal blocked by a guard.', { instanceId = id })
+        end
+
+        -- DELETE is the locking operation. Scoping it by instance, inventory,
+        -- and definition makes the affected-row count the ownership assertion;
+        -- a concurrent move/delete produces zero and rolls back this transaction.
+        local deleted = self.query(
+            'DELETE FROM `inventory_items` WHERE `id`=? AND `inventory_id`=? AND `item_id`=?;',
+            { id, inventoryId, definitionId })
+        local affected = tonumber(deleted and (deleted.affectedRows or deleted.affected_rows)) or 0
+        if affected ~= 1 then
+            return Result.Err(Result.Codes.CONFLICT, 'Selected item instance is no longer available.', {
+                instanceId = id,
+                inventoryId = inventoryId,
+                definitionId = definitionId,
+                affectedRows = affected
+            })
+        end
+        removed[#removed + 1] = id
+    end
+
+    self.destroyed = self.destroyed or {}
+    for _, id in ipairs(removed) do
+        self.destroyed[#self.destroyed + 1] =
+            { instanceId = id, definitionId = definitionId, inventoryId = inventoryId }
+    end
+    return Result.Ok(removed)
+end
+
+---
 -- Add Quantity
 --
 -- Creates `quantity` new instances, placed by the same rule the
@@ -672,8 +722,18 @@ function TransactionAPI.MutateItem(context, spec)
         end
 
         for _, removal in ipairs(spec.removals or {}) do
-            local removed = tx:RemoveQuantity(item.inventoryId, removal.definitionId, removal.quantity)
+            local removed
+            if type(removal.instanceIds) == 'table' and #removal.instanceIds > 0 then
+                removed = tx:RemoveInstances(item.inventoryId, removal.definitionId, removal.instanceIds)
+            else
+                removed = tx:RemoveQuantity(item.inventoryId, removal.definitionId, removal.quantity)
+            end
             if not Result.IsOk(removed) then return removed end
+        end
+
+        for _, addition in ipairs(spec.additions or {}) do
+            local added = tx:AddQuantity(item.inventoryId, addition.definitionId, addition.quantity, addition.metadata)
+            if not Result.IsOk(added) then return added end
         end
 
         local revision = item.revision
@@ -686,5 +746,37 @@ function TransactionAPI.MutateItem(context, spec)
         return { itemInstanceId = item.id, inventoryId = item.inventoryId, revision = revision }
     end)
 end
+---
+-- Create Instance For Character
+--
+-- Cross-resource-safe unique-instance creation. Resolves the character's
+-- inventory inside feather-inventory and creates the row with its complete
+-- metadata document in the same database transaction.
+--
+function TransactionAPI.CreateInstance(context, spec)
+    if type(spec) ~= 'table' or not tonumber(spec.characterId)
+        or not tonumber(spec.definitionId) or type(spec.metadata) ~= 'table' then
+        return Result.Err(Result.Codes.INVALID_INPUT, 'A valid unique-instance creation specification is required.')
+    end
+
+    local inventoryId = InventoryControllers.GetInventoryByCharacter(tonumber(spec.characterId))
+    if not inventoryId then
+        return Result.Err(Result.Codes.NOT_FOUND, 'The target character inventory does not exist.', {
+            characterId = tonumber(spec.characterId)
+        }, context and context.correlationId)
+    end
+
+    return TransactionAPI.Transaction(context, function(tx)
+        local created = tx:CreateInstance(inventoryId, tonumber(spec.definitionId), spec.metadata)
+        if not Result.IsOk(created) then return created end
+        return {
+            instanceId = created.value.instanceId,
+            revision = created.value.revision,
+            inventoryId = inventoryId,
+            characterId = tonumber(spec.characterId)
+        }
+    end)
+end
+
 InventoryAPI = InventoryAPI or {}
 InventoryAPI.Transaction = TransactionAPI.Transaction
