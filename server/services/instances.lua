@@ -433,7 +433,7 @@ end
 -- false until the phase that implements them lands, so this file is also the
 -- honest running status of the INV-W track.
 function InstancesAPI.GetCapabilities()
-    return {
+    return Result.Ok({
         -- Human-readable, for logs and operators.
         version = '2.0.0',
         -- Machine-comparable, for a consumer's startup gate. Deliberately a
@@ -462,5 +462,5 @@ function InstancesAPI.GetCapabilities()
             equippedState = true,       -- persisted character equipment slots
             atomicCreation = true,      -- instance + metadata in one statement
         }
-    }
+    })
 end
