@@ -703,11 +703,12 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
   end
 
   for _, id in ipairs(requested) do
-    if not GuardsAPI.CanMoveInstance(id, { reason = 'move' }) then
+    local allowed, reason = GuardsAPI.CanMoveInstance(id, { reason = 'move' })
+    if not allowed then
       return {
         error = true,
         code = 'denied',
-        message = 'That item cannot be moved right now.',
+        message = reason or 'That item cannot be moved right now.',
         sourceItems = InventoryControllers.GetInventoryItems(sourceInventory),
         targetItems = InventoryControllers.GetInventoryItems(targetInventory)
       }
