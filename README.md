@@ -637,8 +637,8 @@ local all = Inventory.GetEquippedForCharacter(characterId)             --> Resul
 Inventory.Equipment.ClearEquippedInstance(instanceId)
 
 -- Cheap enough for a guard to call on every move:
-local equipped, where = Inventory.Equipment.IsInstanceEquipped(instanceId)
-if equipped then print(where.characterId, where.slot) end
+local equipped = Inventory.Equipment.IsInstanceEquipped(instanceId)
+if equipped.ok and equipped.value then print('equipped') end
 ```
 
 An instance can only occupy one slot at a time (enforced by a unique key), and destroying the item unequips it (`ON DELETE CASCADE`) rather than leaving a row pointing at nothing — so "consumed while equipped" is self-healing instead of a dangling reference.
