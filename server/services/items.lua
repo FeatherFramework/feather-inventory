@@ -8,6 +8,13 @@
 ItemsAPI = {}
 UsableItemCallbacks = {}
 
+-- Cfx serializes callbacks crossing a resource boundary as callable tables.
+-- Use rawget because their metatable intentionally rejects normal indexing.
+local function IsUsableItemCallback(value)
+  return type(value) == 'function'
+    or (type(value) == 'table'
+      and type(rawget(value, '__cfx_functionReference')) == 'string')
+end
 function ItemsAPI.GetDefinitions()
   return Result.Ok(ItemControllers.GetItemDefinitions())
 end
@@ -596,7 +603,7 @@ end
 -- a "use" behavior to an item by name. Looked up by ItemsAPI.UseItem below
 -- when a player actually uses the item from their inventory.
 ItemsAPI.RegisterUsableItem = function(itemName, callback)
-  if type(itemName) ~= 'string' or itemName == '' or type(callback) ~= 'function' then
+  if type(itemName) ~= 'string' or itemName == '' or not IsUsableItemCallback(callback) then
     return Result.Err(Result.Codes.INVALID_INPUT, 'An item name and a callback function are required.')
   end
   if UsableItemCallbacks[itemName] then
@@ -699,7 +706,11 @@ ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z)
   -- heap on the floor has nothing doing the carrying, so a weight cap on it
   -- is meaningless -- but slot capacity and per-item quantity limits still
   -- apply, which is why only the weight argument is zeroed here.
-  local _, groundInventoryID = InventoryAPI.RegisterInventory('ground', groundID, 'Ground', nil, 0, nil, nil, true)
+  local registered = InventoryAPI.RegisterInventory('ground', groundID, 'Ground', nil, 0, nil, nil, true)
+  if not Result.IsOk(registered) then
+    return registered
+  end
+  local groundInventoryID = registered.value.id
   local updateinv = InventoryControllers.MoveInventoryItems(inventoryId, groundInventoryID, items)
 
   -- This always reported `error = false` even when MoveInventoryItems

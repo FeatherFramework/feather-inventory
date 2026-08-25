@@ -37,11 +37,13 @@ Feather.RPC.Register("Feather:Inventory:GetGroundUID", function(params, res, src
         return res(nil)
     end
 
-    local groundInventoryId, groundInventoryUUID = InventoryAPI.GetCustomInventory('ground', params.id)
-    if not groundInventoryId then
+    local found = InventoryAPI.GetCustomInventory('ground', params.id)
+    if not Result.IsOk(found) then
         DebugPrint('DEBUG-GROUND', 'GetGroundUID: no inventory row for ground.id=%s', tostring(params.id))
         return res(nil)
     end
+    local groundInventoryId = found.value.id
+    local groundInventoryUUID = found.value.uuid
 
     -- (Public-access simplification) Ground inventories are `is_public = true`,
     -- and IsAuthorizedForOwnedInventory now grants access on that flag alone --

@@ -38,6 +38,13 @@ GuardsAPI = {}
 local MoveGuards = {}
 local DestroyGuards = {}
 
+-- Cfx serializes callbacks crossing a resource boundary as callable tables.
+-- Use rawget because their metatable intentionally rejects normal indexing.
+local function IsGuardCallback(value)
+    return type(value) == 'function'
+        or (type(value) == 'table'
+            and type(rawget(value, '__cfx_functionReference')) == 'string')
+end
 ------------------------------------------------------------------
 -- Registration
 ------------------------------------------------------------------
@@ -51,21 +58,21 @@ local DestroyGuards = {}
 --        MUST be synchronous -- see the guard contract above.
 --
 function GuardsAPI.RegisterMoveGuard(name, fn)
-    if type(name) ~= 'string' or type(fn) ~= 'function' then
-        warn('RegisterMoveGuard requires a name and a function.')
-        return false
+    if type(name) ~= 'string' or name == '' or not IsGuardCallback(fn) then
+        warn('RegisterMoveGuard requires a name and a callable function reference.')
+        return Result.Err(Result.Codes.INVALID_INPUT, 'A guard name and callable function reference are required.')
     end
     MoveGuards[name] = fn
-    return true
+    return Result.Ok(true)
 end
 
 function GuardsAPI.RegisterDestroyGuard(name, fn)
-    if type(name) ~= 'string' or type(fn) ~= 'function' then
-        warn('RegisterDestroyGuard requires a name and a function.')
-        return false
+    if type(name) ~= 'string' or name == '' or not IsGuardCallback(fn) then
+        warn('RegisterDestroyGuard requires a name and a callable function reference.')
+        return Result.Err(Result.Codes.INVALID_INPUT, 'A guard name and callable function reference are required.')
     end
     DestroyGuards[name] = fn
-    return true
+    return Result.Ok(true)
 end
 
 function GuardsAPI.UnregisterMoveGuard(name)

@@ -146,8 +146,5 @@ function EquipmentAPI.IsInstanceEquipped(instanceId)
     local row = MySQL.query.await(
         'SELECT `character_id`, `slot` FROM `character_equipment` WHERE `inventory_items_id`=? LIMIT 1;',
         { tonumber(instanceId) })[1]
-    if not row then
-        return false
-    end
-    return true, { characterId = tonumber(row.character_id), slot = row.slot }
+    return Result.Ok(row ~= nil)
 end

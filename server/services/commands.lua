@@ -148,10 +148,37 @@ if Config.DevMode then
             return outcome
         end
 
-        -- 7. Weight. Ask for more weight than any inventory could carry.
-        expectRejection('tx add rejected by weight', 'weight_limit', {
-            inventory = inventory, definitionId = definition.id, quantity = 100000
-        })
+        local uniqueRow = MySQL.query.await(
+            "SELECT `id`, `name` FROM `items` WHERE `instance_mode`='unique' LIMIT 1;")[1]
+
+        -- 7. Weight. Temporarily lower this inventory's limit below the
+        --    weight of one additional unit and bypass only the quantity cap,
+        --    so weight is the first gate capable of rejecting the request.
+        local restoredWeight = MySQL.query.await(
+            'SELECT `max_weight`, `ignore_item_limit` FROM `inventory` WHERE `id`=? LIMIT 1;',
+            { inventory })[1]
+        local currentWeightRow = MySQL.query.await([[
+            SELECT COALESCE(SUM(i.`weight`), 0) AS `weight`
+            FROM `inventory_items` ii INNER JOIN `items` i ON i.`id`=ii.`item_id`
+            WHERE ii.`inventory_id`=?;
+        ]], { inventory })[1]
+        local itemWeight = tonumber(definition.weight) or 0
+        if itemWeight <= 0 then
+            report('tx add rejected by weight', false, 'consumable_apple has no positive weight')
+        else
+            local currentWeight = tonumber(currentWeightRow and currentWeightRow.weight) or 0
+            local testLimit = math.max(0.01, currentWeight + (itemWeight / 2))
+            MySQL.query.await(
+                'UPDATE `inventory` SET `max_weight`=?, `ignore_item_limit`=1 WHERE `id`=?;',
+                { testLimit, inventory })
+            expectRejection('tx add rejected by weight', 'weight_limit', {
+                inventory = inventory, definitionId = definition.id, quantity = 1
+            })
+            MySQL.query.await(
+                'UPDATE `inventory` SET `max_weight`=?, `ignore_item_limit`=? WHERE `id`=?;',
+                { restoredWeight and restoredWeight.max_weight or nil,
+                  restoredWeight and restoredWeight.ignore_item_limit or 0, inventory })
+        end
 
         -- 8. Maximum quantity. Exceeds the definition's own max_quantity
         --    while staying under any weight limit.
@@ -179,21 +206,39 @@ if Config.DevMode then
         -- 10. Slot capacity. Temporarily shrink the book to zero compartments
         --     so nothing can be placed, whatever its weight or quantity.
         local restoredSlots = MySQL.query.await(
-            'SELECT `max_slots` FROM `inventory` WHERE `id`=? LIMIT 1;', { inventory })[1]
-        MySQL.query.await('UPDATE `inventory` SET `max_slots`=0 WHERE `id`=?;', { inventory })
-        expectRejection('tx add rejected by slot capacity', 'inventory_full', {
-            inventory = inventory, definitionId = definition.id, quantity = 1
-        })
-        MySQL.query.await('UPDATE `inventory` SET `max_slots`=? WHERE `id`=?;',
-            { restoredSlots and restoredSlots.max_slots or nil, inventory })
+            'SELECT `max_slots`, `ignore_item_limit` FROM `inventory` WHERE `id`=? LIMIT 1;',
+            { inventory })[1]
+        if not uniqueRow then
+            report('tx add rejected by slot capacity', false, 'no unique definition seeded; cannot test')
+        else
+            local restoredUniqueBlacklist = MySQL.query.await(
+                'SELECT `item_id` FROM `inventory_blacklist` WHERE `inventory_id`=? AND `item_id`=? LIMIT 1;',
+                { inventory, uniqueRow.id })[1]
+            MySQL.query.await(
+                'DELETE FROM `inventory_blacklist` WHERE `inventory_id`=? AND `item_id`=?;',
+                { inventory, uniqueRow.id })
+            MySQL.query.await(
+                'UPDATE `inventory` SET `max_slots`=0, `ignore_item_limit`=1 WHERE `id`=?;',
+                { inventory })
+            expectRejection('tx add rejected by slot capacity', 'inventory_full', {
+                inventory = inventory, definitionId = tonumber(uniqueRow.id), quantity = 1
+            })
+            MySQL.query.await(
+                'UPDATE `inventory` SET `max_slots`=?, `ignore_item_limit`=? WHERE `id`=?;',
+                { restoredSlots and restoredSlots.max_slots or nil,
+                  restoredSlots and restoredSlots.ignore_item_limit or 0, inventory })
+            if restoredUniqueBlacklist then
+                MySQL.query.await(
+                    'INSERT IGNORE INTO `inventory_blacklist` (`inventory_id`, `item_id`) VALUES (?, ?);',
+                    { inventory, uniqueRow.id })
+            end
+        end
 
         ------------------------------------------------------------------
         -- Unique-instance issuance
         ------------------------------------------------------------------
 
         -- 11. GrantItem must refuse a unique definition outright.
-        local uniqueRow = MySQL.query.await(
-            "SELECT `id`, `name` FROM `items` WHERE `instance_mode`='unique' LIMIT 1;")[1]
         if not uniqueRow then
             report('unique GrantItem rejected', false, 'no unique definition seeded; cannot test')
         else
