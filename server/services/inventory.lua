@@ -667,6 +667,14 @@ InventoryAPI.IsInventoryAccessibleBySrc = function(src, inventoryId)
   return allow()
 end
 
+-- Internal boolean adapter for access-sensitive RPCs. The public predicate
+-- returns a Contract 2 envelope; this unwraps it fail-closed so a failure
+-- envelope can never become authorization merely because tables are truthy.
+InventoryAPI.Accessible = function(src, inventoryId)
+  local decision = InventoryAPI.IsInventoryAccessibleBySrc(src, inventoryId)
+  return Result.IsOk(decision) and decision.value == true
+end
+
 InventoryAPI.OpenInventory = function(src, InventoryId, target)
   if not src then
     return Result.Err(Result.Codes.INVALID_INPUT, 'A player source is required.')
