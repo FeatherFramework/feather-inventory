@@ -713,7 +713,7 @@ Huge inspiration to RDO's inventory system with many QOL improvements.
 
 ## To-Do
 
-See [`MASTER_PLAN.md`](./MASTER_PLAN.md) for the full tracked backlog, including decisions that were deferred or declined with reasons.
+The full tracked backlog — including decisions deferred or declined, with reasons — is maintained by the team outside this repository. Section references in the code comments below (`§6.1`, `§10.4`, …) point into it.
 
 - **Hotbar** — parked pending internal design discussion.
 - **Robbery** — built server-side but deliberately inert: the statuses it gates on are client-authoritative in RedM, so it stays fail-closed until `feather-core` has an authoritative model for them.
