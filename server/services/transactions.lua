@@ -785,15 +785,17 @@ end
 -- metadata document in the same database transaction.
 --
 function TransactionAPI.CreateInstance(context, spec)
-    if type(spec) ~= 'table' or not tonumber(spec.characterId)
+    local characterId = type(spec) == 'table'
+        and InventoryIdentity.NormalizeCharacterId(spec.characterId) or nil
+    if type(spec) ~= 'table' or not characterId
         or not tonumber(spec.definitionId) or type(spec.metadata) ~= 'table' then
         return Result.Err(Result.Codes.INVALID_INPUT, 'A valid unique-instance creation specification is required.')
     end
 
-    local inventoryId = InventoryControllers.GetInventoryByCharacter(tonumber(spec.characterId))
+    local inventoryId = InventoryControllers.GetInventoryByCharacter(characterId)
     if not inventoryId then
         return Result.Err(Result.Codes.NOT_FOUND, 'The target character inventory does not exist.', {
-            characterId = tonumber(spec.characterId)
+            characterId = characterId
         }, context and context.correlationId)
     end
 
@@ -804,7 +806,7 @@ function TransactionAPI.CreateInstance(context, spec)
             instanceId = created.value.instanceId,
             revision = created.value.revision,
             inventoryId = inventoryId,
-            characterId = tonumber(spec.characterId)
+            characterId = characterId
         }
     end)
 end
