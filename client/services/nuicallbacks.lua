@@ -39,11 +39,6 @@ RegisterNUICallback('Feather:Inventory:UpdateInventory', function(args, cb)
 end)
 
 RegisterNUICallback('Feather:Inventory:GiveItem', function(args, cb)
-  -- (Distance-check staleness) The server re-verifies give distance from
-  -- cached positions (IsWithinGiveDistance). Refresh ours first -- see
-  -- SyncOwnPosition, including why this only half-fixes a two-party check.
-  SyncOwnPosition()
-
   local ped = GetPedInFront()
   if not ped or tonumber(ped) == 0 then
     cb({ error = true, message = 'No one is close enough in front of you.' })
