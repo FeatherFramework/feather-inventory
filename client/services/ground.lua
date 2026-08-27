@@ -72,21 +72,6 @@ CreateThread(function()
 end)
 
 function OpenGroundLocation(id)
-    -- (Pickup-distance staleness) GetGroundUID checks this pile against the
-    -- server's cached character.x/y/z, which feather-core only refreshes
-    -- every Config.PositionSync (20s by default). Walking to a pile and
-    -- pressing the prompt therefore failed with "You are too far away" until
-    -- a sync tick happened to land -- typically two or three attempts before
-    -- it succeeded, which reads as the prompt being flaky rather than as a
-    -- stale-position problem.
-    --
-    -- Exactly the same fix DropItemsOnGround already carries, which is the
-    -- tell that this was missed rather than considered: the drop half of this
-    -- flow was corrected and the pickup half was left on stale data. Server
-    -- authority is unchanged -- the server still decides -- it just isn't
-    -- deciding from a 20-second-old position.
-    SyncOwnPosition()
-
     local InventoryID = Feather.RPC.CallAsync("Feather:Inventory:GetGroundUID", {
         id = id
     })
@@ -107,12 +92,6 @@ function DropItemsOnGround(items)
     local x = coords.x + forward.x * 1.6
     local y = coords.y + forward.y * 1.6
     local z = coords.z + forward.z * 1.6
-
-    -- (Drop-distance bugfix) The server checks this drop position against its
-    -- own cached character.x/y/z (never the client-supplied coords directly --
-    -- see server/services/ground.lua), which is correct, but that cache goes
-    -- stale between Config.PositionSync ticks. See SyncOwnPosition.
-    SyncOwnPosition()
 
     local result = Feather.RPC.CallAsync("Feather:Inventory:DropItemsOnGround", {
         items = items,
