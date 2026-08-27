@@ -21,7 +21,7 @@ EquipmentAPI = {}
 local function EnsureEquipmentSchema()
     MySQL.query.await([[
         CREATE TABLE IF NOT EXISTS `character_equipment` (
-            `character_id` BIGINT UNSIGNED NOT NULL,
+            `character_id` CHAR(36) NOT NULL,
             `slot` VARCHAR(50) NOT NULL,
             `inventory_items_id` BIGINT UNSIGNED NOT NULL,
             `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -29,8 +29,6 @@ local function EnsureEquipmentSchema()
             PRIMARY KEY (`character_id`, `slot`),
             -- One instance cannot occupy two slots at once.
             UNIQUE KEY `UQ_EquipmentInstance` (`inventory_items_id`),
-            CONSTRAINT `FK_EquipmentCharacter` FOREIGN KEY (`character_id`)
-                REFERENCES `characters` (`id`) ON DELETE CASCADE,
             -- Destroying the item unequips it, rather than leaving a row
             -- pointing at nothing. This is what makes "consumed while
             -- equipped" self-healing instead of a dangling reference.
@@ -52,7 +50,7 @@ end)
 -- @return Result wrapping { [slot] = instanceId } or a single instanceId
 --
 function EquipmentAPI.GetEquippedForCharacter(characterId, slot)
-    local id = tonumber(characterId)
+    local id = InventoryIdentity.NormalizeCharacterId(characterId)
     if not id then
         return Result.Err(Result.Codes.INVALID_INPUT, 'Invalid character id.')
     end
@@ -84,7 +82,7 @@ end
 -- re-derive-don't-trust rule every other mutation here follows.
 --
 function EquipmentAPI.SetEquippedForCharacter(characterId, slot, instanceId)
-    local id = tonumber(characterId)
+    local id = InventoryIdentity.NormalizeCharacterId(characterId)
     if not id or type(slot) ~= 'string' or slot == '' then
         return Result.Err(Result.Codes.INVALID_INPUT, 'Character id and slot are required.')
     end
