@@ -403,7 +403,7 @@ end
 -- @return Result wrapping the normalized instance
 --
 function InstancesAPI.GetItemForCharacter(characterId, instanceId)
-    local charId = tonumber(characterId)
+    local charId = InventoryIdentity.NormalizeCharacterId(characterId)
     local id = tonumber(instanceId)
     if not charId or not id then
         return Result.Err(Result.Codes.INVALID_INPUT, 'Character id and instance id are required.')
@@ -461,6 +461,15 @@ function InstancesAPI.GetCapabilities()
             rowLocking = true,          -- real SELECT ... FOR UPDATE via startTransaction
             equippedState = true,       -- persisted character equipment slots
             atomicCreation = true,      -- instance + metadata in one statement
+            characterInventoryLookup = true, -- UUID Character -> owned container read
+            adminExactRemoval = true,        -- locked ownership assertion + destroy guards
+            characterItemGrant = true        -- atomic stack grants by UUID Character
+        },
+        characterIdentity = {
+            format = 'uuid-string',
+            storage = 'char(36)',
+            uuid = true,
+            mode = 'uuid'
         }
     })
 end
