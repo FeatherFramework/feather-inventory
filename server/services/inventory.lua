@@ -102,6 +102,19 @@ InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItem
     return Result.Err(Result.Codes.INVALID_INPUT, 'tableName must be a valid SQL identifier.')
   end
 
+  if tableName == 'character' then
+    id = InventoryIdentity.NormalizeCharacterId(id)
+    if not id then
+      return Result.Err(Result.Codes.INVALID_INPUT, 'A valid character id is required.')
+    end
+  end
+  if ownerCharacterId ~= nil then
+    ownerCharacterId = InventoryIdentity.NormalizeCharacterId(ownerCharacterId)
+    if not ownerCharacterId then
+      return Result.Err(Result.Codes.INVALID_INPUT, 'A valid owner character id is required.')
+    end
+  end
+
   local foreignKey = string.lower(tableName) .. '_id'
   local column = MySQL.query.await("SHOW COLUMNS FROM `inventory` LIKE ?;", { foreignKey })
   if #(column) < 1 then
@@ -152,8 +165,16 @@ InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItem
   end
 
   -- Create new inventory
-  query = 'INSERT INTO `inventory` (' .. foreignKey .. ', location, name, max_weight, ignore_item_limit, owner_character_id, is_public, max_slots) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *;'
-  inventory = MySQL.query.await(query, { id, tableName, displayName or 'storage', maxWeight or nil, ignoreItemLimits or false, ownerCharacterId or nil, isPublic and 1 or 0, maxSlots and tonumber(maxSlots) or nil })
+  -- Generate the identifier explicitly instead of relying on MariaDB's
+  -- newer native UUID datatype or a UUID() expression default. SELECT UUID()
+  -- is available on the older MariaDB versions supported by Feather.
+  local inventoryUuid = MySQL.scalar.await('SELECT UUID()')
+  if type(inventoryUuid) ~= 'string' or inventoryUuid == '' then
+    return Result.Err(Result.Codes.INTERNAL, 'Inventory identifier could not be generated.')
+  end
+
+  query = 'INSERT INTO `inventory` (`uuid`, ' .. foreignKey .. ', location, name, max_weight, ignore_item_limit, owner_character_id, is_public, max_slots) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *;'
+  inventory = MySQL.query.await(query, { inventoryUuid:lower(), id, tableName, displayName or 'storage', maxWeight or nil, ignoreItemLimits or false, ownerCharacterId or nil, isPublic and 1 or 0, maxSlots and tonumber(maxSlots) or nil })
 
   if not inventory or not inventory[1] then
     return Result.Err(Result.Codes.INTERNAL, 'Inventory could not be created.')
@@ -432,7 +453,7 @@ InventoryAPI.InventoryCanHold = function(items, inventoryId)
 
   local inventory, maxWeight, ignore_item_limit = nil, nil, nil
   if tonumber(inventoryId) then
-    local player = Feather.Character.GetCharacter({ src = inventoryId })
+    local player = InventoryIdentity.GetCharacter(inventoryId)
     local character = player and player.char
     if character then
       inventory, maxWeight, ignore_item_limit = InventoryControllers.GetInventoryByCharacter(character.id)
@@ -501,8 +522,8 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
 
   -- Check to make sure inventoryId is a player source and not a string
   if tonumber(src) then
-    local player = Feather.Character.GetCharacter({ src = src })
-    character = player.char
+    local player = InventoryIdentity.GetCharacter(src)
+    character = player and player.char
 
     -- Check if the character is available
     if character == nil then
@@ -535,7 +556,7 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
       -- it -- neither alone is enough (proximity alone was INV-12's
       -- mistake; status alone would let anyone loot anyone incapacitated
       -- from across the map).
-      local targetPlayer = Feather.Character.GetCharacter({ src = otherInventoryId })
+      local targetPlayer = InventoryIdentity.GetCharacter(otherInventoryId)
       local targetCharacter = targetPlayer and targetPlayer.char
 
       if not targetCharacter then
@@ -632,7 +653,7 @@ InventoryAPI.IsInventoryAccessibleBySrc = function(src, inventoryId)
     return deny()
   end
 
-  local player = Feather.Character.GetCharacter({ src = src })
+  local player = InventoryIdentity.GetCharacter(src)
   local character = player and player.char
   if character then
     local ownInventoryId = InventoryControllers.GetInventoryByCharacter(character.id)
@@ -654,7 +675,7 @@ InventoryAPI.IsInventoryAccessibleBySrc = function(src, inventoryId)
   -- lootable immediately. Public/UUID inventories (storage, ground, ...)
   -- skip this: the object isn't a person and doesn't run away.
   if tonumber(opened.uuid) then
-    local targetPlayer = Feather.Character.GetCharacter({ src = opened.uuid })
+    local targetPlayer = InventoryIdentity.GetCharacter(opened.uuid)
     local targetCharacter = targetPlayer and targetPlayer.char
     if not targetCharacter
       or not IsWithinRobberyDistance(src, opened.uuid)
@@ -697,6 +718,20 @@ InventoryAPI.GetInventory = function(inventoryID)
     return Result.Err(Result.Codes.NOT_FOUND, 'Inventory does not exist.')
   end
   return Result.Ok({ id = id, maxWeight = maxWeight, ignoreItemLimit = ignoreItemLimit, name = name })
+end
+
+-- Resolve a UUID Character's own inventory without exposing Inventory's
+-- persistence tables to consumer resources such as feather-admin.
+InventoryAPI.GetCharacterInventory = function(characterId)
+  if type(characterId) ~= 'string' or characterId == '' then
+    return Result.Err(Result.Codes.INVALID_INPUT, 'A UUID Character id is required.')
+  end
+  local id, maxWeight, ignoreItemLimit, name = InventoryControllers.GetInventoryByCharacter(characterId)
+  if not id then
+    return Result.Err(Result.Codes.NOT_FOUND, 'The Character inventory does not exist.')
+  end
+  return Result.Ok({ id = id, maxWeight = tonumber(maxWeight),
+    ignoreItemLimit = ignoreItemLimit, name = name, characterId = characterId })
 end
 
 InventoryAPI.GetCustomInventory = function(key, inventoryID)
