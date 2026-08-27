@@ -33,7 +33,7 @@ if Config.DevMode then
     -- outside a running server -- so this exercises it for real rather than
     -- leaving the assumption untested. Run it once after any oxmysql upgrade.
     RegisterCommand('InvTxSmokeTest', function(source)
-        local player = Feather.Character.GetCharacter({ src = source })
+        local player = InventoryIdentity.GetCharacter(source)
         local character = player and player.char
         if not character then return end
         local inventory = InventoryControllers.GetInventoryByCharacter(character.id)
