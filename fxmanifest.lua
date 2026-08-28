@@ -6,7 +6,7 @@ lua54 "yes"
 description 'The Inventory API for the Feather Framework'
 author 'BCC Scripts'
 name 'feather-inventory'
-version '0.2.1'
+version '0.3.0'
 
 github_version_check 'true'
 github_version_type 'release'
