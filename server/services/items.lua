@@ -55,7 +55,7 @@ function ItemsAPI.GrantItem(itemName, quantity, inventoryId)
 
   local inventory, maxWeight, ignoreItemLimit
   if tonumber(inventoryId) then
-    local player = Feather.Character.GetCharacter({ src = tonumber(inventoryId) })
+    local player = InventoryIdentity.GetCharacter(tonumber(inventoryId))
     local character = player and player.char
     if character then
       inventory, maxWeight, ignoreItemLimit = InventoryControllers.GetInventoryByCharacter(character.id)
@@ -189,7 +189,7 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
 
   local inventory, maxWeight, ignore_item_limit = nil, nil, nil
   if tonumber(inventoryId) then
-    local player = Feather.Character.GetCharacter({ src = inventoryId })
+    local player = InventoryIdentity.GetCharacter(inventoryId)
     local character = player and player.char
     -- (Phase 6 consistency pass) No character loaded for this src used to
     -- crash here (nil index on `.id`) instead of falling through to the
@@ -292,7 +292,7 @@ ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
 
   local inventory, _, _ = nil, nil, nil
   if tonumber(inventoryId) then
-    local player = Feather.Character.GetCharacter({ src = inventoryId })
+    local player = InventoryIdentity.GetCharacter(inventoryId)
     local character = player and player.char
     if character then
       inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
@@ -515,7 +515,7 @@ ItemsAPI.GetItemCount = function(itemName, inventoryId)
 
   local inventory, _, _ = nil, nil, nil
   if tonumber(inventoryId) then
-    local player = Feather.Character.GetCharacter({ src = inventoryId })
+    local player = InventoryIdentity.GetCharacter(inventoryId)
     local character = player and player.char
     if character then
       inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
@@ -551,7 +551,7 @@ ItemsAPI.InventoryHasItems = function(items, inventoryId)
 
   local inventory, _, _ = nil, nil, nil
   if tonumber(inventoryId) then
-    local player = Feather.Character.GetCharacter({ src = inventoryId })
+    local player = InventoryIdentity.GetCharacter(inventoryId)
     local character = player and player.char
     if character then
       inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
@@ -632,7 +632,7 @@ ItemsAPI.UseItem = function(itemID, src)
   -- Re-enabled, and compares against the item's actual current
   -- inventory_id (not something client-suppliable) rather than the
   -- original draft's approach.
-  local player = Feather.Character.GetCharacter({ src = src })
+  local player = InventoryIdentity.GetCharacter(src)
   local character = player and player.char
   if not character then
     warn('No character loaded for src: ' .. tostring(src))

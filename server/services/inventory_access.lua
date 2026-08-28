@@ -44,31 +44,18 @@ LootableStatuses = {
 ---
 -- Can Be Looted Due To Status
 --
--- DEPENDENCY: feather-core does not implement character status tracking as
--- of this writing. Feather.Character.HasStatus is called defensively --
--- if it isn't a function (core hasn't shipped it yet), this returns false.
+-- DEPENDENCY: no authoritative character-status provider exists yet.
 -- That is a deliberate fail-closed default: the robbery/forced-search path
--- stays inert until core provides real status tracking, rather than this
+-- stays inert until an owning resource provides real status tracking, rather than this
 -- resource inventing its own notion of character state to fill the gap.
 --
 -- @param characterId Target character's id
 -- @return True if any status feather-inventory treats as "lootable" is set
 --
 function CanBeLootedDueToStatus(characterId)
-    if not characterId then
-        return false
-    end
-
-    if type(Feather.Character.HasStatus) ~= 'function' then
-        return false
-    end
-
-    for _, status in pairs(LootableStatuses) do
-        if Feather.Character.HasStatus(characterId, status) then
-            return true
-        end
-    end
-
+    -- Keep the argument to preserve this internal boundary for the future
+    -- status provider, but never infer authority from client state.
+    if not characterId then return false end
     return false
 end
 
@@ -77,12 +64,7 @@ end
 ------------------------------------------------------------------
 
 local function GetCharacterPosition(src)
-    local player = Feather.Character.GetCharacter({ src = src })
-    local character = player and player.char
-    if not character or not character.x or not character.y or not character.z then
-        return nil
-    end
-    return tonumber(character.x), tonumber(character.y), tonumber(character.z)
+    return InventoryIdentity.GetPosition(src)
 end
 
 local function IsWithinDistance(x1, y1, z1, x2, y2, z2, maxDistance)
@@ -125,11 +107,8 @@ end
 ---
 -- Is Within Robbery Distance
 --
--- True if src is currently near the character behind targetSrc's ped, per
--- both sides' server-cached position. That position is client-reported and
--- only as fresh as the last UpdatePlayerCoords RPC (~CORE-32 caveat) -- this
--- is a bound on distance, not a live guarantee, but strictly better than no
--- check at all, which is what INV-11/INV-12 shipped with.
+-- True if src is currently near the character behind targetSrc's ped, using
+-- both live server-side ped positions.
 --
 -- @param src Caller's player source
 -- @param targetSrc Target player's source
@@ -144,8 +123,7 @@ end
 ---
 -- Is Within Give Distance
 --
--- Same shape as IsWithinRobberyDistance -- see its comment for the
--- server-cached-position caveat -- bound to Config.Access.GiveDistance
+-- Same shape as IsWithinRobberyDistance, bound to Config.Access.GiveDistance
 -- instead. Used by GiveItem (server/services/callbacks.lua), which
 -- previously had no server-side distance check at all.
 --
@@ -168,8 +146,7 @@ local function EnsureAccessSchema()
     if #columns < 1 then
         MySQL.query.await([[
             ALTER TABLE `inventory`
-            ADD COLUMN `owner_character_id` BIGINT UNSIGNED NULL,
-            ADD CONSTRAINT `FK_InventoryOwner` FOREIGN KEY (`owner_character_id`) REFERENCES `characters` (`id`) ON DELETE SET NULL ON UPDATE CASCADE;
+            ADD COLUMN `owner_character_id` CHAR(36) NULL;
         ]])
     end
 
@@ -182,12 +159,11 @@ local function EnsureAccessSchema()
         CREATE TABLE IF NOT EXISTS `inventory_access` (
             `id` BIGINT UNSIGNED NOT NULL PRIMARY KEY AUTO_INCREMENT,
             `inventory_id` BIGINT UNSIGNED NOT NULL,
-            `character_id` BIGINT UNSIGNED NOT NULL,
-            `granted_by_character_id` BIGINT UNSIGNED NULL,
+            `character_id` CHAR(36) NOT NULL,
+            `granted_by_character_id` CHAR(36) NULL,
             `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE KEY `UQ_InventoryAccess` (`inventory_id`, `character_id`),
-            CONSTRAINT `FK_InventoryAccessInventory` FOREIGN KEY (`inventory_id`) REFERENCES `inventory` (`id`) ON DELETE CASCADE,
-            CONSTRAINT `FK_InventoryAccessCharacter` FOREIGN KEY (`character_id`) REFERENCES `characters` (`id`) ON DELETE CASCADE
+            CONSTRAINT `FK_InventoryAccessInventory` FOREIGN KEY (`inventory_id`) REFERENCES `inventory` (`id`) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     ]])
 end
@@ -197,9 +173,8 @@ CreateThread(function()
 end)
 
 local function GetOwnCharacterId(src)
-    local player = Feather.Character.GetCharacter({ src = src })
-    local character = player and player.char
-    return character and character.id
+    local session = InventoryIdentity.GetSession(src)
+    return Result.IsOk(session) and session.value.characterId or nil
 end
 
 local function IsOwnerOrAdmin(src, ownerCharacterId)
@@ -207,7 +182,12 @@ local function IsOwnerOrAdmin(src, ownerCharacterId)
     if callerCharacterId and ownerCharacterId and tostring(callerCharacterId) == tostring(ownerCharacterId) then
         return true
     end
-    return type(Feather.Character.IsAdmin) == 'function' and Feather.Character.IsAdmin(src) == true
+    local decision = exports['feather-core']:Authorize('inventory.manage', {
+        source = src,
+        subject = { ownerCharacterId = ownerCharacterId }
+    })
+    return type(decision) == 'table' and decision.ok == true
+        and type(decision.value) == 'table' and decision.value.allowed == true
 end
 
 InventoryAPI.GetInventoryOwner = function(inventoryId)
@@ -234,6 +214,7 @@ InventoryAPI.GetInventoryOwnerAndVisibility = function(inventoryId)
 end
 
 InventoryAPI.HasInventoryAccessGrant = function(characterId, inventoryId)
+    characterId = InventoryIdentity.NormalizeCharacterId(characterId)
     if not characterId or not inventoryId then
         return Result.Ok(false)
     end
@@ -252,6 +233,10 @@ end
 -- trusted from the client.
 --
 InventoryAPI.GrantInventoryAccess = function(src, inventoryId, targetCharacterId)
+    targetCharacterId = InventoryIdentity.NormalizeCharacterId(targetCharacterId)
+    if not targetCharacterId then
+        return Result.Err(Result.Codes.INVALID_INPUT, 'A valid target character id is required.')
+    end
     local ownerCharacterId = InventoryAPI.GetInventoryOwner(inventoryId)
     if not ownerCharacterId then
         return Result.Err(Result.Codes.DENIED, "This inventory has no owner and cannot have its access list managed.")
@@ -268,6 +253,10 @@ InventoryAPI.GrantInventoryAccess = function(src, inventoryId, targetCharacterId
 end
 
 InventoryAPI.RevokeInventoryAccess = function(src, inventoryId, targetCharacterId)
+    targetCharacterId = InventoryIdentity.NormalizeCharacterId(targetCharacterId)
+    if not targetCharacterId then
+        return Result.Err(Result.Codes.INVALID_INPUT, 'A valid target character id is required.')
+    end
     local ownerCharacterId = InventoryAPI.GetInventoryOwner(inventoryId)
     if not IsOwnerOrAdmin(src, ownerCharacterId) then
         return Result.Err(Result.Codes.DENIED, "You do not own this inventory.")

@@ -14,6 +14,33 @@ Feather inventory is designed to provide a realistic and immersive inventory sys
 8. **Transactions**: Multi-item mutations commit atomically or not at all, with real `SELECT ... FOR UPDATE` row locking — concurrent callers queue rather than racing.
 9. **Movement guards & post-commit events**: Other resources can veto a move before it happens and observe every mutation after it commits.
 10. **Persisted equipment slots**: A generic `character × slot → instance` store that survives a reconnect or a restart, with no idea what a weapon is.
+11. **Canonical character UUID support**: Character ownership, access grants, equipment, and transactional issuance preserve Contract 1 UUIDs end to end.
+
+## Character UUID cutover
+
+The clean-slate Character rebuild replaces numeric character IDs with UUIDs. New databases created from `feather-recipe/database/migration.sql` use `CHAR(36)` ownership columns and do not create cross-resource foreign keys to the legacy `characters` table.
+
+All Feather UUID values, including `inventory.uuid`, are stored as `CHAR(36)`. Inventory generates each value explicitly before insertion. Feather does not require MariaDB's newer native `UUID` datatype or UUID expression defaults, preserving compatibility with older MariaDB installations.
+
+To convert only an existing native `inventory.uuid` column without performing
+the Character identity cutover, back up the database and run
+`feather-inventory/database/inventory_uuid_char36.sql`.
+
+For an existing development database, either rebuild the inventory tables from the updated recipe (recommended) or back up the database and run:
+
+```text
+feather-inventory/database/character_uuid_cutover.sql
+```
+
+Character identity is UUID-only. Numeric legacy character IDs are rejected at Inventory boundaries and are not part of the release contract.
+
+After applying the schema and performing a full server restart, run in the server console:
+
+```text
+InvCharacterUuidSmokeTest [serverId]
+```
+
+All six checks must pass before enabling the UUID Character flow.
 
 ## Getting Started
 
@@ -138,6 +165,33 @@ local contents = Inventory.Inventory.GetInventoryItems(id)
 for _, item in ipairs(contents.value) do
   print(item.name, item.slot_index, item.metadata and item.metadata.condition)
 end
+```
+
+Consumer resources can resolve a UUID Character's own container without
+querying Inventory's tables directly:
+
+```lua
+local characterInventory = exports['feather-inventory']:GetCharacterInventory(characterId)
+if characterInventory.ok then
+  print(characterInventory.value.id, characterInventory.value.maxWeight)
+end
+```
+
+Trusted server resources that need to remove a selected instance can use the
+locked, ownership-scoped path below. It rejects stale/moved instance IDs and
+runs every registered destroy guard before committing:
+
+```lua
+local removed = exports['feather-inventory']:RemoveCharacterInventoryInstance(
+  characterId, instanceId, 'admin_remove')
+```
+
+Stackable catalog items can be granted atomically to an online or offline
+UUID Character. Unique definitions are rejected and must use their owner:
+
+```lua
+local granted = exports['feather-inventory']:GrantCharacterItem(
+  characterId, 'revolver_standard', 24, 'admin_ammo_grant')
 ```
 
 ### Capacity

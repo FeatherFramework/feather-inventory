@@ -5,7 +5,7 @@ Config = {}
 -- the box. Defaults to false now; the commands below are also
 -- ACE-restricted so flipping this back on for testing doesn't hand them to
 -- every player either.
-Config.DevMode = false
+Config.DevMode = true
 
 -- Gates verbose server-console logging (currently the access/ground
 -- resolution tracing added while building the robbery/ACL system) --

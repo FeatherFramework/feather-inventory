@@ -17,6 +17,12 @@ function RegisterCharacterStart(InventoryAPI)
     AddEventHandler("Feather:Server:Character:Spawned", function(character)
         InventoryAPI.Inventory.RegisterInventory('character', character.id)
     end)
+
+    AddEventHandler('core.session.ready.v1', function(session)
+        local characterId = session and InventoryIdentity.NormalizeCharacterId(session.characterId)
+        if not characterId then return end
+        InventoryAPI.Inventory.RegisterInventory('character', characterId)
+    end)
 end
 
 -- (INV-13) Belt-and-braces even with the signal de-networked: guarantees at

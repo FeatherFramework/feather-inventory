@@ -72,13 +72,13 @@ Feather.RPC.Register('Feather:Inventory:GiveItem', function(params, res, src)
   local target = params['target']
   local item = params['item']
 
-  local player = Feather.Character.GetCharacter({ src = src })
+  local player = InventoryIdentity.GetCharacter(src)
   local character = player and player.char
   if not character then
     return res({ error = true, message = 'No character loaded.' })
   end
 
-  local targetPlayer = Feather.Character.GetCharacter({ src = tonumber(target) })
+  local targetPlayer = InventoryIdentity.GetCharacter(tonumber(target))
   local targetCharacter = targetPlayer and targetPlayer.char
   if not targetCharacter then
     Feather.Notify.RightNotify(src, Translate(src, 'err_target_unavailable', 'That player is not available.'), 3000)
@@ -344,7 +344,7 @@ Feather.RPC.Register('Feather:Inventory:TakeAll', function(params, res, src)
     return res({ error = true, message = 'Invalid inventory.' })
   end
 
-  local player = Feather.Character.GetCharacter({ src = src })
+  local player = InventoryIdentity.GetCharacter(src)
   local character = player and player.char
   if not character then
     return res({ error = true, code = 'no_character', message = 'No character loaded.' })
@@ -455,7 +455,7 @@ Feather.RPC.Register('Feather:Inventory:GetCharacterInfoForDisplay', function(pa
   -- loaded character (e.g. still in character select) hitting this RPC
   -- crashed the handler on `character.dollars` instead of getting a clean
   -- empty response.
-  local player = Feather.Character.GetCharacter({ src = src })
+  local player = InventoryIdentity.GetCharacter(src)
   local character = player and player.char
   if not character then
     return res({})

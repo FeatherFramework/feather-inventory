@@ -29,9 +29,79 @@ function StartAPI()
   inventoryServerAPI.GetItemForCharacter = InstancesAPI.GetItemForCharacter
   inventoryServerAPI.GetEquippedForCharacter = EquipmentAPI.GetEquippedForCharacter
   inventoryServerAPI.SetEquippedForCharacter = EquipmentAPI.SetEquippedForCharacter
+  -- Consumer-safe UUID Character inventory lookup. Keep a top-level alias
+  -- because Cfx resource boundaries do not reliably preserve newly-added
+  -- nested function members on an API table returned by an export.
+  inventoryServerAPI.GetCharacterInventory = function(characterId)
+    if type(InventoryAPI) ~= 'table' or type(InventoryAPI.GetCharacterInventory) ~= 'function' then
+      return Result.Err(Result.Codes.INTERNAL, 'Character inventory lookup is unavailable.')
+    end
+    return InventoryAPI.GetCharacterInventory(characterId)
+  end
 
   exports('initiate', function()
     return inventoryServerAPI
+  end)
+
+  exports('GetCharacterInventory', function(characterId)
+    if type(InventoryAPI) ~= 'table' or type(InventoryAPI.GetCharacterInventory) ~= 'function' then
+      return Result.Err(Result.Codes.INTERNAL, 'Character inventory lookup is unavailable.')
+    end
+    return InventoryAPI.GetCharacterInventory(characterId)
+  end)
+
+  exports('RemoveCharacterInventoryInstance', function(characterId, instanceId, reason)
+    local normalized = InventoryIdentity.NormalizeCharacterId(characterId)
+    local numericInstance = tonumber(instanceId)
+    if not normalized or not numericInstance then
+      return Result.Err(Result.Codes.INVALID_INPUT, 'UUID Character id and item instance id are required.')
+    end
+    local inventoryId = InventoryControllers.GetInventoryByCharacter(normalized)
+    if not inventoryId then
+      return Result.Err(Result.Codes.NOT_FOUND, 'The Character inventory does not exist.')
+    end
+    return TransactionAPI.Transaction({
+      reason = type(reason) == 'string' and reason:sub(1, 100) or 'admin_remove',
+      resource = GetInvokingResource() or 'unknown'
+    }, function(tx)
+      local locked = tx:GetItemForUpdate(numericInstance)
+      if not Result.IsOk(locked) then return locked end
+      if locked.value.inventoryId ~= tonumber(inventoryId) then
+        return Result.Err(Result.Codes.NOT_FOUND, 'That Character does not hold this item.',
+          { characterId = normalized, instanceId = numericInstance })
+      end
+      local removed = tx:RemoveInstances(inventoryId, locked.value.definition.id, { numericInstance })
+      if not Result.IsOk(removed) then return removed end
+      return Result.Ok({ instanceId = numericInstance, inventoryId = inventoryId,
+        definitionId = locked.value.definition.id, itemName = locked.value.definition.name,
+        displayName = locked.value.definition.displayName })
+    end)
+  end)
+
+  exports('GrantCharacterItem', function(characterId, itemName, quantity, reason)
+    local normalized = InventoryIdentity.NormalizeCharacterId(characterId)
+    local wanted = math.floor(tonumber(quantity) or 0)
+    if not normalized or type(itemName) ~= 'string' or itemName == '' or wanted < 1 or wanted > 10000 then
+      return Result.Err(Result.Codes.INVALID_INPUT, 'UUID Character id, item name, and quantity are required.')
+    end
+    local definition = ItemControllers.GetItemDefinitionByName(itemName)
+    if not definition then return Result.Err(Result.Codes.NOT_FOUND, 'Item definition does not exist.') end
+    if definition.instance_mode == 'unique' then
+      return Result.Err('unique_requires_issuer', 'Unique items must be issued by their owning resource.')
+    end
+    local inventoryId = InventoryControllers.GetInventoryByCharacter(normalized)
+    if not inventoryId then
+      return Result.Err(Result.Codes.NOT_FOUND, 'The Character inventory does not exist.')
+    end
+    return TransactionAPI.Transaction({
+      reason = type(reason) == 'string' and reason:sub(1, 100) or 'trusted_character_grant',
+      resource = GetInvokingResource() or 'unknown'
+    }, function(tx)
+      local granted = tx:AddQuantity(inventoryId, definition.id, wanted)
+      if not Result.IsOk(granted) then return granted end
+      return Result.Ok({ characterId = normalized, inventoryId = inventoryId,
+        definitionId = definition.id, itemName = definition.name, quantity = wanted })
+    end)
   end)
 
   RegisterCharacterStart(inventoryServerAPI)

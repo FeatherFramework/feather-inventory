@@ -23,14 +23,13 @@ Feather.RPC.Register("Feather:Inventory:GetGroundUID", function(params, res, src
         return res(nil)
     end
 
-    local player = Feather.Character.GetCharacter({ src = src })
-    local character = player and player.char
-    if not character or not character.x or not character.y or not character.z then
+    local x, y, z = InventoryIdentity.GetPosition(src)
+    if not x then
         return res(nil)
     end
 
     local groundX, groundY, groundZ = GroundControllers.GetGroundById(params.id)
-    local dx, dy, dz = tonumber(character.x) - groundX, tonumber(character.y) - groundY, tonumber(character.z) - groundZ
+    local dx, dy, dz = x - groundX, y - groundY, z - groundZ
     local maxDistance = Config.Dropped.PromptViewDistance + 1.0 -- small buffer for position staleness (~CORE-32)
     if (dx * dx + dy * dy + dz * dz) > (maxDistance * maxDistance) then
         Feather.Notify.RightNotify(src, Translate(src, 'err_too_far', 'You are too far away.'), 3000)
@@ -56,7 +55,7 @@ Feather.RPC.Register("Feather:Inventory:DropItemsOnGround", function(params, res
     -- (Phase 6 consistency pass) No nil-guard here meant any client without
     -- a loaded character crashed this RPC on `character.id` instead of
     -- getting a clean rejection.
-    local player = Feather.Character.GetCharacter({ src = src })
+    local player = InventoryIdentity.GetCharacter(src)
     local character = player and player.char
     if not character then
         return res({ error = true, message = 'No character loaded.' })
@@ -72,10 +71,11 @@ Feather.RPC.Register("Feather:Inventory:DropItemsOnGround", function(params, res
     if type(params.x) ~= 'number' or type(params.y) ~= 'number' or type(params.z) ~= 'number' then
         return res({ error = true, message = 'Invalid drop location.' })
     end
-    if not character.x or not character.y or not character.z then
+    local x, y, z = InventoryIdentity.GetPosition(src)
+    if not x then
         return res({ error = true, message = 'No character loaded.' })
     end
-    local dx, dy, dz = tonumber(character.x) - params.x, tonumber(character.y) - params.y, tonumber(character.z) - params.z
+    local dx, dy, dz = x - params.x, y - params.y, z - params.z
     local maxDistance = Config.Dropped.PromptViewDistance + 1.0 -- small buffer for position staleness (~CORE-32)
     if (dx * dx + dy * dy + dz * dz) > (maxDistance * maxDistance) then
         Feather.Notify.RightNotify(src, Translate(src, 'err_too_far', 'You are too far away.'), 3000)
