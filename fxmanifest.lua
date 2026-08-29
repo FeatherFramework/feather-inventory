@@ -1,20 +1,15 @@
-fx_version "cerulean"
-games { "rdr3" }
-rdr3_warning "I acknowledge that this is a prerelease build of RedM, and I am aware my resources *will* become incompatible once RedM ships."
-lua54 "yes"
+fx_version 'cerulean'
+game 'rdr3'
+rdr3_warning 'I acknowledge that this is a prerelease build of RedM, and I am aware my resources *will* become incompatible once RedM ships.'
+lua54 'yes'
 
 description 'The Inventory API for the Feather Framework'
 author 'BCC Scripts'
 name 'feather-inventory'
-version '0.3.0'
-
-github_version_check 'true'
-github_version_type 'release'
-github_ui_check 'true'
-github_link 'https://github.com/FeatherFramework/feather-inventory'
+version '0.4.0'
 
 shared_scripts {
-  "config.lua"
+  'config.lua'
 }
 
 -- translations/ loads in both contexts, immediately after imports.lua defines
@@ -22,32 +17,32 @@ shared_scripts {
 -- displays text. Not a shared_script: shared_scripts load before either
 -- imports.lua runs, so `Feather` wouldn't exist yet.
 server_scripts {
-  "@oxmysql/lib/MySQL.lua",
-  "/server/imports.lua",
-  "/translations/*.lua",
-  "/server/helpers/*.lua",
-  "/server/controllers/*.lua",
-  "/server/services/*.lua",
-  "/server/main.lua",
+  '@oxmysql/lib/MySQL.lua',
+  '/server/imports.lua',
+  '/translations/*.lua',
+  '/server/helpers/*.lua',
+  '/server/controllers/*.lua',
+  '/server/services/*.lua',
+  '/server/main.lua',
 }
 
 client_scripts {
-  "/client/imports.lua",
-  "/translations/*.lua",
-  "/client/helpers/*.lua",
-  "/client/controllers/*.lua",
-  "/client/services/*.lua",
-  "/client/main.lua",
+  '/client/imports.lua',
+  '/translations/*.lua',
+  '/client/helpers/*.lua',
+  '/client/controllers/*.lua',
+  '/client/services/*.lua',
+  '/client/main.lua',
 }
 
 ui_page {
-  "ui/index.html"
+  'ui/index.html'
 }
 
 files {
-  "ui/index.html",
-  "ui/assets/*.*",
-  "ui/images/items/*.*"
+  'ui/index.html',
+  'ui/assets/*.*',
+  'ui/images/items/*.*'
 }
 
 dependencies {
