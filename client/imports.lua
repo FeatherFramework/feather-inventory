@@ -17,11 +17,16 @@ Feather.Locale = {
 
 Feather.Notify = {}
 Feather.Notify.RightNotify = function(message, duration)
-  local result = exports['feather-core']:ShowNotification({
-    style = 'right',
-    message = message,
-    duration = duration
-  })
+  local called, result = pcall(function()
+    return exports['feather-notify']:ShowNotification({
+      style = 'right',
+      message = message,
+      duration = duration
+    })
+  end)
+  if not called then
+    result = { ok = false, code = 'provider_unavailable' }
+  end
   if type(result) ~= 'table' or result.ok ~= true then
     print(('[feather-inventory] client notification failed code=%s'):format(
       tostring(type(result) == 'table' and result.code or 'invalid_result')))
