@@ -25,12 +25,6 @@
 
 InstancesAPI = {}
 
--- Documents are bounded so a caller cannot park unbounded state on a row.
--- Deliberately generous relative to anything weapons is expected to need
--- (ammo, condition, attachments, serial) while still being a real ceiling --
--- INV-W4 lists metadata size limits as hardening, this is the first cut.
-local MAX_METADATA_BYTES = 4096
-
 ------------------------------------------------------------------
 -- Schema
 ------------------------------------------------------------------
@@ -243,7 +237,7 @@ end
 ---
 -- Write Metadata
 --
--- Replaces the whole document in one statement and bumps the revision.
+-- Replaces the whole document transactionally and bumps the revision.
 --
 -- Optimistic concurrency: pass `expectedRevision` and the write only lands if
 -- the stored revision still matches, reported as CONFLICT otherwise. That is
@@ -267,40 +261,16 @@ function InstancesAPI.WriteMetadata(instanceId, document, expectedRevision, corr
         return Result.Err(Result.Codes.INVALID_INPUT, 'Metadata document must be a table.', nil, correlationId)
     end
 
-    local encoded = json.encode(document)
-    if #encoded > MAX_METADATA_BYTES then
-        return Result.Err(Result.Codes.LIMIT_EXCEEDED,
-            ('Metadata document exceeds %d bytes.'):format(MAX_METADATA_BYTES),
-            { size = #encoded, limit = MAX_METADATA_BYTES }, correlationId)
-    end
-
-    local affected
-    if expectedRevision ~= nil then
-        affected = MySQL.update.await(
-            'UPDATE `inventory_items` SET `metadata`=?, `row_revision`=`row_revision`+1 WHERE `id`=? AND `row_revision`=?;',
-            { encoded, numericId, tonumber(expectedRevision) })
-    else
-        affected = MySQL.update.await(
-            'UPDATE `inventory_items` SET `metadata`=?, `row_revision`=`row_revision`+1 WHERE `id`=?;',
-            { encoded, numericId })
-    end
-
-    if not affected or affected < 1 then
-        -- Zero affected rows is ambiguous on its own -- the row may not exist,
-        -- or the revision may have moved. Distinguish them, because a caller
-        -- retries a CONFLICT and gives up on a NOT_FOUND.
-        local exists = MySQL.query.await('SELECT `row_revision` FROM `inventory_items` WHERE `id`=? LIMIT 1;',
-            { numericId })[1]
-        if not exists then
-            return Result.Err(Result.Codes.NOT_FOUND, 'Item instance does not exist.', nil, correlationId)
-        end
-        return Result.Err(Result.Codes.CONFLICT, 'Instance revision has moved since it was read.',
-            { expected = tonumber(expectedRevision), actual = tonumber(exists.row_revision) }, correlationId)
-    end
-
-    local updated = MySQL.query.await('SELECT `row_revision` FROM `inventory_items` WHERE `id`=? LIMIT 1;',
-        { numericId })[1]
-    return Result.Ok({ revision = updated and tonumber(updated.row_revision) or nil }, correlationId)
+    -- Use the same locked primitive as compound mutations. In particular,
+    -- this prevents a public metadata write from making one unit in an
+    -- existing stack differ from the other rows occupying that compartment.
+    return InventoryAPI.Transaction({
+        reason = 'write_metadata',
+        correlationId = correlationId,
+        resource = GetInvokingResource and GetInvokingResource() or nil,
+    }, function(tx)
+        return tx:SetMetadata(numericId, document, expectedRevision)
+    end)
 end
 
 ---

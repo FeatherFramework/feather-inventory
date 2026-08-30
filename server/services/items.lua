@@ -270,12 +270,11 @@ end
 --
 -- Clamps to 0..Config.Condition.Max and writes it to this instance.
 --
--- REFUSES STACKABLE ITEMS, deliberately. A compartment stacks by item_id
--- alone (see GetJoinableSlot) -- metadata is invisible to it -- so two units
--- of a stackable item carrying different conditions would silently merge into
--- one compartment and one of the values would be lost. Per-instance state on
--- a stackable definition needs INV-W1's unique-instance model first; until
--- then this fails closed rather than quietly corrupting a stack. Every
+-- REFUSES STACKABLE ITEMS, deliberately. New joins compare metadata, but
+-- changing one row already inside a multi-unit compartment would make that
+-- existing stack heterogeneous unless this mutation also split it. Per-unit
+-- independently mutable state therefore remains a unique-definition concern.
+-- Every
 -- currently-seeded degradable item (weapons, tools) is max_stack_size = 1 and
 -- is unaffected.
 --

@@ -183,6 +183,144 @@ InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItem
   return Result.Ok({ uuid = inventory[1].uuid, id = inventory[1].id })
 end
 
+function InventoryAPI.GetContainerLifecycle(inventoryId)
+  local numericId = tonumber(inventoryId)
+  if not numericId then
+    return Result.Err(Result.Codes.INVALID_INPUT, 'A raw inventory id is required.')
+  end
+  local row = MySQL.single.await([[SELECT i.`id`, i.`uuid`, i.`location`, i.`name`,
+      i.`owner_character_id`, i.`is_public`, COUNT(ii.`id`) AS `item_count`
+    FROM `inventory` i
+    LEFT JOIN `inventory_items` ii ON ii.`inventory_id`=i.`id`
+    WHERE i.`id`=?
+    GROUP BY i.`id`, i.`uuid`, i.`location`, i.`name`, i.`owner_character_id`, i.`is_public`
+    LIMIT 1;]], { numericId })
+  if not row then return Result.Err(Result.Codes.NOT_FOUND, 'Inventory does not exist.') end
+  local grants = MySQL.scalar.await(
+    'SELECT COUNT(*) FROM `inventory_access` WHERE `inventory_id`=?;', { numericId }) or 0
+  return Result.Ok({
+    inventoryId = numericId,
+    uuid = row.uuid,
+    location = row.location,
+    name = row.name,
+    ownerCharacterId = row.owner_character_id,
+    isPublic = Boolean[row.is_public] == true,
+    itemCount = tonumber(row.item_count) or 0,
+    grantCount = tonumber(grants) or 0,
+    protected = row.location == 'character' or row.location == 'ground',
+  })
+end
+
+function InventoryAPI.DeleteContainerIfEmpty(inventoryId, expectedLocation, reason)
+  local numericId = tonumber(inventoryId)
+  if not numericId or type(expectedLocation) ~= 'string' or expectedLocation == ''
+    or type(reason) ~= 'string' or reason:match('^%s*$') then
+    return Result.Err(Result.Codes.INVALID_INPUT,
+      'Inventory id, expected owner domain, and deletion reason are required.')
+  end
+  if expectedLocation == 'character' or expectedLocation == 'ground' then
+    return Result.Err(Result.Codes.DENIED,
+      'Character and ground container lifecycles cannot use the consumer deletion API.')
+  end
+
+  local deletedUuid
+  local failure
+  local executed, committed = pcall(MySQL.startTransaction, function(query)
+    local rows = query(
+      'SELECT `id`, `uuid`, `location` FROM `inventory` WHERE `id`=? FOR UPDATE;', { numericId })
+    local container = rows and rows[1]
+    if not container then
+      failure = Result.Err(Result.Codes.NOT_FOUND, 'Inventory does not exist.')
+      return false
+    end
+    if container.location ~= expectedLocation then
+      failure = Result.Err(Result.Codes.DENIED, 'Inventory owner domain does not match.', {
+        expected = expectedLocation, actual = container.location })
+      return false
+    end
+    local items = query(
+      'SELECT `id` FROM `inventory_items` WHERE `inventory_id`=? ORDER BY `id` FOR UPDATE;', { numericId })
+    if items and #items > 0 then
+      failure = Result.Err(Result.Codes.CONFLICT, 'Inventory is not empty.', {
+        inventoryId = numericId, itemCount = #items })
+      return false
+    end
+    local result = query('DELETE FROM `inventory` WHERE `id`=? AND `location`=?;',
+      { numericId, expectedLocation })
+    local affected = tonumber(result and (result.affectedRows or result.affected_rows)) or 0
+    if affected ~= 1 then
+      failure = Result.Err(Result.Codes.CONFLICT, 'Inventory changed before deletion.')
+      return false
+    end
+    deletedUuid = container.uuid
+    return true
+  end)
+
+  if not executed or committed ~= true then
+    return failure or Result.Err(Result.Codes.INTERNAL, 'Inventory deletion rolled back.')
+  end
+  local payload = {
+    inventoryId = numericId,
+    uuid = deletedUuid,
+    location = expectedLocation,
+    reason = reason:sub(1, 255),
+    resource = GetInvokingResource() or 'feather-inventory',
+  }
+  TriggerEvent('Feather:Inventory:ContainerDeleted', payload)
+  return Result.Ok(payload)
+end
+
+function InventoryAPI.RecoverContainerContents(inventoryId, targetInventoryId, expectedLocation, reason)
+  local sourceId, targetId = tonumber(inventoryId), tonumber(targetInventoryId)
+  if not sourceId or not targetId or sourceId == targetId
+    or type(expectedLocation) ~= 'string' or expectedLocation == ''
+    or type(reason) ~= 'string' or reason:match('^%s*$') then
+    return Result.Err(Result.Codes.INVALID_INPUT,
+      'Distinct source/target inventory ids, owner domain, and recovery reason are required.')
+  end
+  if expectedLocation == 'character' or expectedLocation == 'ground' then
+    return Result.Err(Result.Codes.DENIED,
+      'Character and ground container lifecycles cannot use the recovery API.')
+  end
+
+  local source = InventoryAPI.GetContainerLifecycle(sourceId)
+  if not Result.IsOk(source) then return source end
+  if source.value.location ~= expectedLocation then
+    return Result.Err(Result.Codes.DENIED, 'Inventory owner domain does not match.', {
+      expected = expectedLocation, actual = source.value.location })
+  end
+  if source.value.itemCount == 0 then
+    return InventoryAPI.DeleteContainerIfEmpty(sourceId, expectedLocation, reason)
+  end
+  local target = InventoryControllers.GetInventoryById(targetId, 'id')
+  if not target then return Result.Err(Result.Codes.NOT_FOUND, 'Recovery inventory does not exist.') end
+
+  local rows = InventoryControllers.GetInventoryItems(sourceId)
+  local instanceIds = {}
+  for _, row in ipairs(rows or {}) do instanceIds[#instanceIds + 1] = tonumber(row.id) end
+  local invokingResource = GetInvokingResource() or 'feather-inventory'
+  local moved = InventoryControllers.MoveInventoryItems(sourceId, targetId, instanceIds, {
+    reason = 'container_recovery',
+    resource = invokingResource,
+    deleteSource = {
+      expectedLocation = expectedLocation,
+      reason = reason:sub(1, 255),
+    }
+  })
+  if moved and moved.error then
+    return Result.Err(moved.code or Result.Codes.INTERNAL,
+      moved.message or 'Container recovery failed.', { inventory = moved })
+  end
+  return Result.Ok({
+    inventoryId = sourceId,
+    targetInventoryId = targetId,
+    location = expectedLocation,
+    moved = #instanceIds,
+    reason = reason:sub(1, 255),
+    resource = invokingResource,
+  })
+end
+
 ---
 -- Validate the {item=, quantity=} list shape shared by every capacity check.
 --
@@ -779,4 +917,3 @@ AddEventHandler('playerDropped', function()
   local src = source
   InventoryAPI.InternalCloseInventory(src)
 end)
-

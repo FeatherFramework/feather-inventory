@@ -201,7 +201,8 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
   local mergeCount = 0
 
   if #movingBreakdown == 1 and #occupantBreakdown == 1
-      and tostring(movingBreakdown[1].item_id) == tostring(occupantBreakdown[1].item_id) then
+      and tostring(movingBreakdown[1].item_id) == tostring(occupantBreakdown[1].item_id)
+      and InventoryControllers.AreSlotsStackCompatible(fromInventory, fromSlot, toInventory, toSlot) then
     local stackSize = math.max(tonumber(occupantBreakdown[1].max_stack_size) or 1, 1)
     local room = stackSize - (tonumber(occupantBreakdown[1].count) or 0)
     if room > 0 then

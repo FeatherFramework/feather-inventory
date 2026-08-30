@@ -175,6 +175,36 @@ Notes that catch people out:
 - `maxWeight` — `nil` uses `Config.maxWeight`; **`0` means no weight limit** (ground piles register this way, since a heap on the floor has nothing doing the carrying). Slot and per-item quantity limits still apply at `0`.
 - `maxSlots` — `nil` uses `Config.maxItemSlots`. Capacity is per-inventory and the ledger grid scrolls, so it is not bounded by what fits on one visible page.
 - `ownerCharacterId` / `isPublic` / `maxSlots` / `maxWeight` are written **only when explicitly passed**. Omitting one on a re-register never resets a stored setting — so calling `RegisterInventory('wagons', id)` on every spawn is safe.
+
+Before deleting an entity that owns a container, its resource can inspect and
+close the Inventory side safely:
+
+```lua
+local state = Inventory.Inventory.GetContainerLifecycle(inventoryId)
+if state.ok and state.value.itemCount == 0 then
+  local deleted = Inventory.Inventory.DeleteContainerIfEmpty(
+    inventoryId, 'wagons', 'wagon permanently deleted')
+end
+```
+
+Deletion locks the container and its item rows, rechecks the owner domain, and
+fails with `conflict` if anything remains. Character and Ground containers are
+protected from this consumer API. Deleting the owning wagon/property row before
+this succeeds is a consumer bug: its foreign-key cascade is cleanup machinery,
+not permission to destroy player property.
+
+To retain property while deleting its owner, recover and delete atomically:
+
+```lua
+local recovered = Inventory.Inventory.RecoverContainerContents(
+  wagonInventoryId, characterInventoryId, 'wagons', 'wagon permanently deleted')
+```
+
+Every instance is locked, guard-checked, capacity-checked, moved to the named
+recovery inventory, and announced through normal post-commit movement facts.
+The source container is deleted in that same transaction only if no unlisted or
+concurrently-added item remains. The consumer may delete its owning entity only
+after this call succeeds.
 - `tableName` and `primaryKeyName` must be valid SQL identifiers; they are concatenated into DDL and are rejected otherwise.
 
 ### Reads
@@ -400,6 +430,12 @@ usable, and removable. Passing `false` restores the definition. Changing a
 definition between `stack` and `unique` is rejected while any owned instances
 exist; that change requires an explicit migration.
 
+Stackable units share a compartment only when their decoded metadata documents
+are semantically equal. JSON key order does not matter, but different quality,
+condition, stolen state, batch, label, or spoilage data prevents joining. The
+unit receives a separate compartment instead; Inventory never chooses one
+unit's metadata as representative for a heterogeneous stack.
+
 ### Removing and dropping
 
 ```lua
@@ -481,7 +517,10 @@ else
 end
 ```
 
-> `SetCondition` **refuses stackable definitions**. Compartments stack on `item_id` alone — metadata is invisible to `GetJoinableSlot` — so two units carrying different conditions would silently merge and one value would be lost. Set `instance_mode = 'unique'` on anything that carries per-instance state.
+> `SetCondition` **refuses stackable definitions**. New joins are metadata-safe,
+> but changing one row already inside a multi-unit compartment would make that
+> existing stack heterogeneous unless the mutation also split it. Set
+> `instance_mode = 'unique'` on definitions carrying independently mutable state.
 
 ---
 
@@ -519,7 +558,10 @@ Inventory.Instances.IsUniqueDefinition(definitionId)          --> boolean
 Inventory.Instances.SetInstanceMode(definitionId, 'unique')   --> Result
 ```
 
-A `unique` definition never joins an existing compartment, enforced at `GetJoinableSlot` — the single placement chokepoint, so one check covers `AddItem`, `GrantItem`, bulk movement and transactional grants alike. Changing mode does **not** retroactively split stacks that already exist; it governs future placement only.
+A `unique` definition never joins an existing compartment. Transactional
+creation and movement enforce that rule alongside metadata compatibility.
+Changing mode is rejected while owned instances exist, because silently
+reinterpreting existing stacks would change their identity semantics.
 
 ### Metadata document
 
@@ -539,6 +581,7 @@ Inventory.Instances.MergeMetadata(instanceId, { chambered = true, jammed = nil }
 ```
 
 - `WriteMetadata` **replaces** the whole document; `MergeMetadata` patches it. Omitting `expectedRevision` on `WriteMetadata` is deliberate last-writer-wins for callers that genuinely do not care.
+- Metadata writes are transactional. A row sharing a compartment with other units may only be written to the same semantic document as its peers; independently mutable state belongs on a `unique` definition.
 - Documents are capped at **4096 bytes** (`limit_exceeded`, with `details.size` and `details.limit`).
 - A row whose JSON will not parse warns and reads as an empty document rather than stranding the instance.
 
@@ -723,15 +766,16 @@ end)
 
 | Event | Payload keys |
 |---|---|
-| `Feather:Inventory:ItemCreated` | `instanceId, definitionId, inventoryId, correlationId, reason` |
-| `Feather:Inventory:ItemMoved` | `operation, instanceId, definitionId, revision, fromInventoryId, toInventoryId, actorSource, actorCharacterId, correlationId, reason` |
-| `Feather:Inventory:ItemMetadataChanged` | `instanceId, revision, correlationId, reason` |
-| `Feather:Inventory:ItemDestroyed` | `instanceId, definitionId, inventoryId, correlationId, reason` |
-| `Feather:Inventory:TransactionCommitted` | `correlationId, reason, resource, summary = { created, moved, destroyed }` |
+| `Feather:Inventory:ItemCreated` | Common audit keys plus `instanceId, definitionId, inventoryId, destination` |
+| `Feather:Inventory:ItemMoved` | Common audit keys plus `instanceId, definitionId, revision, fromInventoryId, toInventoryId, origin, destination` |
+| `Feather:Inventory:ItemMetadataChanged` | Common audit keys plus `instanceId, definitionId, inventoryId, revision, origin, destination` |
+| `Feather:Inventory:ItemDestroyed` | Common audit keys plus `instanceId, definitionId, inventoryId, origin` |
+| `Feather:Inventory:TransactionCommitted` | Common audit keys plus `summary = { created, moved, destroyed }` |
 
-Emitted only **after** commit, so a consumer can trust that what it is told already happened.
-
-> Known gap: on the non-transactional movement path (`MoveInventoryItems` — give, ground drop, take-all, shift-transfer) `ItemMoved` currently arrives with `definitionId`, `revision` and the actor fields unset. Read them defensively, or re-query. Tracked in `MASTER_PLAN.md` §6.1.
+Common audit keys are `operation, outcome, quantity, actorSource,
+actorCharacterId, resource, correlationId, reason, occurredAt`. Events are
+emitted only **after** commit, so `outcome` is always `committed`; rejected
+attempt storage belongs to an external audit consumer at the API boundary.
 
 These five are the only mutation signals. The old `feather-inventory:ItemAdded` / `feather-inventory:ItemRemoved` pair was removed — every one of its fire sites already sat beside a structured emit carrying strictly more (correlation id, actor, definition id, revision), and its own first argument had meant a *definition* id on one path and an *instance* id on another. Listen for the events above instead.
 
@@ -848,5 +892,4 @@ The full tracked backlog — including decisions deferred or declined, with reas
 
 Known gaps in the API surface above, tracked in `MASTER_PLAN.md` §6.1:
 
-- `ItemMoved` arrives without `definitionId`/`revision`/actor fields on the `MoveInventoryItems` path (give, ground drop, take-all, shift-transfer). Read them defensively, or re-query.
 - `RunGuards` re-reads the instance on a separate connection instead of being handed the row the transaction already locked.

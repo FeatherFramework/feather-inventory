@@ -164,14 +164,27 @@ local function Emit(eventName, payload)
     TriggerEvent(eventName, payload)
 end
 
-function GuardsAPI.EmitItemCreated(instanceId, definitionId, inventoryId, context)
-    Emit(GuardsAPI.Events.ItemCreated, {
-        instanceId = instanceId,
-        definitionId = definitionId,
-        inventoryId = inventoryId,
+local function MutationFact(operation, context)
+    return {
+        operation = operation,
+        outcome = 'committed',
+        quantity = 1,
+        actorSource = context and context.actorSource,
+        actorCharacterId = context and context.actorCharacterId,
+        resource = context and context.resource,
         correlationId = context and context.correlationId,
         reason = context and context.reason,
-    })
+        occurredAt = os.time(),
+    }
+end
+
+function GuardsAPI.EmitItemCreated(instanceId, definitionId, inventoryId, context)
+    local fact = MutationFact('create', context)
+    fact.instanceId = instanceId
+    fact.definitionId = definitionId
+    fact.inventoryId = inventoryId
+    fact.destination = { inventoryId = inventoryId }
+    Emit(GuardsAPI.Events.ItemCreated, fact)
 end
 
 function GuardsAPI.EmitItemMoved(instanceId, fromInventoryId, toInventoryId, context, extra)
@@ -179,44 +192,41 @@ function GuardsAPI.EmitItemMoved(instanceId, fromInventoryId, toInventoryId, con
     -- knows them. The transaction path previously passed nil for both, so a
     -- consumer had to re-query to learn what had just moved.
     extra = extra or {}
-    Emit(GuardsAPI.Events.ItemMoved, {
-        operation = 'move',
-        instanceId = instanceId,
-        definitionId = extra.definitionId,
-        revision = extra.revision,
-        fromInventoryId = fromInventoryId,
-        toInventoryId = toInventoryId,
-        actorSource = context and context.actorSource,
-        actorCharacterId = context and context.actorCharacterId,
-        correlationId = context and context.correlationId,
-        reason = context and context.reason,
-    })
+    local fact = MutationFact('move', context)
+    fact.instanceId = instanceId
+    fact.definitionId = extra.definitionId
+    fact.revision = extra.revision
+    fact.fromInventoryId = fromInventoryId
+    fact.toInventoryId = toInventoryId
+    fact.origin = { inventoryId = fromInventoryId, slot = extra.fromSlot }
+    fact.destination = { inventoryId = toInventoryId, slot = extra.toSlot }
+    Emit(GuardsAPI.Events.ItemMoved, fact)
 end
 
-function GuardsAPI.EmitItemMetadataChanged(instanceId, revision, context)
-    Emit(GuardsAPI.Events.ItemMetadataChanged, {
-        instanceId = instanceId,
-        revision = revision,
-        correlationId = context and context.correlationId,
-        reason = context and context.reason,
-    })
+function GuardsAPI.EmitItemMetadataChanged(instanceId, revision, context, extra)
+    extra = extra or {}
+    local fact = MutationFact('metadata_write', context)
+    fact.instanceId = instanceId
+    fact.definitionId = extra.definitionId
+    fact.inventoryId = extra.inventoryId
+    fact.origin = { inventoryId = extra.inventoryId, slot = extra.slot }
+    fact.destination = { inventoryId = extra.inventoryId, slot = extra.slot }
+    fact.revision = revision
+    Emit(GuardsAPI.Events.ItemMetadataChanged, fact)
 end
 
 function GuardsAPI.EmitItemDestroyed(instanceId, definitionId, inventoryId, context)
-    Emit(GuardsAPI.Events.ItemDestroyed, {
-        instanceId = instanceId,
-        definitionId = definitionId,
-        inventoryId = inventoryId,
-        correlationId = context and context.correlationId,
-        reason = context and context.reason,
-    })
+    local fact = MutationFact('destroy', context)
+    fact.instanceId = instanceId
+    fact.definitionId = definitionId
+    fact.inventoryId = inventoryId
+    fact.origin = { inventoryId = inventoryId }
+    Emit(GuardsAPI.Events.ItemDestroyed, fact)
 end
 
 function GuardsAPI.EmitTransactionCommitted(context, summary)
-    Emit(GuardsAPI.Events.TransactionCommitted, {
-        correlationId = context and context.correlationId,
-        reason = context and context.reason,
-        resource = context and context.resource,
-        summary = summary,
-    })
+    local fact = MutationFact('transaction', context)
+    fact.quantity = nil
+    fact.summary = summary
+    Emit(GuardsAPI.Events.TransactionCommitted, fact)
 end

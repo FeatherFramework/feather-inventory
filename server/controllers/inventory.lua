@@ -300,37 +300,6 @@ function InventoryControllers.CreateInventoryItem(inventory, itemId, slotIndex, 
   return created
 end
 
--- Steampunk ledger: a compartment already holding this item with room left
--- under its stack limit -- new units join it instead of claiming a fresh
--- slot, same "stack up to max_stack_size" behavior the client used to fake
--- with lodash chunk/groupBy, now actually persisted.
--- (INV-W1) A `unique` definition never joins an existing compartment, no
--- matter what its max_stack_size says. This is the single chokepoint where
--- "unique instances cannot stack" is actually enforced -- every grant and
--- transfer path resolves placement through here, so guarding it once covers
--- AddItem, GrantItem and MoveInventoryItems together rather than three
--- separately-maintained checks.
---
--- The join is what makes that possible: matching on `item_id` alone is
--- exactly why per-instance state (condition, and later spoilage) could
--- silently merge into one compartment and lose a value.
-function InventoryControllers.GetJoinableSlot(inventory, itemId, maxStackSize)
-  local result = MySQL.query.await([[
-    SELECT ii.`slot_index`, COUNT(*) AS `count`
-    FROM `inventory_items` ii
-    INNER JOIN `items` i ON i.`id` = ii.`item_id`
-    WHERE ii.`inventory_id`=? AND ii.`item_id`=? AND ii.`slot_index` IS NOT NULL
-      AND i.`instance_mode` <> 'unique'
-    GROUP BY ii.`slot_index`
-    HAVING COUNT(*) < ?
-    LIMIT 1;
-  ]], { inventory, itemId, maxStackSize })
-  if not result[1] then
-    return nil
-  end
-  return result[1].slot_index
-end
-
 -- Set of compartment indices currently holding anything, as { [index] = true }.
 --
 -- Exposed separately from GetFreeSlot because a caller that places several
@@ -368,10 +337,18 @@ function InventoryControllers.GetItemsInSlot(inventory, slot)
     { inventory, slot })
 end
 
+function InventoryControllers.AreSlotsStackCompatible(fromInventory, fromSlot, toInventory, toSlot)
+  local rows = MySQL.query.await([[SELECT `metadata` FROM `inventory_items`
+    WHERE (`inventory_id`=? AND `slot_index`=?) OR (`inventory_id`=? AND `slot_index`=? )
+    ORDER BY `inventory_id`, `slot_index`, `id`;]],
+    { fromInventory, fromSlot, toInventory, toSlot })
+  return InventoryMetadata.RowsCompatible(rows or {})
+end
+
 -- (Capacity model) How many units of `itemId` sit in each compartment that
--- already holds it. GetJoinableSlot answers "is there *a* stack with room"
--- for placement; this answers "how much room do *all* of them have", which
--- is what deciding whether N more units fit actually requires.
+-- already holds it. This is a coarse capacity count; authoritative placement
+-- separately applies metadata compatibility and may therefore require a new
+-- compartment even when an incompatible stack has numeric room.
 function InventoryControllers.GetItemStackCounts(inventory, itemId)
   return MySQL.query.await(
     'SELECT `slot_index`, COUNT(*) AS `count` FROM `inventory_items` WHERE `inventory_id`=? AND `item_id`=? AND `slot_index` IS NOT NULL GROUP BY `slot_index`;',
@@ -384,8 +361,8 @@ end
 -- returns bare row ids, which is enough to *move* a stack but not enough to
 -- decide whether the destination can afford it.
 --
--- Grouped rather than assumed single-item: a compartment holds one item type
--- by construction (GetJoinableSlot only ever joins matching items), but
+-- Grouped rather than assumed single-item: authoritative placement only joins
+-- matching definitions and metadata-compatible rows, but
 -- nothing in the schema enforces that, and a mixed slot should be costed
 -- correctly rather than silently mis-costed off its first row.
 function InventoryControllers.GetSlotItemBreakdown(inventory, slot)
@@ -447,6 +424,10 @@ function InventoryControllers.MoveSlotItemsPartial(fromInventory, fromSlot, toIn
     local stackSize = math.max(tonumber(target[1].max_stack_size) or 1, 1)
     local amount = math.min(wanted, #source, math.max(stackSize - #target, 0))
     if amount < 1 then return false end
+    local compatibilityRows = {}
+    for _, row in ipairs(target) do compatibilityRows[#compatibilityRows + 1] = row end
+    for index = 1, amount do compatibilityRows[#compatibilityRows + 1] = source[index] end
+    if not InventoryMetadata.RowsCompatible(compatibilityRows) then return false end
 
     if crossInventory then
       local accepted = InventoryControllers.AcceptanceInTransaction(query, toInventory,
@@ -904,8 +885,20 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
 
   local failureCode, failureMessage
   local moved = {}
+  local deletedContainer
 
   local executed, committed = pcall(MySQL.startTransaction, function(query)
+    if context.deleteSource then
+      local lifecycleRows = query(
+        'SELECT `id`, `uuid`, `location` FROM `inventory` WHERE `id`=? FOR UPDATE;', { sourceInventory })
+      local lifecycle = lifecycleRows and lifecycleRows[1]
+      if not lifecycle or lifecycle.location ~= context.deleteSource.expectedLocation
+        or lifecycle.location == 'character' or lifecycle.location == 'ground' then
+        failureCode, failureMessage = 'denied', 'Source container owner domain does not match.'
+        return false
+      end
+      deletedContainer = lifecycle
+    end
     if not ContextCanAccess(context, sourceInventory, InventoryAPI.AccessModes.REMOVE)
       or (not context.allowTargetInsert
         and not ContextCanAccess(context, targetInventory, InventoryAPI.AccessModes.INSERT)) then
@@ -964,7 +957,7 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
       -- has already written -- the batched-insert bug GrantItem had, avoided
       -- here by construction.
       local defRows = query([[
-        SELECT ii.`item_id`, i.`max_stack_size`, i.`instance_mode`
+        SELECT ii.`item_id`, ii.`metadata`, i.`max_stack_size`, i.`instance_mode`
         FROM `inventory_items` ii INNER JOIN `items` i ON i.`id` = ii.`item_id`
         WHERE ii.`id`=? LIMIT 1;
       ]], { id })
@@ -973,12 +966,28 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
 
       local targetSlot
       if def and def.instance_mode ~= 'unique' then
-        local joinable = query([[
-          SELECT `slot_index` FROM `inventory_items`
+        local candidates = query([[
+          SELECT `slot_index`, `metadata` FROM `inventory_items`
           WHERE `inventory_id`=? AND `item_id`=? AND `slot_index` IS NOT NULL
-          GROUP BY `slot_index` HAVING COUNT(*) < ? LIMIT 1;
-        ]], { targetInventory, def.item_id, stackSize })
-        targetSlot = joinable and joinable[1] and tonumber(joinable[1].slot_index) or nil
+          ORDER BY `slot_index`, `id`;
+        ]], { targetInventory, def.item_id })
+        local bySlot = {}
+        for _, row in ipairs(candidates or {}) do
+          local slot = tonumber(row.slot_index)
+          bySlot[slot] = bySlot[slot] or {}
+          bySlot[slot][#bySlot[slot] + 1] = row
+        end
+        local movingMetadata = InventoryMetadata.Decode(def.metadata)
+        if movingMetadata then
+          for slot, rows in pairs(bySlot) do
+            local existingMetadata = InventoryMetadata.Decode(rows[1].metadata)
+            if existingMetadata and #rows < stackSize and InventoryMetadata.RowsCompatible(rows)
+              and InventoryMetadata.DocumentsEqual(existingMetadata, movingMetadata) then
+              targetSlot = slot
+              break
+            end
+          end
+        end
       end
 
       if targetSlot == nil then
@@ -1007,6 +1016,22 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
         { targetInventory, targetSlot, id })
     end
 
+    if context.deleteSource then
+      local remaining = query(
+        'SELECT `id` FROM `inventory_items` WHERE `inventory_id`=? ORDER BY `id` FOR UPDATE;', { sourceInventory })
+      if remaining and #remaining > 0 then
+        failureCode, failureMessage = 'conflict', 'Source container changed during recovery.'
+        return false
+      end
+      local deleted = query('DELETE FROM `inventory` WHERE `id`=? AND `location`=?;',
+        { sourceInventory, context.deleteSource.expectedLocation })
+      local affected = tonumber(deleted and (deleted.affectedRows or deleted.affected_rows)) or 0
+      if affected ~= 1 then
+        failureCode, failureMessage = 'conflict', 'Source container changed during recovery.'
+        return false
+      end
+    end
+
     return true
   end)
 
@@ -1023,6 +1048,17 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
   for _, id in ipairs(requested) do
     local entry = moved[id] or {}
     GuardsAPI.EmitItemMoved(id, sourceInventory, targetInventory, context, entry)
+  end
+
+  if context.deleteSource and deletedContainer then
+    TriggerEvent('Feather:Inventory:ContainerDeleted', {
+      inventoryId = tonumber(sourceInventory),
+      uuid = deletedContainer.uuid,
+      location = deletedContainer.location,
+      reason = context.deleteSource.reason,
+      resource = context.resource,
+      recoveredToInventoryId = tonumber(targetInventory),
+    })
   end
 
   return {
