@@ -538,7 +538,7 @@ ItemsAPI.UseItem = function(itemID, src)
 end
 
 
-ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z)
+ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z, context)
   if type(items) ~= 'table' or #items == 0 then
     return Result.Err(Result.Codes.INVALID_INPUT, "No items specified.")
   end
@@ -584,7 +584,8 @@ ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z)
     return registered
   end
   local groundInventoryID = registered.value.id
-  local updateinv = InventoryControllers.MoveInventoryItems(inventoryId, groundInventoryID, items)
+  local updateinv = InventoryControllers.MoveInventoryItems(inventoryId, groundInventoryID, items,
+    context or { reason = 'ground_drop', resource = GetInvokingResource() or 'feather-inventory' })
 
   -- This always reported `error = false` even when MoveInventoryItems
   -- itself rejected the move (e.g. capacity) -- the ground pile row would

@@ -686,8 +686,8 @@ end
 -- per-item UPDATEs were also independent, so a failure partway left some
 -- items moved and some not.
 --
--- Guards run before the transaction opens -- see MoveSlotItems for why.
-function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventory, items)
+function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventory, items, context)
+  context = context or { reason = 'move', resource = GetInvokingResource() or 'feather-inventory' }
   local requested = {}
   for _, item in pairs(items) do
     local id = type(item) == 'table' and item.id or item
@@ -702,21 +702,8 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
     return { error = true, code = 'invalid_input', message = 'No items specified.' }
   end
 
-  for _, id in ipairs(requested) do
-    local allowed, reason = GuardsAPI.CanMoveInstance(id, { reason = 'move' })
-    if not allowed then
-      return {
-        error = true,
-        code = 'denied',
-        message = reason or 'That item cannot be moved right now.',
-        sourceItems = InventoryControllers.GetInventoryItems(sourceInventory),
-        targetItems = InventoryControllers.GetInventoryItems(targetInventory)
-      }
-    end
-  end
-
   local failureCode, failureMessage
-  local movedIds = {}
+  local moved = {}
 
   local executed, committed = pcall(MySQL.startTransaction, function(query)
     -- Lock the rows being moved and confirm membership under that lock, so a
@@ -725,7 +712,10 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
     local counts = {}
     for _, id in ipairs(requested) do
       local rows = query([[
-        SELECT ii.`id`, ii.`inventory_id`, i.`name`
+        SELECT ii.`id`, ii.`inventory_id`, ii.`slot_index`, ii.`item_id`,
+               ii.`metadata`, ii.`row_revision`, i.`name`, i.`display_name`,
+               i.`weight`, i.`type`, i.`max_quantity`, i.`max_stack_size`,
+               i.`instance_mode`
         FROM `inventory_items` ii INNER JOIN `items` i ON i.`id` = ii.`item_id`
         WHERE ii.`id`=? FOR UPDATE;
       ]], { id })
@@ -734,7 +724,36 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
         failureCode, failureMessage = 'not_found', 'One or more items are not in the source inventory.'
         return false
       end
+      -- Evaluate the guard after locking and verifying the row. A guard result
+      -- taken before the transaction could become stale before the UPDATE.
+      local metadata = {}
+      if row.metadata and row.metadata ~= '' then
+        local decoded, value = pcall(json.decode, row.metadata)
+        if decoded and type(value) == 'table' then metadata = value end
+      end
+      local allowed, reason = GuardsAPI.CanMoveInstanceSnapshot({
+        id = tonumber(row.id),
+        inventoryId = tonumber(row.inventory_id),
+        slot = row.slot_index ~= nil and tonumber(row.slot_index) or nil,
+        metadata = metadata,
+        revision = tonumber(row.row_revision) or 0,
+        definition = {
+          id = tonumber(row.item_id), name = row.name,
+          displayName = row.display_name, weight = tonumber(row.weight),
+          type = row.type, maxQuantity = tonumber(row.max_quantity),
+          maxStackSize = tonumber(row.max_stack_size),
+          instanceMode = row.instance_mode or 'stack',
+        }
+      }, context)
+      if not allowed then
+        failureCode, failureMessage = 'denied', reason or 'That item cannot be moved right now.'
+        return false
+      end
       counts[row.name] = (counts[row.name] or 0) + 1
+      moved[id] = {
+        definitionId = tonumber(row.item_id),
+        revision = (tonumber(row.row_revision) or 0) + 1,
+      }
     end
 
     local checkItems = {}
@@ -798,7 +817,6 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
       query(
         'UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=?, `row_revision`=`row_revision`+1 WHERE `id`=?;',
         { targetInventory, targetSlot, id })
-      movedIds[#movedIds + 1] = id
     end
 
     return true
@@ -814,8 +832,9 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
     }
   end
 
-  for _, id in ipairs(movedIds) do
-    GuardsAPI.EmitItemMoved(id, sourceInventory, targetInventory, { reason = 'move' })
+  for _, id in ipairs(requested) do
+    local entry = moved[id] or {}
+    GuardsAPI.EmitItemMoved(id, sourceInventory, targetInventory, context, entry)
   end
 
   return {

@@ -54,7 +54,14 @@ Feather.RPC.Register('Feather:Inventory:UpdateInventory', function(params, res, 
   -- browser devtools console (see App.vue's onDrop), which nobody sees
   -- in-game. Reusing Feather.Notify.RightNotify the same way this file's
   -- other rejection paths already do.
-  local result = InventoryControllers.MoveInventoryItems(sourceInventory, targetInventory, items)
+  local player = InventoryIdentity.GetCharacter(src)
+  local character = player and player.char
+  local result = InventoryControllers.MoveInventoryItems(sourceInventory, targetInventory, items, {
+    actorSource = src,
+    actorCharacterId = character and character.id,
+    reason = 'inventory_transfer',
+    resource = 'feather-inventory'
+  })
   if result and result.error then
     Feather.Notify.RightNotify(src, TranslateResult(src, result, 'err_move_failed'), 3000)
   end
@@ -107,7 +114,12 @@ Feather.RPC.Register('Feather:Inventory:GiveItem', function(params, res, src)
     return res({ error = true, message = 'Inventory not available.' })
   end
 
-  local giveResult = InventoryControllers.MoveInventoryItems(sourceInventoryId, destinationInventoryId, { item })
+  local giveResult = InventoryControllers.MoveInventoryItems(sourceInventoryId, destinationInventoryId, { item }, {
+    actorSource = src,
+    actorCharacterId = character.id,
+    reason = 'give',
+    resource = 'feather-inventory'
+  })
   if giveResult and giveResult.error then
     Feather.Notify.RightNotify(src, TranslateResult(src, giveResult, 'err_give_failed'), 3000)
   end
@@ -373,7 +385,12 @@ Feather.RPC.Register('Feather:Inventory:TakeAll', function(params, res, src)
   local moved, skipped = 0, 0
 
   for _, item in pairs(sourceItems) do
-    local result = InventoryControllers.MoveInventoryItems(fromInventory, targetInventory, { item.id })
+    local result = InventoryControllers.MoveInventoryItems(fromInventory, targetInventory, { item.id }, {
+      actorSource = src,
+      actorCharacterId = character.id,
+      reason = 'take_all',
+      resource = 'feather-inventory'
+    })
     if result and result.error then
       skipped = skipped + 1
     else

@@ -86,7 +86,12 @@ Feather.RPC.Register("Feather:Inventory:DropItemsOnGround", function(params, res
     -- (§10.1 rejection-surfacing) DropItemsOnGround already returns a real
     -- {error, message} on capacity rejection (INV-14) -- it just never
     -- reached the player; the NUI only logged it to the browser console.
-    local dropResult = ItemsAPI.DropItemsOnGround(inventoryID, params.items, params.x, params.y, params.z)
+    local dropResult = ItemsAPI.DropItemsOnGround(inventoryID, params.items, params.x, params.y, params.z, {
+        actorSource = src,
+        actorCharacterId = character.id,
+        reason = 'ground_drop',
+        resource = 'feather-inventory'
+    })
     if not Result.IsOk(dropResult) then
         Feather.Notify.RightNotify(src, TranslateResult(src, dropResult, 'err_drop_failed'), 3000)
         return res({ error = true, code = dropResult.error.code, message = dropResult.error.message })

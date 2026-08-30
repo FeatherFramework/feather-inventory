@@ -87,6 +87,20 @@ end
 -- Evaluation
 ------------------------------------------------------------------
 
+local function RunResolvedGuards(registry, instance, context)
+    for name, guard in pairs(registry) do
+        local ok, allowed, reason = pcall(guard, instance, context or {})
+        if not ok then
+            warn(('Guard "%s" errored (%s); vetoing as fail-closed.'):format(name, tostring(allowed)))
+            return false, ('Guard "%s" failed.'):format(name)
+        end
+        if allowed == false then
+            return false, reason or ('Blocked by guard "%s".'):format(name)
+        end
+    end
+    return true
+end
+
 local function RunGuards(registry, instanceId, context)
     -- Nothing registered is the overwhelmingly common case (no consumer
     -- resource loaded), so skip the instance read entirely rather than
@@ -102,20 +116,7 @@ local function RunGuards(registry, instanceId, context)
         return false, 'Item instance could not be read for guard evaluation.'
     end
 
-    for name, guard in pairs(registry) do
-        local ok, allowed, reason = pcall(guard, instance.value, context or {})
-        if not ok then
-            -- A guard that throws is a broken guard, and a broken guard must
-            -- not become permission by accident.
-            warn(('Guard "%s" errored (%s); vetoing as fail-closed.'):format(name, tostring(allowed)))
-            return false, ('Guard "%s" failed.'):format(name)
-        end
-        if allowed == false then
-            return false, reason or ('Blocked by guard "%s".'):format(name)
-        end
-    end
-
-    return true
+    return RunResolvedGuards(registry, instance.value, context)
 end
 
 ---
@@ -125,6 +126,17 @@ end
 --
 function GuardsAPI.CanMoveInstance(instanceId, context)
     return RunGuards(MoveGuards, instanceId, context)
+end
+
+-- Transaction paths already hold a normalized snapshot from their locking
+-- SELECT. Reusing it prevents a second connection from querying a row locked
+-- by the transaction itself while preserving the exact guard contract.
+function GuardsAPI.CanMoveInstanceSnapshot(instance, context)
+    if next(MoveGuards) == nil then return true end
+    if type(instance) ~= 'table' or not tonumber(instance.id) then
+        return false, 'Item instance could not be read for guard evaluation.'
+    end
+    return RunResolvedGuards(MoveGuards, instance, context)
 end
 
 function GuardsAPI.CanDestroyInstance(instanceId, context)
