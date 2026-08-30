@@ -58,6 +58,12 @@ Config.Dropped = {
     -- assumes an in-range pile's entity is already spawned.
     LoadDistance = 40.0,
     PickupKey = "N",
+    -- Holding Pickup first walks the player to the local prop. The inventory
+    -- only opens after they reach this distance; blocked paths time out.
+    WalkToPickup = true,
+    WalkSpeed = 1.0,
+    WalkStopDistance = 0.9,
+    WalkTimeout = 6000,
     Item = 'p_dis_strongboxsm01x', -- options: p_package09 p_cs_baganders01x p_cs_bagstrauss01x p_bag01x p_dis_strongboxsm01x
     -- Garbage-collects EMPTY ground piles every X minutes. 0 runs once at
     -- startup; nil disables sweeping. Non-empty piles are never destroyed.

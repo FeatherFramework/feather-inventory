@@ -35,6 +35,19 @@ end
 if type(Config.Dropped.LoadDistance) ~= 'number' or Config.Dropped.LoadDistance < Config.Dropped.PromptViewDistance then
   error('Config.Dropped.LoadDistance must be a number greater than or equal to PromptViewDistance.')
 end
+if Config.Dropped.WalkToPickup ~= nil and type(Config.Dropped.WalkToPickup) ~= 'boolean' then
+  error('Config.Dropped.WalkToPickup must be a boolean.')
+end
+if type(Config.Dropped.WalkSpeed) ~= 'number' or Config.Dropped.WalkSpeed <= 0 then
+  error('Config.Dropped.WalkSpeed must be a positive number.')
+end
+if type(Config.Dropped.WalkStopDistance) ~= 'number' or Config.Dropped.WalkStopDistance <= 0
+  or Config.Dropped.WalkStopDistance >= Config.Dropped.PromptViewDistance then
+  error('Config.Dropped.WalkStopDistance must be positive and less than PromptViewDistance.')
+end
+if type(Config.Dropped.WalkTimeout) ~= 'number' or Config.Dropped.WalkTimeout < 1000 then
+  error('Config.Dropped.WalkTimeout must be at least 1000 milliseconds.')
+end
 
 if not Config.Dropped.Item then
   Config.Dropped.Item = 'p_dis_strongboxsm01x'

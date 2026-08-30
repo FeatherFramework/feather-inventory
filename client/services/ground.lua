@@ -108,6 +108,43 @@ function DropItemsOnGround(items)
     return result
 end
 
+local function WalkToGroundItem(playerPed, item)
+    if Config.Dropped.WalkToPickup == false then return true end
+    if not item.entity then return false end
+
+    local object = item.entity:GetObj()
+    if not object or object == 0 or not DoesEntityExist(object) then return false end
+
+    local target = GetEntityCoords(object)
+    local stopDistance = Config.Dropped.WalkStopDistance
+    local timeout = Config.Dropped.WalkTimeout
+    TaskGoStraightToCoord(playerPed, target.x, target.y, target.z,
+        Config.Dropped.WalkSpeed, timeout, -1.0, stopDistance)
+
+    local deadline = GetGameTimer() + timeout
+    while GetGameTimer() < deadline do
+        Wait(50)
+        if IsEntityDead(playerPed) or IsPedRagdoll(playerPed)
+            or GroundItems[tostring(item.id)] ~= item
+            or not item.entity or not DoesEntityExist(object) then
+            ClearPedTasks(playerPed)
+            return false
+        end
+
+        local coords = GetEntityCoords(playerPed)
+        local distance = Feather.Math.GetDistanceBetween(
+            vector3(coords.x, coords.y, coords.z),
+            vector3(target.x, target.y, target.z))
+        if distance <= stopDistance then
+            ClearPedTasks(playerPed)
+            return true
+        end
+    end
+
+    ClearPedTasks(playerPed)
+    return false
+end
+
 CreateThread(function()
     local PromptGroup = Feather.Prompt:SetupPromptGroup()
     local groundPrompt = PromptGroup:RegisterPrompt("Pickup", Feather.KeyCodes[Config.Dropped.PickupKey], 1, 1, true, 'hold')
@@ -140,6 +177,13 @@ CreateThread(function()
 
                         PromptGroup:ShowGroup("Ground Items")
                         if groundPrompt:HasCompleted() then
+                            groundPrompt:EnabledPrompt(false)
+                            local reached = WalkToGroundItem(playerped, item)
+                            groundPrompt:EnabledPrompt(true)
+                            if not reached then
+                                goto continue_ground_item
+                            end
+
                             Citizen.InvokeNative(0x69F4BE8C8CC4796C, playerped, item.entity:GetObj(), 3000, 2048, 3) -- TaskLookAtEntity
                             
                             local animDict =
@@ -168,6 +212,7 @@ CreateThread(function()
                         end
                     end
                 end
+                ::continue_ground_item::
             end
         end
     end
