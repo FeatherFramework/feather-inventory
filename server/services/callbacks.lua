@@ -279,15 +279,16 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
     -- item actually changed inventory.
     local player = InventoryIdentity.GetCharacter(src)
     local character = player and player.char
-    local moved = InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory, toSlot, {
+    local moved, code, message = InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory, toSlot, {
       actorSource = src,
       actorCharacterId = character and character.id,
       reason = 'slot_move',
       resource = 'feather-inventory'
     })
     if not moved then
-      Feather.Notify.RightNotify(src, Translate(src, 'err_move_failed', 'The inventory changed; try again.'), 3000)
-      return res({ error = true, code = 'conflict', message = 'The inventory changed; try again.' })
+      local failure = { error = true, code = code or 'conflict', message = message or 'The inventory changed; try again.' }
+      Feather.Notify.RightNotify(src, TranslateResult(src, failure, 'err_move_failed'), 3000)
+      return res(failure)
     end
   end
 

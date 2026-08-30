@@ -1,4 +1,5 @@
 function StartAPI()
+  ItemsAPI.RegisterInternalUseGuard()
   local inventoryServerAPI = {}
   inventoryServerAPI.Inventory = InventoryAPI
   inventoryServerAPI.Items = ItemsAPI

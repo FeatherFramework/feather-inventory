@@ -387,6 +387,19 @@ if not result.ok then
 end
 ```
 
+Definitions may be retired without deleting player property:
+
+```lua
+local archived = Inventory.Instances.SetDefinitionArchived(definitionId, true,
+  'Replaced by the revised medical item catalog')
+```
+
+Archived definitions disappear from the grant catalog and every transactional
+creation path rejects them. Existing instances remain readable, movable,
+usable, and removable. Passing `false` restores the definition. Changing a
+definition between `stack` and `unique` is rejected while any owned instances
+exist; that change requires an explicit migration.
+
 ### Removing and dropping
 
 ```lua
@@ -415,15 +428,30 @@ so it consults move guards and preserves the item instances.
 -- Register once at startup:
 Inventory.Items.RegisterUsableItem('consumable_apple', function(item, src, refresh)
   Feather.Character.AdjustHunger(src, 10)
-  Inventory.Items.RemoveItemById(item.id)
+  local removed = Inventory.Items.RemoveItemById(item.id)
+  if not removed.ok then return removed end
   refresh()  -- re-opens/refreshes the ledger for that player
+  return { ok = true }
 end)
 
 -- Called for you when a player uses the item from the ledger; also callable directly.
 Inventory.Items.UseItem(instanceId, source)
 ```
 
-The callback receives the joined item row, the player source, and a `refresh` callback. Registering the same name twice warns and keeps the first registration. `UseItem` re-derives ownership from the item's own `inventory_id` — a client cannot use an item it does not hold.
+Only one usable callback may run for a given instance at a time. While it is
+running, Inventory's internal move guard prevents that instance from being
+transferred. Callback errors become an `internal` failure, and a callback may
+return a failed Result to propagate a domain rejection. Legacy callbacks that
+return nothing retain their successful behavior. Consumers that consume or
+mutate the item should use Inventory's transactional APIs inside the callback;
+arbitrary cross-resource gameplay callbacks are not held inside a database
+transaction.
+
+The callback receives the joined item row, the player source, and a `refresh`
+callback. The owning resource may replace its own registration; another
+resource receives a conflict and cannot take it over. `UseItem` re-derives
+ownership from the item's own `inventory_id` — a client cannot use an item it
+does not hold.
 
 ### Metadata
 

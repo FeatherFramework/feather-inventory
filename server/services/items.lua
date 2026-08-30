@@ -8,6 +8,16 @@
 ItemsAPI = {}
 UsableItemCallbacks = {}
 local UsableItemOwners = {}
+local ActiveItemUses = {}
+
+function ItemsAPI.RegisterInternalUseGuard()
+  return GuardsAPI.RegisterMoveGuard('feather-inventory:active-use', function(instance)
+    if ActiveItemUses[tonumber(instance.id)] then
+      return false, 'That item is currently being used.'
+    end
+    return true
+  end)
+end
 
 -- Cfx serializes callbacks crossing a resource boundary as callable tables.
 -- Use rawget because their metatable intentionally rejects normal indexing.
@@ -34,6 +44,10 @@ function ItemsAPI.GrantItem(itemName, quantity, inventoryId)
   local definition = ItemControllers.GetItemDefinitionByName(itemName)
   if not definition then
     return Result.Err('invalid_item', 'Item does not exist.')
+  end
+  if definition.archived_at ~= nil then
+    return Result.Err(Result.Codes.DENIED, 'Item definition is archived and cannot be granted.',
+      { itemName = definition.name })
   end
 
   -- A `unique` definition carries per-instance state -- a weapon's serial and
@@ -488,8 +502,16 @@ AddEventHandler('onResourceStop', function(resourceName)
   end
 end)
 
-ItemsAPI.UseItem = function(itemID, src)
-  local item = InventoryControllers.GetInventoryItemById(itemID)
+ItemsAPI.UseItem = function(itemID, src, context)
+  local numericId = tonumber(itemID)
+  if not numericId then
+    return Result.Err(Result.Codes.INVALID_INPUT, 'A valid item instance id is required.')
+  end
+  if ActiveItemUses[numericId] then
+    return Result.Err(Result.Codes.CONFLICT, 'That item is already being used.')
+  end
+
+  local item = InventoryControllers.GetInventoryItemById(numericId)
   if not item then
     warn('Item not found in the database! ItemID: ' .. tostring(itemID))
     return Result.Err(Result.Codes.NOT_FOUND, 'Item instance does not exist.')
@@ -523,11 +545,35 @@ ItemsAPI.UseItem = function(itemID, src)
   -- elseif item.type == 'item_ammo' then
   --   TriggerEvent('Feather:Inventory:UsedItem', src, item)
   -- else
-  if UsableItemCallbacks[item.name] then
-    UsableItemCallbacks[item.name](item, src, function()
+  local callback = UsableItemCallbacks[item.name]
+  if callback then
+    -- Recheck after the yielding database reads above. Two concurrent requests
+    -- may both begin validation, but only one may enter consumer code.
+    if ActiveItemUses[numericId] then
+      return Result.Err(Result.Codes.CONFLICT, 'That item is already being used.')
+    end
+    ActiveItemUses[numericId] = {
+      source = tonumber(src),
+      resource = UsableItemOwners[item.name],
+      reason = context and context.reason or 'use'
+    }
+    local ok, callbackResult = pcall(callback, item, src, function()
       -- Refresh the inventory ui on callback
       TriggerClientEvent('Feather:Inventory:OpenInventory', src, nil, "player")
     end)
+    ActiveItemUses[numericId] = nil
+
+    if not ok then
+      warn(('Usable item callback failed for %s instance %s: %s')
+        :format(tostring(item.name), tostring(numericId), tostring(callbackResult)))
+      return Result.Err(Result.Codes.INTERNAL, 'The item could not be used.', {
+        itemName = item.name,
+        owner = UsableItemOwners[item.name]
+      })
+    end
+    if type(callbackResult) == 'table' and callbackResult.ok == false then
+      return callbackResult
+    end
   else
     warn('No usable callback defined for item: ' .. item.name)
     return Result.Err(Result.Codes.UNSUPPORTED, 'That item has no registered use behaviour.', { itemName = item.name })

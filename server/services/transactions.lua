@@ -372,10 +372,14 @@ function Tx:AddQuantity(inventoryId, definitionId, quantity, metadata)
     if denied then return denied end
 
     local defRows = self.query(
-        'SELECT `name`, `max_stack_size`, `instance_mode` FROM `items` WHERE `id`=? LIMIT 1;', { definitionId })
+        'SELECT `name`, `max_stack_size`, `instance_mode`, `archived_at` FROM `items` WHERE `id`=? LIMIT 1;', { definitionId })
     local def = defRows and defRows[1]
     if not def then
         return Result.Err(Result.Codes.NOT_FOUND, 'Item definition does not exist.')
+    end
+    if def.archived_at ~= nil then
+        return Result.Err(Result.Codes.DENIED, 'Item definition is archived and cannot create new instances.',
+            { definitionId = definitionId, itemName = def.name })
     end
 
     local stackSize = math.max(tonumber(def.max_stack_size) or 1, 1)

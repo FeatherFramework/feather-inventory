@@ -59,7 +59,9 @@ Config.Dropped = {
     LoadDistance = 40.0,
     PickupKey = "N",
     Item = 'p_dis_strongboxsm01x', -- options: p_package09 p_cs_baganders01x p_cs_bagstrauss01x p_bag01x p_dis_strongboxsm01x
-    StreetSweep = 0 -- Deletes ALL ground inventories every X minutes from server start. If set to 0, it will clear on server start. If nil, it will never clear.
+    -- Garbage-collects EMPTY ground piles every X minutes. 0 runs once at
+    -- startup; nil disables sweeping. Non-empty piles are never destroyed.
+    StreetSweep = 0
 }
 
 

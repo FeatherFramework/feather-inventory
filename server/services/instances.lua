@@ -51,6 +51,15 @@ local function EnsureInstanceSchema()
         MySQL.query.await("UPDATE `items` SET `instance_mode`='unique' WHERE `max_stack_size` <= 1;")
     end
 
+    columns = MySQL.query.await("SHOW COLUMNS FROM `items` LIKE 'archived_at';")
+    if #columns < 1 then
+        MySQL.query.await("ALTER TABLE `items` ADD COLUMN `archived_at` DATETIME NULL;")
+    end
+    columns = MySQL.query.await("SHOW COLUMNS FROM `items` LIKE 'archive_reason';")
+    if #columns < 1 then
+        MySQL.query.await("ALTER TABLE `items` ADD COLUMN `archive_reason` VARCHAR(255) NULL;")
+    end
+
     columns = MySQL.query.await("SHOW COLUMNS FROM `inventory_items` LIKE 'metadata';")
     if #columns < 1 then
         MySQL.query.await("ALTER TABLE `inventory_items` ADD COLUMN `metadata` JSON NULL;")
@@ -141,13 +150,48 @@ function InstancesAPI.SetInstanceMode(itemId, mode)
         return Result.Err(Result.Codes.INVALID_INPUT, 'Invalid item definition id.')
     end
 
-    local exists = MySQL.query.await('SELECT `id` FROM `items` WHERE `id`=? LIMIT 1;', { numericId })[1]
+    local exists = MySQL.query.await('SELECT `id`, `instance_mode` FROM `items` WHERE `id`=? LIMIT 1;', { numericId })[1]
     if not exists then
         return Result.Err(Result.Codes.NOT_FOUND, 'Item definition does not exist.')
     end
 
-    MySQL.query.await('UPDATE `items` SET `instance_mode`=? WHERE `id`=?;', { mode, numericId })
+    if exists.instance_mode ~= mode then
+        local owned = MySQL.scalar.await(
+            'SELECT COUNT(*) FROM `inventory_items` WHERE `item_id`=?;', { numericId }) or 0
+        if tonumber(owned) > 0 then
+            return Result.Err(Result.Codes.CONFLICT,
+                'Instance mode cannot change while owned instances exist.',
+                { itemId = numericId, instanceMode = exists.instance_mode, ownedInstances = tonumber(owned) })
+        end
+        MySQL.query.await('UPDATE `items` SET `instance_mode`=? WHERE `id`=?;', { mode, numericId })
+    end
     return Result.Ok({ itemId = numericId, instanceMode = mode })
+end
+
+function InstancesAPI.SetDefinitionArchived(itemId, archived, reason)
+    local numericId = tonumber(itemId)
+    if not numericId or type(archived) ~= 'boolean' then
+        return Result.Err(Result.Codes.INVALID_INPUT, 'Item definition id and archived boolean are required.')
+    end
+    if archived and (type(reason) ~= 'string' or reason:match('^%s*$')) then
+        return Result.Err(Result.Codes.INVALID_INPUT, 'Archiving requires a reason.')
+    end
+    local exists = MySQL.query.await('SELECT `id`, `name` FROM `items` WHERE `id`=? LIMIT 1;', { numericId })[1]
+    if not exists then return Result.Err(Result.Codes.NOT_FOUND, 'Item definition does not exist.') end
+
+    local archiveReason = archived and reason:sub(1, 255) or nil
+    MySQL.query.await(
+        'UPDATE `items` SET `archived_at`=' .. (archived and 'CURRENT_TIMESTAMP' or 'NULL') ..
+        ', `archive_reason`=? WHERE `id`=?;', { archiveReason, numericId })
+    local owned = MySQL.scalar.await(
+        'SELECT COUNT(*) FROM `inventory_items` WHERE `item_id`=?;', { numericId }) or 0
+    return Result.Ok({
+        itemId = numericId,
+        itemName = exists.name,
+        archived = archived,
+        reason = archiveReason,
+        preservedInstances = tonumber(owned) or 0,
+    })
 end
 
 ------------------------------------------------------------------
@@ -463,7 +507,8 @@ function InstancesAPI.GetCapabilities()
             atomicCreation = true,      -- instance + metadata in one statement
             characterInventoryLookup = true, -- UUID Character -> owned container read
             adminExactRemoval = true,        -- locked ownership assertion + destroy guards
-            characterItemGrant = true        -- atomic stack grants by UUID Character
+            characterItemGrant = true,       -- atomic stack grants by UUID Character
+            definitionArchive = true         -- retirement blocks creation, preserves ownership
         },
         characterIdentity = {
             format = 'uuid-string',

@@ -36,6 +36,95 @@ local function ContextCanAccess(context, inventoryId, action)
   return Result.IsOk(decision)
 end
 
+local function SlotMoveAcceptanceInTransaction(query, fromInventory, fromSlot, toInventory, toSlot)
+  local firstInventory = math.min(tonumber(fromInventory), tonumber(toInventory))
+  local secondInventory = math.max(tonumber(fromInventory), tonumber(toInventory))
+  local sameInventory = firstInventory == secondInventory
+  local inventoryRows = query(sameInventory
+    and [[SELECT `id`, `max_weight`, `ignore_item_limit`
+      FROM `inventory` WHERE `id`=? FOR UPDATE;]]
+    or [[SELECT `id`, `max_weight`, `ignore_item_limit`
+      FROM `inventory` WHERE `id` IN (?, ?) ORDER BY `id` FOR UPDATE;]],
+    sameInventory and { firstInventory } or { firstInventory, secondInventory })
+  if not inventoryRows or #inventoryRows ~= (sameInventory and 1 or 2) then
+    return false, 'invalid_inventory', 'Inventory does not exist.'
+  end
+
+  local policies = {}
+  for _, row in ipairs(inventoryRows) do policies[tonumber(row.id)] = row end
+
+  -- Lock and measure every row in both inventories. This makes total weight
+  -- and per-definition counts stable until the swap commits.
+  local allRows = query([[SELECT ii.`id`, ii.`inventory_id`, ii.`slot_index`, ii.`item_id`,
+      ii.`metadata`, ii.`row_revision`, i.`name`, i.`display_name`, i.`weight`,
+      i.`type`, i.`max_quantity`, i.`max_stack_size`, i.`instance_mode`
+    FROM `inventory_items` ii INNER JOIN `items` i ON i.`id`=ii.`item_id`
+    WHERE ii.`inventory_id` IN (?, ?) ORDER BY ii.`inventory_id`, ii.`id` FOR UPDATE;]],
+    { firstInventory, secondInventory }) or {}
+
+  local totals, counts = {}, {}
+  for _, inventoryId in ipairs({ firstInventory, secondInventory }) do
+    totals[inventoryId], counts[inventoryId] = 0, {}
+  end
+  for _, row in ipairs(allRows) do
+    local inventoryId, definitionId = tonumber(row.inventory_id), tostring(row.item_id)
+    totals[inventoryId] = (totals[inventoryId] or 0) + (tonumber(row.weight) or 0)
+    counts[inventoryId][definitionId] = (counts[inventoryId][definitionId] or 0) + 1
+  end
+
+  local moving, occupant = {}, {}
+  for _, row in ipairs(allRows) do
+    if tostring(row.inventory_id) == tostring(fromInventory)
+      and tonumber(row.slot_index) == tonumber(fromSlot) then
+      moving[#moving + 1] = row
+    elseif tostring(row.inventory_id) == tostring(toInventory)
+      and tonumber(row.slot_index) == tonumber(toSlot) then
+      occupant[#occupant + 1] = row
+    end
+  end
+  if #moving == 0 then return false, 'conflict', 'The source compartment changed.' end
+  if sameInventory then return true, nil, nil, moving, occupant end
+
+  local function evaluate(inventoryId, arriving, leaving)
+    local policy = policies[tonumber(inventoryId)]
+    local projectedWeight = totals[tonumber(inventoryId)] or 0
+    local projectedCounts = {}
+    for definitionId, count in pairs(counts[tonumber(inventoryId)] or {}) do
+      projectedCounts[definitionId] = count
+    end
+    for _, row in ipairs(leaving or {}) do
+      local definitionId = tostring(row.item_id)
+      projectedCounts[definitionId] = (projectedCounts[definitionId] or 0) - 1
+      projectedWeight = projectedWeight - (tonumber(row.weight) or 0)
+    end
+    for _, row in ipairs(arriving or {}) do
+      local restricted = query(
+        'SELECT `inventory_id` FROM `inventory_blacklist` WHERE `inventory_id`=? AND `item_id`=? LIMIT 1;',
+        { inventoryId, row.item_id })
+      if restricted and restricted[1] then return false, 'item_restricted', 'Item is restricted.' end
+
+      local definitionId = tostring(row.item_id)
+      projectedCounts[definitionId] = (projectedCounts[definitionId] or 0) + 1
+      if Boolean[policy.ignore_item_limit] ~= true
+        and projectedCounts[definitionId] > (tonumber(row.max_quantity) or 0) then
+        return false, 'item_limit', 'Max Quantity Exceeded.'
+      end
+      projectedWeight = projectedWeight + (tonumber(row.weight) or 0)
+    end
+
+    local weightLimit = tonumber(policy.max_weight) or tonumber(Config.maxWeight) or 0
+    if weightLimit > 0 and projectedWeight > weightLimit then
+      return false, 'weight_limit', 'Max Weight Exceeded.'
+    end
+    return true
+  end
+
+  local accepted, code, message = evaluate(tonumber(toInventory), moving, occupant)
+  if not accepted then return false, code, message end
+  local sourceAccepted, sourceCode, sourceMessage = evaluate(tonumber(fromInventory), occupant, moving)
+  return sourceAccepted, sourceCode, sourceMessage, moving, occupant
+end
+
 function InventoryControllers.GetInventoryById(inventoryId, type)
   if type == nil then
     type = 'uuid'
@@ -441,30 +530,20 @@ function InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory
   context = MutationContext(context, 'slot_move')
   local movedRows, occupantRows = {}, {}
   local movedFacts, occupantFacts = {}, {}
+  local failureCode, failureMessage
 
   local executed, committed = pcall(MySQL.startTransaction, function(query)
     if not ContextCanAccess(context, fromInventory, InventoryAPI.AccessModes.REMOVE)
       or (crossInventory and not ContextCanAccess(context, toInventory, InventoryAPI.AccessModes.INSERT)) then
       return false
     end
-    local selectSlot = [[
-      SELECT ii.`id`, ii.`inventory_id`, ii.`slot_index`, ii.`item_id`,
-             ii.`metadata`, ii.`row_revision`, i.`name`, i.`display_name`,
-             i.`weight`, i.`type`, i.`max_quantity`, i.`max_stack_size`, i.`instance_mode`
-      FROM `inventory_items` ii INNER JOIN `items` i ON i.`id`=ii.`item_id`
-      WHERE ii.`inventory_id`=? AND ii.`slot_index`=? ORDER BY ii.`id` FOR UPDATE;
-    ]]
-    -- Always lock the lower inventory/slot tuple first. Reverse-direction
-    -- swaps therefore queue on the same row instead of acquiring opposite
-    -- locks and deadlocking.
-    local sourceFirst = tonumber(fromInventory) < tonumber(toInventory)
-      or (tonumber(fromInventory) == tonumber(toInventory) and tonumber(fromSlot) <= tonumber(toSlot))
-    local first = query(selectSlot, sourceFirst and { fromInventory, fromSlot } or { toInventory, toSlot })
-    local second = query(selectSlot, sourceFirst and { toInventory, toSlot } or { fromInventory, fromSlot })
-    local moving = sourceFirst and first or second
-    local occupant = sourceFirst and second or first
-
-    if not moving or #moving == 0 then
+    -- Lock policy rows first, then all item rows in inventory/id order. This
+    -- matches the capacity pipeline and prevents lock-order inversion between
+    -- swaps and grants/transfers.
+    local accepted, code, message, moving, occupant = SlotMoveAcceptanceInTransaction(
+      query, fromInventory, fromSlot, toInventory, toSlot)
+    if not accepted then
+      failureCode, failureMessage = code, message
       return false
     end
 
@@ -502,7 +581,7 @@ function InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory
   end)
 
   if not executed or committed ~= true then
-    return false
+    return false, failureCode or 'conflict', failureMessage or 'The inventory changed; try again.'
   end
 
   -- Post-commit only, and only when the item actually changed inventory --
@@ -950,21 +1029,4 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
     sourceItems = InventoryControllers.GetInventoryItems(sourceInventory),
     targetItems = InventoryControllers.GetInventoryItems(targetInventory)
   }
-end
-
-function InventoryControllers.DeleteInventory(uuid)
-  MySQL.query.await('DELETE FROM `inventory` WHERE `uuid` = ?;', { uuid })
-end
-
-function InventoryControllers.DeleteInventoryById(id)
-  MySQL.query.await('DELETE FROM `inventory` WHERE `id` = ?;', { id })
-end
-
--- (Ground cleanup bugfix) Sweeping the `ground` table (world positions)
--- without also clearing the `inventory` rows that point at it left every
--- emptied/swept ground pile's inventory row orphaned forever -- nothing
--- ever deleted them. inventory_items/inventory_access both cascade-delete
--- on inventory_id, so this alone is enough to fully clean a location up.
-function InventoryControllers.DeleteInventoriesByLocation(location)
-  MySQL.query.await('DELETE FROM `inventory` WHERE `location` = ?;', { location })
 end
