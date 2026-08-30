@@ -7,6 +7,7 @@
 -- character inventory), a string is treated as a raw inventory UUID.
 ItemsAPI = {}
 UsableItemCallbacks = {}
+local UsableItemOwners = {}
 
 -- Cfx serializes callbacks crossing a resource boundary as callable tables.
 -- Use rawget because their metatable intentionally rejects normal indexing.
@@ -602,20 +603,54 @@ end
 -- Lets other resources (e.g. feather-weapons, for every weapon item) attach
 -- a "use" behavior to an item by name. Looked up by ItemsAPI.UseItem below
 -- when a player actually uses the item from their inventory.
-ItemsAPI.RegisterUsableItem = function(itemName, callback)
+ItemsAPI.RegisterUsableItem = function(itemName, callback, ownerResource)
   if type(itemName) ~= 'string' or itemName == '' or not IsUsableItemCallback(callback) then
     return Result.Err(Result.Codes.INVALID_INPUT, 'An item name and a callback function are required.')
   end
-  if UsableItemCallbacks[itemName] then
+
+  local invokingResource = GetInvokingResource()
+  ownerResource = ownerResource or invokingResource or GetCurrentResourceName()
+  if type(ownerResource) ~= 'string' or ownerResource == '' then
+    return Result.Err(Result.Codes.INVALID_INPUT, 'A usable-item owner resource is required.')
+  end
+  if invokingResource and invokingResource ~= ownerResource then
+    return Result.Err(Result.Codes.DENIED, 'A resource cannot register usable items for another owner.', {
+      itemName = itemName,
+      owner = ownerResource,
+      invokingResource = invokingResource
+    })
+  end
+
+  local currentOwner = UsableItemOwners[itemName]
+  if UsableItemCallbacks[itemName] and currentOwner ~= ownerResource then
     warn('An item by that name has already been registered. Item: ' .. itemName)
-    return Result.Err(Result.Codes.CONFLICT, 'An item by that name is already registered.', { itemName = itemName })
+    return Result.Err(Result.Codes.CONFLICT, 'An item by that name is already registered.', {
+      itemName = itemName,
+      owner = currentOwner
+    })
   end
 
   UsableItemCallbacks[itemName] = callback
-  return Result.Ok(true)
+  UsableItemOwners[itemName] = ownerResource
+  return Result.Ok({ itemName = itemName, owner = ownerResource, replaced = currentOwner == ownerResource })
 end
 
-ItemsAPI.UseItem = function(itemID, src, context)
+AddEventHandler('onResourceStop', function(resourceName)
+  local released = 0
+  for itemName, owner in pairs(UsableItemOwners) do
+    if owner == resourceName then
+      UsableItemCallbacks[itemName] = nil
+      UsableItemOwners[itemName] = nil
+      released = released + 1
+    end
+  end
+  if released > 0 then
+    print(('[feather-inventory] released %d usable item registration(s) owned by %s')
+      :format(released, resourceName))
+  end
+end)
+
+ItemsAPI.UseItem = function(itemID, src)
   local item = InventoryControllers.GetInventoryItemById(itemID)
   if not item then
     warn('Item not found in the database! ItemID: ' .. tostring(itemID))
@@ -652,15 +687,8 @@ ItemsAPI.UseItem = function(itemID, src, context)
   -- else
   if UsableItemCallbacks[item.name] then
     UsableItemCallbacks[item.name](item, src, function()
-      -- A hotbar use happens while the ledger is closed; refreshing it by
-      -- firing OpenInventory would unexpectedly open the whole book after a
-      -- quick-use action. Refresh the compact HUD instead. Existing callers
-      -- keep the original inventory refresh behavior.
-      if context and context.hotbar then
-        TriggerClientEvent('Feather:Inventory:HotbarRefresh', src)
-      else
-        TriggerClientEvent('Feather:Inventory:OpenInventory', src, nil, "player")
-      end
+      -- Refresh the inventory ui on callback
+      TriggerClientEvent('Feather:Inventory:OpenInventory', src, nil, "player")
     end)
   else
     warn('No usable callback defined for item: ' .. item.name)
