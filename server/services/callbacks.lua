@@ -118,7 +118,10 @@ Feather.RPC.Register('Feather:Inventory:GiveItem', function(params, res, src)
     actorSource = src,
     actorCharacterId = character.id,
     reason = 'give',
-    resource = 'feather-inventory'
+    resource = 'feather-inventory',
+    -- Proximity authorizes this specific deposit without granting the giver
+    -- general access to the recipient's inventory.
+    allowTargetInsert = true
   })
   if giveResult and giveResult.error then
     Feather.Notify.RightNotify(src, TranslateResult(src, giveResult, 'err_give_failed'), 3000)
@@ -258,19 +261,34 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
     -- MoveSlotItemsPartial had no emit at all -- for as long as the legacy
     -- ItemAdded/ItemRemoved pair existed here, that gap was invisible,
     -- because those two were firing in its place. Removing them surfaced it.
-    local _, mergedIds = InventoryControllers.MoveSlotItemsPartial(
-      fromInventory, fromSlot, toInventory, toSlot, mergeCount)
-    if tostring(fromInventory) ~= tostring(toInventory) then
-      for _, id in ipairs(mergedIds) do
-        GuardsAPI.EmitItemMoved(id, fromInventory, toInventory,
-          { reason = 'slot_merge', actorSource = src },
-          { definitionId = tonumber(movingBreakdown[1].item_id) })
-      end
+    local player = InventoryIdentity.GetCharacter(src)
+    local character = player and player.char
+    local merged = InventoryControllers.MoveSlotItemsPartial(
+      fromInventory, fromSlot, toInventory, toSlot, mergeCount, {
+        actorSource = src,
+        actorCharacterId = character and character.id,
+        reason = 'slot_merge',
+        resource = 'feather-inventory'
+      })
+    if merged < 1 then
+      Feather.Notify.RightNotify(src, Translate(src, 'err_move_failed', 'The inventory changed; try again.'), 3000)
+      return res({ error = true, code = 'conflict', message = 'The inventory changed; try again.' })
     end
   else
     -- MoveSlotItems emits ItemMoved itself, post-commit, and only when the
     -- item actually changed inventory.
-    InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory, toSlot)
+    local player = InventoryIdentity.GetCharacter(src)
+    local character = player and player.char
+    local moved = InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory, toSlot, {
+      actorSource = src,
+      actorCharacterId = character and character.id,
+      reason = 'slot_move',
+      resource = 'feather-inventory'
+    })
+    if not moved then
+      Feather.Notify.RightNotify(src, Translate(src, 'err_move_failed', 'The inventory changed; try again.'), 3000)
+      return res({ error = true, code = 'conflict', message = 'The inventory changed; try again.' })
+    end
   end
 
   res({
@@ -329,7 +347,18 @@ Feather.RPC.Register('Feather:Inventory:SplitStack', function(params, res, src)
     return res({ error = true, message = 'No free compartment to split into.' })
   end
 
-  InventoryControllers.SplitSlotItems(inventory, fromSlot, freeSlot, quantity)
+  local player = InventoryIdentity.GetCharacter(src)
+  local character = player and player.char
+  local moved = InventoryControllers.SplitSlotItems(inventory, fromSlot, freeSlot, quantity, {
+    actorSource = src,
+    actorCharacterId = character and character.id,
+    reason = 'split_stack',
+    resource = 'feather-inventory'
+  })
+  if moved ~= quantity then
+    Feather.Notify.RightNotify(src, Translate(src, 'err_move_failed', 'The inventory changed; try again.'), 3000)
+    return res({ error = true, code = 'conflict', message = 'The inventory changed; try again.' })
+  end
 
   res({
     sourceItems = InventoryControllers.GetInventoryItems(inventory),
