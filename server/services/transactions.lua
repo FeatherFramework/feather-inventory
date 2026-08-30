@@ -282,7 +282,9 @@ function Tx:RemoveQuantity(inventoryId, definitionId, quantity)
     local removed = {}
     for _, row in ipairs(rows) do
         local id = tonumber(row.id)
-        local allowed, reason = GuardsAPI.CanDestroyInstance(id, self.context)
+        local locked = self:GetItemForUpdate(id)
+        if not Result.IsOk(locked) then return locked end
+        local allowed, reason = GuardsAPI.CanDestroyInstanceSnapshot(locked.value, self.context)
         if not allowed then
             return Result.Err(Result.Codes.DENIED, reason or 'Removal blocked by a guard.', { instanceId = id })
         end
@@ -318,7 +320,14 @@ function Tx:RemoveInstances(inventoryId, definitionId, instanceIds)
     for _, instanceId in ipairs(instanceIds) do
         local id = tonumber(instanceId)
         if not id then return Result.Err(Result.Codes.INVALID_INPUT, 'Invalid item instance id.') end
-        local allowed, reason = GuardsAPI.CanDestroyInstance(id, self.context)
+        local locked = self:GetItemForUpdate(id)
+        if not Result.IsOk(locked) then return locked end
+        if locked.value.inventoryId ~= tonumber(inventoryId)
+            or locked.value.definition.id ~= tonumber(definitionId) then
+            return Result.Err(Result.Codes.CONFLICT, 'Selected item instance is no longer available.', {
+                instanceId = id, inventoryId = inventoryId, definitionId = definitionId })
+        end
+        local allowed, reason = GuardsAPI.CanDestroyInstanceSnapshot(locked.value, self.context)
         if not allowed then
             return Result.Err(Result.Codes.DENIED, reason or 'Removal blocked by a guard.', { instanceId = id })
         end
@@ -844,6 +853,107 @@ function TransactionAPI.MutateItem(context, spec)
         end
 
         return { itemInstanceId = item.id, inventoryId = item.inventoryId, revision = revision }
+    end)
+end
+
+--- Explicit destructive operation for trusted consumers and administration.
+-- Exact instance ids, expected container/domain and a human-readable reason
+-- are mandatory so destruction cannot degrade into an ambiguous quantity
+-- adjustment. The normal destroy guards and post-commit facts still apply.
+function TransactionAPI.DestroyInstances(context, spec)
+    context = context or {}
+    if type(spec) ~= 'table' or not tonumber(spec.inventoryId)
+        or type(spec.instanceIds) ~= 'table' or #spec.instanceIds < 1
+        or type(spec.expectedLocation) ~= 'string' or spec.expectedLocation == ''
+        or type(context.reason) ~= 'string' or context.reason:match('^%s*$') then
+        return Result.Err(Result.Codes.INVALID_INPUT,
+            'Inventory, exact instance ids, expected owner domain, and destruction reason are required.')
+    end
+
+    local inventoryId = tonumber(spec.inventoryId)
+    local instanceIds, seen = {}, {}
+    for _, value in ipairs(spec.instanceIds) do
+        local id = tonumber(value)
+        if not id or seen[id] then
+            return Result.Err(Result.Codes.INVALID_INPUT,
+                'Destruction instance ids must be valid and unique.')
+        end
+        seen[id] = true
+        instanceIds[#instanceIds + 1] = id
+    end
+    table.sort(instanceIds)
+
+    return TransactionAPI.Transaction(context, function(tx)
+        local containers = tx.query(
+            'SELECT `location` FROM `inventory` WHERE `id`=? FOR UPDATE;', { inventoryId })
+        local container = containers and containers[1]
+        if not container then return Result.Err(Result.Codes.NOT_FOUND, 'Inventory does not exist.') end
+        if container.location ~= spec.expectedLocation then
+            return Result.Err(Result.Codes.DENIED, 'Inventory owner domain does not match.', {
+                expected = spec.expectedLocation, actual = container.location })
+        end
+
+        local byDefinition = {}
+        for _, value in ipairs(instanceIds) do
+            local locked = tx:GetItemForUpdate(value)
+            if not Result.IsOk(locked) then return locked end
+            if locked.value.inventoryId ~= inventoryId then
+                return Result.Err(Result.Codes.CONFLICT, 'Selected item is no longer in the expected inventory.', {
+                    instanceId = tonumber(value), inventoryId = inventoryId })
+            end
+            local definitionId = locked.value.definition.id
+            byDefinition[definitionId] = byDefinition[definitionId] or {}
+            byDefinition[definitionId][#byDefinition[definitionId] + 1] = locked.value.id
+        end
+
+        local destroyed = {}
+        for definitionId, ids in pairs(byDefinition) do
+            local removed = tx:RemoveInstances(inventoryId, definitionId, ids)
+            if not Result.IsOk(removed) then return removed end
+            for _, id in ipairs(removed.value) do destroyed[#destroyed + 1] = id end
+        end
+        return Result.Ok({ inventoryId = inventoryId, destroyedInstanceIds = destroyed,
+            quantity = #destroyed })
+    end)
+end
+
+--- Apply a registered, data-only use action atomically to the clicked row.
+-- Arbitrary gameplay code intentionally does not run while the DB transaction
+-- is open; consumers receive the committed result afterward.
+function TransactionAPI.UseItemAction(context, spec)
+    if type(spec) ~= 'table' or not tonumber(spec.instanceId)
+        or (spec.consume ~= true and type(spec.metadata) ~= 'table')
+        or (spec.consume == true and spec.metadata ~= nil) then
+        return Result.Err(Result.Codes.INVALID_INPUT,
+            'A use action must consume the instance or replace its metadata.')
+    end
+
+    return TransactionAPI.Transaction(context, function(tx)
+        local locked = tx:GetItemForUpdate(spec.instanceId)
+        if not Result.IsOk(locked) then return locked end
+        local item = locked.value
+        local denied = tx:RequireAccess(item.inventoryId, InventoryAPI.AccessModes.REMOVE)
+        if denied then return denied end
+        if tonumber(spec.definitionId) and tonumber(spec.definitionId) ~= item.definition.id then
+            return Result.Err(Result.Codes.CONFLICT, 'The item definition changed before use.')
+        end
+        if spec.expectedRevision ~= nil and tonumber(spec.expectedRevision) ~= item.revision then
+            return Result.Err(Result.Codes.CONFLICT, 'Instance revision has moved since it was read.', {
+                expected = tonumber(spec.expectedRevision), actual = item.revision })
+        end
+
+        if spec.consume == true then
+            local removed = tx:RemoveInstances(item.inventoryId, item.definition.id, { item.id })
+            if not Result.IsOk(removed) then return removed end
+            return Result.Ok({ consumed = true, instanceId = item.id,
+                definitionId = item.definition.id, inventoryId = item.inventoryId })
+        end
+
+        local written = tx:SetMetadata(item.id, spec.metadata, item.revision)
+        if not Result.IsOk(written) then return written end
+        return Result.Ok({ consumed = false, instanceId = item.id,
+            definitionId = item.definition.id, inventoryId = item.inventoryId,
+            revision = written.value.revision })
     end)
 end
 ---

@@ -422,13 +422,25 @@ Definitions may be retired without deleting player property:
 ```lua
 local archived = Inventory.Instances.SetDefinitionArchived(definitionId, true,
   'Replaced by the revised medical item catalog')
+
+local migrated = Inventory.Instances.MigrateDefinitionInstances(
+  oldDefinitionId, replacementDefinitionId, 'Catalog replacement')
 ```
+
+Use `GetDefinitionMigrationPreflight(oldDefinitionId, replacementDefinitionId)`
+for advisory counts and compatibility before presenting confirmation; the
+committing call repeats authoritative validation under locks.
 
 Archived definitions disappear from the grant catalog and every transactional
 creation path rejects them. Existing instances remain readable, movable,
 usable, and removable. Passing `false` restores the definition. Changing a
 definition between `stack` and `unique` is rejected while any owned instances
 exist; that change requires an explicit migration.
+
+`MigrateDefinitionInstances` preserves every owned instance id, inventory,
+slot, and metadata document while atomically reassigning it and archiving the
+source. It rejects incompatible weight, quantity-limit, stack-size, or
+instance-mode semantics and revalidates affected stacks before commit.
 
 Stackable units share a compartment only when their decoded metadata documents
 are semantically equal. JSON key order does not matter, but different quality,
@@ -474,9 +486,26 @@ end)
 Inventory.Items.UseItem(instanceId, source)
 ```
 
+For inventory-owned effects, prefer the atomic data-only contract:
+
+```lua
+Inventory.Items.RegisterUsableAction('consumable_apple', {
+  consume = true,
+}, function(committed, item, src, refresh)
+  TriggerEvent('my-health:apple-eaten', src)
+  refresh()
+end)
+```
+
+An action uses either `consume = true` or `metadata = { ... }` (whole-document
+replacement), never both. Ownership, live access, revision, guards, mutation,
+and audit events share one transaction. The optional callback is explicitly
+post-commit; if it fails, the error reports `mutationCommitted = true` because
+arbitrary gameplay effects cannot roll back a committed database mutation.
+
 Only one usable callback may run for a given instance at a time. While it is
-running, Inventory's internal move guard prevents that instance from being
-transferred. Callback errors become an `internal` failure, and a callback may
+running, Inventory's internal guards prevent that instance from being moved or
+destroyed by another operation. Callback errors become an `internal` failure, and a callback may
 return a failed Result to propagate a domain rejection. Legacy callbacks that
 return nothing retain their successful behavior. Consumers that consume or
 mutate the item should use Inventory's transactional APIs inside the callback;
@@ -597,7 +626,7 @@ if not caps.value.features.rowLocking then
 end
 ```
 
-Check `contractVersion` **before** registering anything against the API. It is a plain integer, deliberately separate from the human-readable semver `version` — a consumer compares it numerically, and `tonumber('2.0.0')` is `nil`. A key-existence check cannot detect a changed return shape, so this is the gate that turns a version mismatch into a clear startup failure rather than a silently misread result. Current flags: `instanceMode`, `metadataDocument`, `instanceRevision`, `instanceReadModel`, `resultEnvelope`, `transactions`, `movementGuards`, `postCommitEvents`, `accessModes`, `metadataSizeLimit`, `transactionMetrics`, `rowLocking`, `equippedState`, `atomicCreation`.
+Check `contractVersion` **before** registering anything against the API. It is a plain integer, deliberately separate from the human-readable semver `version` — a consumer compares it numerically, and `tonumber('2.0.0')` is `nil`. A key-existence check cannot detect a changed return shape, so this is the gate that turns a version mismatch into a clear startup failure rather than a silently misread result. Current flags include `instanceMode`, `metadataDocument`, `instanceRevision`, `instanceReadModel`, `resultEnvelope`, `transactions`, `movementGuards`, `postCommitEvents`, `accessModes`, `metadataSizeLimit`, `transactionMetrics`, `rowLocking`, `equippedState`, `atomicCreation`, `definitionMigration`, `auditedDestruction`, and `atomicUseActions`.
 
 ---
 
@@ -685,6 +714,23 @@ local created = Inventory.CreateInstance({ reason = 'weapon_purchase' }, {
 --> Result< { instanceId, revision, inventoryId, characterId } >
 ```
 
+Explicit destruction names exact property and its expected owner domain:
+
+```lua
+Inventory.DestroyInstances({
+  reason = 'approved evidence disposal',
+  resource = GetCurrentResourceName(),
+}, {
+  inventoryId = evidenceInventoryId,
+  expectedLocation = 'evidence',
+  instanceIds = { instanceA, instanceB },
+})
+```
+
+Moved/missing rows or a mismatched domain abort the whole operation. Destroy
+guards evaluate locked snapshots and successful deletion emits one committed
+fact per instance.
+
 ### Idempotency
 
 An `idempotencyKey` in the context makes a repeated call return the first call's cached result instead of executing again.
@@ -770,6 +816,7 @@ end)
 | `Feather:Inventory:ItemMoved` | Common audit keys plus `instanceId, definitionId, revision, fromInventoryId, toInventoryId, origin, destination` |
 | `Feather:Inventory:ItemMetadataChanged` | Common audit keys plus `instanceId, definitionId, inventoryId, revision, origin, destination` |
 | `Feather:Inventory:ItemDestroyed` | Common audit keys plus `instanceId, definitionId, inventoryId, origin` |
+| `Feather:Inventory:DefinitionMigrated` | Common audit keys plus `sourceDefinitionId, targetDefinitionId` |
 | `Feather:Inventory:TransactionCommitted` | Common audit keys plus `summary = { created, moved, destroyed }` |
 
 Common audit keys are `operation, outcome, quantity, actorSource,

@@ -8,15 +8,20 @@
 ItemsAPI = {}
 UsableItemCallbacks = {}
 local UsableItemOwners = {}
+local UsableItemActions = {}
+local UsableItemAfterCommit = {}
 local ActiveItemUses = {}
 
 function ItemsAPI.RegisterInternalUseGuard()
-  return GuardsAPI.RegisterMoveGuard('feather-inventory:active-use', function(instance)
-    if ActiveItemUses[tonumber(instance.id)] then
+  local function activeUseGuard(instance, context)
+    local active = ActiveItemUses[tonumber(instance.id)]
+    if active and (not context or context.activeUseToken ~= active.token) then
       return false, 'That item is currently being used.'
     end
     return true
-  end)
+  end
+  GuardsAPI.RegisterMoveGuard('feather-inventory:active-use', activeUseGuard)
+  return GuardsAPI.RegisterDestroyGuard('feather-inventory:active-use', activeUseGuard)
 end
 
 -- Cfx serializes callbacks crossing a resource boundary as callable tables.
@@ -482,8 +487,56 @@ ItemsAPI.RegisterUsableItem = function(itemName, callback, ownerResource)
   end
 
   UsableItemCallbacks[itemName] = callback
+  UsableItemActions[itemName] = nil
+  UsableItemAfterCommit[itemName] = nil
   UsableItemOwners[itemName] = ownerResource
   return Result.Ok({ itemName = itemName, owner = ownerResource, replaced = currentOwner == ownerResource })
+end
+
+-- Registers an inventory-owned use mutation as data, allowing validation and
+-- consumption/metadata replacement to commit atomically. `afterCommit` may
+-- perform gameplay effects, but cannot roll back the already-committed item
+-- mutation and is therefore intentionally named for its timing.
+ItemsAPI.RegisterUsableAction = function(itemName, action, afterCommit, ownerResource)
+  if type(itemName) ~= 'string' or itemName == '' or type(action) ~= 'table'
+    or (action.consume ~= true and type(action.metadata) ~= 'table')
+    or (action.consume == true and action.metadata ~= nil)
+    or (afterCommit ~= nil and not IsUsableItemCallback(afterCommit)) then
+    return Result.Err(Result.Codes.INVALID_INPUT,
+      'Usable action requires an item name and either consume=true or a metadata document.')
+  end
+
+  local invokingResource = GetInvokingResource()
+  ownerResource = ownerResource or invokingResource or GetCurrentResourceName()
+  if type(ownerResource) ~= 'string' or ownerResource == ''
+    or (invokingResource and invokingResource ~= ownerResource) then
+    return Result.Err(Result.Codes.DENIED, 'A resource may only register its own usable action.')
+  end
+  local currentOwner = UsableItemOwners[itemName]
+  if currentOwner and currentOwner ~= ownerResource then
+    return Result.Err(Result.Codes.CONFLICT, 'An item by that name is already registered.', {
+      itemName = itemName, owner = currentOwner })
+  end
+
+  local metadata
+  if type(action.metadata) == 'table' then
+    local encodedOk, encoded = pcall(json.encode, action.metadata)
+    if not encodedOk or #encoded > 4096 then
+      return Result.Err(Result.Codes.LIMIT_EXCEEDED,
+        'Usable action metadata must be valid JSON no larger than 4096 bytes.')
+    end
+    metadata = json.decode(encoded)
+  end
+
+  UsableItemCallbacks[itemName] = nil
+  UsableItemActions[itemName] = {
+    consume = action.consume == true,
+    metadata = metadata,
+  }
+  UsableItemAfterCommit[itemName] = afterCommit
+  UsableItemOwners[itemName] = ownerResource
+  return Result.Ok({ itemName = itemName, owner = ownerResource, atomic = true,
+    replaced = currentOwner == ownerResource })
 end
 
 AddEventHandler('onResourceStop', function(resourceName)
@@ -491,6 +544,8 @@ AddEventHandler('onResourceStop', function(resourceName)
   for itemName, owner in pairs(UsableItemOwners) do
     if owner == resourceName then
       UsableItemCallbacks[itemName] = nil
+      UsableItemActions[itemName] = nil
+      UsableItemAfterCommit[itemName] = nil
       UsableItemOwners[itemName] = nil
       released = released + 1
     end
@@ -544,33 +599,65 @@ ItemsAPI.UseItem = function(itemID, src, context)
   -- elseif item.type == 'item_ammo' then
   --   TriggerEvent('Feather:Inventory:UsedItem', src, item)
   -- else
+  local action = UsableItemActions[item.name]
   local callback = UsableItemCallbacks[item.name]
-  if callback then
+  if action or callback then
     -- Recheck after the yielding database reads above. Two concurrent requests
     -- may both begin validation, but only one may enter consumer code.
     if ActiveItemUses[numericId] then
       return Result.Err(Result.Codes.CONFLICT, 'That item is already being used.')
     end
+    local activeUseToken = {}
     ActiveItemUses[numericId] = {
       source = tonumber(src),
       resource = UsableItemOwners[item.name],
-      reason = context and context.reason or 'use'
+      reason = context and context.reason or 'use',
+      token = activeUseToken,
     }
-    local ok, callbackResult = pcall(callback, item, src, function()
-      -- Refresh the inventory ui on callback
+    local refresh = function()
       TriggerClientEvent('Feather:Inventory:OpenInventory', src, nil, "player")
-    end)
+    end
+    local ok, callbackResult, actionCommitted
+    if action then
+      ok, callbackResult = pcall(TransactionAPI.UseItemAction, {
+        actorSource = tonumber(src),
+        actorCharacterId = character.id,
+        reason = context and context.reason or 'use_item',
+        correlationId = context and context.correlationId,
+        resource = UsableItemOwners[item.name],
+        activeUseToken = activeUseToken,
+      }, {
+        instanceId = numericId,
+        definitionId = item.item_id,
+        expectedRevision = item.row_revision,
+        consume = action.consume,
+        metadata = action.metadata,
+      })
+      actionCommitted = ok and Result.IsOk(callbackResult)
+      if actionCommitted and UsableItemAfterCommit[item.name] then
+        ok, callbackResult = pcall(UsableItemAfterCommit[item.name], callbackResult.value, item, src, refresh)
+      end
+    else
+      ok, callbackResult = pcall(callback, item, src, refresh)
+    end
     ActiveItemUses[numericId] = nil
 
     if not ok then
       warn(('Usable item callback failed for %s instance %s: %s')
         :format(tostring(item.name), tostring(numericId), tostring(callbackResult)))
-      return Result.Err(Result.Codes.INTERNAL, 'The item could not be used.', {
+      return Result.Err(Result.Codes.INTERNAL,
+        actionCommitted and 'The item mutation committed, but its post-commit effect failed.'
+          or 'The item could not be used.', {
         itemName = item.name,
-        owner = UsableItemOwners[item.name]
+        owner = UsableItemOwners[item.name],
+        mutationCommitted = actionCommitted == true,
       })
     end
     if type(callbackResult) == 'table' and callbackResult.ok == false then
+      if actionCommitted and callbackResult.error then
+        callbackResult.error.details = callbackResult.error.details or {}
+        callbackResult.error.details.mutationCommitted = true
+      end
       return callbackResult
     end
   else

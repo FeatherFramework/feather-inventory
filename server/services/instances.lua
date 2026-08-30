@@ -188,6 +188,172 @@ function InstancesAPI.SetDefinitionArchived(itemId, archived, reason)
     })
 end
 
+function InstancesAPI.GetDefinitionMigrationPreflight(sourceItemId, targetItemId)
+    local sourceId, targetId = tonumber(sourceItemId), tonumber(targetItemId)
+    if not sourceId or not targetId or sourceId == targetId then
+        return Result.Err(Result.Codes.INVALID_INPUT, 'Distinct source and target definitions are required.')
+    end
+    local definitions = MySQL.query.await([[
+        SELECT `id`, `name`, `weight`, `max_quantity`, `max_stack_size`,
+               `instance_mode`, `archived_at`
+        FROM `items` WHERE `id` IN (?, ?);
+    ]], { sourceId, targetId }) or {}
+    local byId = {}
+    for _, definition in ipairs(definitions) do byId[tonumber(definition.id)] = definition end
+    if not byId[sourceId] or not byId[targetId] then
+        return Result.Err(Result.Codes.NOT_FOUND, 'Source or target definition does not exist.')
+    end
+    local source, target = byId[sourceId], byId[targetId]
+    local compatible = tostring(source.instance_mode) == tostring(target.instance_mode)
+        and tonumber(source.max_stack_size) == tonumber(target.max_stack_size)
+        and tonumber(source.max_quantity) == tonumber(target.max_quantity)
+        and tonumber(source.weight) == tonumber(target.weight)
+    local counts = MySQL.single.await([[
+        SELECT COUNT(*) AS `instances`, COUNT(DISTINCT `inventory_id`) AS `inventories`
+        FROM `inventory_items` WHERE `item_id`=?;
+    ]], { sourceId }) or {}
+    return Result.Ok({
+        sourceDefinitionId = sourceId,
+        targetDefinitionId = targetId,
+        sourceName = source.name,
+        targetName = target.name,
+        ownedInstances = tonumber(counts.instances) or 0,
+        affectedInventories = tonumber(counts.inventories) or 0,
+        storageSemanticsCompatible = compatible,
+        targetArchived = target.archived_at ~= nil,
+        advisory = true,
+    })
+end
+
+--- Reassign every owned row from one definition to another without changing
+-- instance ids, inventories, slots, or metadata. Storage semantics must match
+-- exactly; migrations requiring reweighting or re-stacking need an explicit
+-- domain-specific migration rather than an implicit destructive rewrite.
+function InstancesAPI.MigrateDefinitionInstances(sourceItemId, targetItemId, reason)
+    local sourceId, targetId = tonumber(sourceItemId), tonumber(targetItemId)
+    if not sourceId or not targetId or sourceId == targetId
+        or type(reason) ~= 'string' or reason:match('^%s*$') then
+        return Result.Err(Result.Codes.INVALID_INPUT,
+            'Distinct source/target definitions and a migration reason are required.')
+    end
+
+    local failure, migrated = nil, 0
+    local executed, committed = pcall(MySQL.startTransaction, function(query)
+        local definitions = query([[
+            SELECT `id`, `name`, `weight`, `max_quantity`, `max_stack_size`,
+                   `instance_mode`, `archived_at`
+            FROM `items` WHERE `id` IN (?, ?) ORDER BY `id` FOR UPDATE;
+        ]], { sourceId, targetId }) or {}
+        local byId = {}
+        for _, definition in ipairs(definitions) do byId[tonumber(definition.id)] = definition end
+        local sourceDefinition, targetDefinition = byId[sourceId], byId[targetId]
+        if not sourceDefinition or not targetDefinition then
+            failure = Result.Err(Result.Codes.NOT_FOUND, 'Source or target definition does not exist.')
+            return false
+        end
+        if targetDefinition.archived_at ~= nil then
+            failure = Result.Err(Result.Codes.CONFLICT, 'Target definition is archived.')
+            return false
+        end
+
+        local compatible = tostring(sourceDefinition.instance_mode) == tostring(targetDefinition.instance_mode)
+            and tonumber(sourceDefinition.max_stack_size) == tonumber(targetDefinition.max_stack_size)
+            and tonumber(sourceDefinition.max_quantity) == tonumber(targetDefinition.max_quantity)
+            and tonumber(sourceDefinition.weight) == tonumber(targetDefinition.weight)
+        if not compatible then
+            failure = Result.Err(Result.Codes.CONFLICT,
+                'Definitions have incompatible storage semantics.', {
+                    sourceDefinitionId = sourceId, targetDefinitionId = targetId })
+            return false
+        end
+
+        local rows = query([[
+            SELECT `id`, `inventory_id`, `slot_index`, `metadata`
+            FROM `inventory_items` WHERE `item_id`=?
+            ORDER BY `inventory_id`, `slot_index`, `id` FOR UPDATE;
+        ]], { sourceId }) or {}
+        migrated = #rows
+
+        local inventories, inventoryIds = {}, {}
+        local slots, slotList = {}, {}
+        for _, row in ipairs(rows) do
+            local inventoryId = tonumber(row.inventory_id)
+            if not inventories[inventoryId] then
+                inventories[inventoryId] = true
+                inventoryIds[#inventoryIds + 1] = inventoryId
+            end
+            if row.slot_index ~= nil then
+                local key = tostring(row.inventory_id) .. ':' .. tostring(row.slot_index)
+                if not slots[key] then
+                    slots[key] = true
+                    slotList[#slotList + 1] = {
+                        inventoryId = inventoryId, slot = tonumber(row.slot_index) }
+                end
+            end
+        end
+        table.sort(inventoryIds)
+        table.sort(slotList, function(left, right)
+            return left.inventoryId < right.inventoryId
+                or (left.inventoryId == right.inventoryId and left.slot < right.slot)
+        end)
+
+        local limit = tonumber(targetDefinition.max_quantity) or 0
+        for _, inventoryId in ipairs(inventoryIds) do
+            local counts = query([[
+                SELECT `id`, `item_id` FROM `inventory_items`
+                WHERE `inventory_id`=? AND `item_id` IN (?, ?)
+                ORDER BY `id` FOR UPDATE;
+            ]], { inventoryId, sourceId, targetId }) or {}
+            local total = #counts
+            if limit > 0 and total > limit then
+                failure = Result.Err(Result.Codes.LIMIT_EXCEEDED,
+                    'Migration would exceed the target definition quantity limit.', {
+                        inventoryId = inventoryId, quantity = total, limit = limit })
+                return false
+            end
+        end
+
+        local stackSize = tonumber(targetDefinition.max_stack_size) or 1
+        for _, slot in ipairs(slotList) do
+            local occupants = query([[
+                SELECT `item_id`, `metadata` FROM `inventory_items`
+                WHERE `inventory_id`=? AND `slot_index`=? ORDER BY `id` FOR UPDATE;
+            ]], { slot.inventoryId, slot.slot }) or {}
+            if #occupants > stackSize or not InventoryMetadata.RowsCompatible(occupants) then
+                failure = Result.Err(Result.Codes.CONFLICT,
+                    'Migration would create an invalid or metadata-incompatible stack.', slot)
+                return false
+            end
+            for _, occupant in ipairs(occupants) do
+                local definitionId = tonumber(occupant.item_id)
+                if definitionId ~= sourceId and definitionId ~= targetId then
+                    failure = Result.Err(Result.Codes.CONFLICT,
+                        'Migration encountered a mixed-definition compartment.', slot)
+                    return false
+                end
+            end
+        end
+
+        query([[
+            UPDATE `inventory_items` SET `item_id`=?, `row_revision`=`row_revision`+1
+            WHERE `item_id`=?;
+        ]], { targetId, sourceId })
+        query([[
+            UPDATE `items` SET `archived_at`=CURRENT_TIMESTAMP, `archive_reason`=?
+            WHERE `id`=?;
+        ]], { reason:sub(1, 255), sourceId })
+        return true
+    end)
+
+    if not executed or committed ~= true then
+        return failure or Result.Err(Result.Codes.INTERNAL, 'Definition migration rolled back.')
+    end
+    local context = { reason = reason:sub(1, 255), resource = GetInvokingResource() or 'feather-inventory' }
+    GuardsAPI.EmitDefinitionMigrated(sourceId, targetId, migrated, context)
+    return Result.Ok({ sourceDefinitionId = sourceId, targetDefinitionId = targetId,
+        migratedInstances = migrated, sourceArchived = true })
+end
+
 ------------------------------------------------------------------
 -- Metadata document (versioned, compare-and-set)
 ------------------------------------------------------------------
@@ -478,7 +644,10 @@ function InstancesAPI.GetCapabilities()
             characterInventoryLookup = true, -- UUID Character -> owned container read
             adminExactRemoval = true,        -- locked ownership assertion + destroy guards
             characterItemGrant = true,       -- atomic stack grants by UUID Character
-            definitionArchive = true         -- retirement blocks creation, preserves ownership
+            definitionArchive = true,        -- retirement blocks creation, preserves ownership
+            definitionMigration = true,      -- compatible identity-preserving reassignment
+            auditedDestruction = true,       -- exact ids + expected owner domain + reason
+            atomicUseActions = true          -- declarative consume/metadata use mutation
         },
         characterIdentity = {
             format = 'uuid-string',

@@ -11,6 +11,8 @@ function StartAPI()
   -- the interface name DEPENDENCY_SUPPORT_PLAN §4.4 specifies.
   inventoryServerAPI.Transaction = TransactionAPI.Transaction
   inventoryServerAPI.MutateItem = TransactionAPI.MutateItem
+  inventoryServerAPI.DestroyInstances = TransactionAPI.DestroyInstances
+  inventoryServerAPI.UseItemAction = TransactionAPI.UseItemAction
   inventoryServerAPI.CreateInstance = TransactionAPI.CreateInstance
   -- (INV-W3) Pre-move/destroy guard registry and structured post-commit
   -- events. This is how feather-weapons forces an authoritative unequip

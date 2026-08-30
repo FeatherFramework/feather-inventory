@@ -143,6 +143,14 @@ function GuardsAPI.CanDestroyInstance(instanceId, context)
     return RunGuards(DestroyGuards, instanceId, context)
 end
 
+function GuardsAPI.CanDestroyInstanceSnapshot(instance, context)
+    if next(DestroyGuards) == nil then return true end
+    if type(instance) ~= 'table' or not tonumber(instance.id) then
+        return false, 'Item instance could not be read for guard evaluation.'
+    end
+    return RunResolvedGuards(DestroyGuards, instance, context)
+end
+
 ------------------------------------------------------------------
 -- Post-commit events
 ------------------------------------------------------------------
@@ -154,6 +162,7 @@ GuardsAPI.Events = {
     ItemMoved = 'Feather:Inventory:ItemMoved',
     ItemMetadataChanged = 'Feather:Inventory:ItemMetadataChanged',
     ItemDestroyed = 'Feather:Inventory:ItemDestroyed',
+    DefinitionMigrated = 'Feather:Inventory:DefinitionMigrated',
     TransactionCommitted = 'Feather:Inventory:TransactionCommitted',
 }
 
@@ -229,4 +238,12 @@ function GuardsAPI.EmitTransactionCommitted(context, summary)
     fact.quantity = nil
     fact.summary = summary
     Emit(GuardsAPI.Events.TransactionCommitted, fact)
+end
+
+function GuardsAPI.EmitDefinitionMigrated(sourceDefinitionId, targetDefinitionId, quantity, context)
+    local fact = MutationFact('definition_migration', context)
+    fact.quantity = tonumber(quantity) or 0
+    fact.sourceDefinitionId = tonumber(sourceDefinitionId)
+    fact.targetDefinitionId = tonumber(targetDefinitionId)
+    Emit(GuardsAPI.Events.DefinitionMigrated, fact)
 end
