@@ -374,13 +374,16 @@ for _, instanceId in ipairs(result.value.instanceIds) do
 end
 ```
 
-`AddItem` is the older path. It accepts initial metadata (written in the same `INSERT`, so an instance is never briefly visible without the state that defines it) and reports `granted`/`requested` so a partial grant is distinguishable from a complete one.
+`AddItem` is the older compatibility path. It accepts initial metadata and now
+delegates to the same row-locked transaction used by newer grants, so capacity,
+placement, creation, and post-commit facts are atomic. Success reports
+`granted`/`requested` plus the created instance ids; failure grants nothing.
 
 ```lua
 local result = Inventory.Items.AddItem('consumable_apple', 10, { picked = true }, source)
 
 if not result.ok then
-  print(result.error.code, result.error.message, result.error.details.granted)
+  print(result.error.code, result.error.message)
 end
 ```
 
@@ -400,7 +403,11 @@ local gone = Inventory.Items.RemoveItemById(instanceId)
 local dropped = Inventory.Items.DropItemsOnGround(inventoryId, { { id = instanceId } }, x, y, z)
 ```
 
-All three consult the **destroy guards** first and refuse with `code = 'denied'` if any guard vetoes. `RemoveItemByName` is all-or-nothing: a partial removal because one unit was vetoed would be worse than refusing the request.
+Both removal helpers run inside the row-locked transaction pipeline, consult
+the **destroy guards**, and refuse with `code = 'denied'` if any guard vetoes.
+`RemoveItemByName` is all-or-nothing: a partial removal because one unit was
+vetoed would be worse than refusing the request. Ground dropping is movement,
+so it consults move guards and preserves the item instances.
 
 ### Usable items
 
@@ -659,7 +666,12 @@ The guard receives the **normalized instance** (same shape as `GetInstance().val
 - Guards hold no state, so a crashed consumer cannot wedge the inventory — there is nothing to release.
 - Re-registering the same `name` replaces it, so a resource restart cannot accumulate duplicate guards.
 
-Guards run at the chokepoints every route funnels through — bulk transfer and give and ground drop and take-all (`MoveInventoryItems`), drag and swap (`MoveSlotItems`), grants (`CreateInventoryItem`), the legacy `RemoveItemByName`/`RemoveItemById`, and inside a transaction at queue time, so a veto aborts before anything is written.
+Guards run at the chokepoints every route funnels through — bulk transfer and
+give and ground drop and take-all (`MoveInventoryItems`), drag and swap
+(`MoveSlotItems`), grants (`CreateInventoryItem`), and the legacy
+`RemoveItemByName`/`RemoveItemById`. The two legacy removal helpers now delegate
+to the transaction pipeline, so their veto aborts before any delete and their
+destruction facts emit only after commit.
 
 You can also ask the question directly, which is useful for greying out an action before the player attempts it:
 

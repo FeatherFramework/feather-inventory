@@ -37,10 +37,10 @@ function ItemsAPI.GrantItem(itemName, quantity, inventoryId)
   end
 
   -- A `unique` definition carries per-instance state -- a weapon's serial and
-  -- ammunition, a tool's condition -- and this path cannot supply it. Rows are
-  -- created below by a batched INSERT with no metadata, so granting a weapon
-  -- through the generic catalog produces an instance with an empty document:
-  -- present and equippable, but with nothing for its owning resource to read.
+  -- ammunition, a tool's condition -- and this path cannot supply it. Allowing
+  -- the generic catalog to create one would produce an instance with an empty
+  -- document: present and equippable, but with nothing for its owning resource
+  -- to read.
   --
   -- Refused at the source rather than left for each admin-style consumer to
   -- remember. Unique definitions are issued by whichever resource models them
@@ -54,115 +54,36 @@ function ItemsAPI.GrantItem(itemName, quantity, inventoryId)
   end
 
 
-  local inventory, maxWeight, ignoreItemLimit
+  local inventory
   if tonumber(inventoryId) then
     local player = InventoryIdentity.GetCharacter(tonumber(inventoryId))
     local character = player and player.char
     if character then
-      inventory, maxWeight, ignoreItemLimit = InventoryControllers.GetInventoryByCharacter(character.id)
+      inventory = InventoryControllers.GetInventoryByCharacter(character.id)
     end
   else
-    inventory, maxWeight, ignoreItemLimit = InventoryControllers.GetInventoryById(inventoryId)
+    inventory = InventoryControllers.GetInventoryById(inventoryId)
   end
   if not inventory then
     return Result.Err('invalid_inventory', 'Inventory does not exist.')
   end
 
-  -- (Capacity model unification) Was three separate checks here, two of them
-  -- wrong in the same way AddItem's were -- see EvaluateInventoryAcceptance
-  -- (server/services/inventory.lua). The slot check counted item *units*
-  -- against Config.maxItemSlots, so 25 apples stacked into 2 compartments
-  -- reported a full 25-slot book; the quantity check used
-  -- math.min(max_quantity, max_stack_size), capping an item at its
-  -- per-compartment stack size no matter how much the inventory was actually
-  -- allowed to hold.
-  local acceptance = InventoryAPI.EvaluateInventoryAcceptance(inventory, maxWeight, ignoreItemLimit,
-    { { item = definition.name, quantity = quantity } })
-  if not Result.IsOk(acceptance) then
-    return acceptance
-  end
-  if acceptance.value.accepted == false then
-    return Result.Err(acceptance.value.code or 'inventory_full',
-      acceptance.value.message or 'Inventory cannot hold these items.')
-  end
-
-  -- Steampunk ledger: same slot-assignment as AddItem below -- join an
-  -- under-full stack of this item first, then roll into fresh free slots.
-  local maxStackSize = tonumber(definition.max_stack_size) or 1
-  local currentSlot = InventoryControllers.GetJoinableSlot(inventory, definition.id, maxStackSize)
-  local currentSlotCount = currentSlot ~= nil and #InventoryControllers.GetItemsInSlot(inventory, currentSlot) or 0
-  -- (§10.4) Hoisted out of the loop -- per-inventory capacity is a DB read
-  -- now, and it can't change while this grant is being assembled.
-  local capacity = InventoryControllers.GetInventoryCapacity(inventory)
-
-  -- (Over-stacking bugfix) This loop builds ONE batched INSERT, executed only
-  -- after it finishes -- so nothing it places is visible to a database read
-  -- taken during it. Calling GetFreeSlot per unit therefore returned the same
-  -- free compartment every single time, and every unit past the first full
-  -- stack landed in that one slot: a grant of 100 apples with max_stack_size
-  -- 20 produced a compartment holding 78, wildly past the stack limit.
-  --
-  -- Claim slots against a local set instead, seeded once from the database
-  -- and marked as this loop consumes them. (AddItem below is unaffected --
-  -- it writes each row as it goes, so its GetFreeSlot calls do see prior
-  -- placements.)
-  local occupied = InventoryControllers.GetOccupiedSlotSet(inventory)
-  if currentSlot ~= nil then
-    occupied[tonumber(currentSlot)] = true
-  end
-
-  local function claimFreeSlot()
-    for index = 0, capacity - 1 do
-      if not occupied[index] then
-        occupied[index] = true
-        return index
-      end
-    end
-    return nil
-  end
-
-  local placeholders = {}
-  local values = {}
-  for index = 1, quantity do
-    if currentSlot == nil or currentSlotCount >= maxStackSize then
-      currentSlot = claimFreeSlot()
-      currentSlotCount = 0
-      if currentSlot == nil then
-        return Result.Err('inventory_full', 'Inventory has no available slots.')
-      end
-    end
-
-    placeholders[index] = '(?, ?, ?)'
-    values[#values + 1] = inventory
-    values[#values + 1] = definition.id
-    values[#values + 1] = currentSlot
-    currentSlotCount = currentSlotCount + 1
-  end
-  -- (Weapons review #8) RETURNING `id` so the real instance ids are known.
-  -- This previously fired ItemAdded with `definition.id` while the movement
-  -- paths fired it with an inventory_items.id -- the same event carrying two
-  -- different kinds of identifier depending on which route produced it, so a
-  -- consumer could not tell what it had been handed. Every path now emits an
-  -- INSTANCE id.
-  local succeeded, inserted = pcall(MySQL.query.await,
-    ('INSERT INTO inventory_items (inventory_id, item_id, slot_index) VALUES %s RETURNING `id`;')
-    :format(table.concat(placeholders, ', ')), values)
-  if not succeeded or type(inserted) ~= 'table' or #inserted == 0 then
-    return Result.Err('database_error', 'Items could not be granted.')
-  end
-
-  local instanceIds = {}
-  for index, row in ipairs(inserted) do
-    instanceIds[index] = tonumber(row.id)
-    GuardsAPI.EmitItemCreated(tonumber(row.id), definition.id, inventory, { reason = 'grant' })
-  end
-
-  return Result.Ok({
-    itemName = definition.name,
-    displayName = definition.display_name,
-    quantity = quantity,
-    instanceIds = instanceIds
-  })
+  -- Preserve the trusted legacy API while delegating capacity, blacklist,
+  -- placement, locking, rollback, and post-commit facts to the authoritative
+  -- transaction implementation.
+  return TransactionAPI.Transaction({
+    reason = 'grant',
+    resource = GetInvokingResource() or 'feather-inventory'
+  }, function(tx)
+    local granted = tx:AddQuantity(inventory, definition.id, quantity)
+    if not Result.IsOk(granted) then return granted end
+    return Result.Ok({
+      itemName = definition.name,
+      displayName = definition.display_name,
+      quantity = quantity,
+      instanceIds = granted.value
+    })
+  end)
 end
 
 -- Grants `quantity` of `itemName` to an inventory, enforcing the per-item
@@ -173,57 +94,34 @@ end
 ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
   quantity = tonumber(quantity)
   if not quantity or quantity < 1 or quantity % 1 ~= 0 then
-    warn('Invalid quantity. Must be creater than 0.')
+    warn('Invalid quantity. Must be greater than 0.')
     return Result.Err(Result.Codes.INVALID_INPUT, "Quantity must be greater than 0.")
   end
 
-  -- max_quantity/weight are read by EvaluateInventoryAcceptance itself now;
-  -- only the id and stack size are needed here, for slot placement below.
-  local itemId, _, _, max_stack_size = ItemControllers.GetItemByName(itemName)
+  local itemId = ItemControllers.GetItemByName(itemName)
   if not itemId then
     warn('Invalid itemName. Please make sure it is in the items table in your database.')
     return Result.Err(Result.Codes.NOT_FOUND, "Item does not exist in the items table.")
   end
-  -- Same normalization GrantItem and EvaluateInventoryAcceptance apply -- the
-  -- placement loop below compares against this, so a nil would crash it.
-  max_stack_size = math.max(tonumber(max_stack_size) or 1, 1)
-
-  local inventory, maxWeight, ignore_item_limit = nil, nil, nil
-  if tonumber(inventoryId) then
-    local player = InventoryIdentity.GetCharacter(inventoryId)
+  local actorSource = tonumber(inventoryId)
+  local inventory = nil
+  if actorSource then
+    local player = InventoryIdentity.GetCharacter(actorSource)
     local character = player and player.char
     -- (Phase 6 consistency pass) No character loaded for this src used to
     -- crash here (nil index on `.id`) instead of falling through to the
     -- "Invalid inventory ID" rejection below, same as every other resolved-
     -- character branch in this file.
     if character then
-      inventory, maxWeight, ignore_item_limit, _ = InventoryControllers.GetInventoryByCharacter(character.id)
+      inventory = InventoryControllers.GetInventoryByCharacter(character.id)
     end
   else
-    inventory, maxWeight, ignore_item_limit, _ = InventoryControllers.GetInventoryById(inventoryId)
+    inventory = InventoryControllers.GetInventoryById(inventoryId)
   end
 
   if not inventory then
     warn('Invalid inventory ID.')
     return Result.Err("invalid_inventory", "Inventory does not exist.")
-  end
-
-  -- (Capacity model unification) Quantity, slot, and weight limits are now
-  -- one decision made in one place -- see EvaluateInventoryAcceptance
-  -- (server/services/inventory.lua) for what each of the three checks this
-  -- replaces was actually getting wrong. The headline one: the slot check
-  -- here compared this inventory's total count of the item against
-  -- `max_stack_size` (the per-compartment cap), so an apple with
-  -- max_quantity=100 and max_stack_size=20 refused the 21st apple in the
-  -- whole book rather than starting a second stack.
-  local acceptance = InventoryAPI.EvaluateInventoryAcceptance(inventory, maxWeight, ignore_item_limit,
-    { { item = itemName, quantity = quantity } })
-  if not Result.IsOk(acceptance) then
-    return acceptance
-  end
-  if acceptance.value.accepted == false then
-    return Result.Err(acceptance.value.code or "inventory_full",
-      acceptance.value.message or "Inventory cannot hold these items.")
   end
 
   if metadata ~= nil and type(metadata) ~= 'table' then
@@ -232,56 +130,23 @@ ItemsAPI.AddItem = function(itemName, quantity, metadata, inventoryId)
     return Result.Err(Result.Codes.INVALID_INPUT, "Metadata must be a table of key/value pairs.")
   end
 
-  -- Steampunk ledger: each granted unit needs a real compartment (slot_index),
-  -- not just a bare row. Join an existing under-full stack of this item
-  -- first; once that's full (or there wasn't one), roll into fresh free
-  -- slots for the rest. The max-quantity/slot checks above already confirm
-  -- there's room overall, so GetFreeSlot running out here would only mean a
-  -- race with another grant -- guarded rather than trusted.
-  local currentSlot = InventoryControllers.GetJoinableSlot(inventory, itemId, max_stack_size)
-  local currentSlotCount = currentSlot ~= nil and #InventoryControllers.GetItemsInSlot(inventory, currentSlot) or 0
-  -- (§10.4) Hoisted out of the loop, same as GrantItem above.
-  local capacity = InventoryControllers.GetInventoryCapacity(inventory)
-  local granted = 0
-
-  for _ = 1, quantity do
-    if currentSlot == nil or currentSlotCount >= max_stack_size then
-      currentSlot = InventoryControllers.GetFreeSlot(inventory, capacity)
-      currentSlotCount = 0
-      if currentSlot == nil then
-        warn('AddItem: ran out of free slots granting ' .. itemName .. ' to inventory ' .. tostring(inventory))
-        break
-      end
-    end
-
-    -- (Weapons review #4) Metadata goes in with the INSERT rather than being
-    -- written key-by-key afterwards, so the instance is never briefly visible
-    -- without the state that defines it.
-    --
-    -- CreateInventoryItem emits Feather:Inventory:ItemCreated itself, carrying
-    -- the new instance id, so nothing is announced from here.
-    InventoryControllers.CreateInventoryItem(inventory, itemId, currentSlot, metadata)
-    currentSlotCount = currentSlotCount + 1
-    granted = granted + 1
-  end
-
-  -- (Capacity model unification) The loop above can still come up short if
-  -- another grant raced us between the acceptance check and here. That used
-  -- to `break` and then unconditionally report `{ error = false }` -- a
-  -- partial grant indistinguishable from a complete one, which any caller
-  -- doing "charge the player, then AddItem" would silently under-deliver on.
-  -- Report what actually landed instead.
-  if granted < quantity then
-    return Result.Err("inventory_full", "Inventory has no available slots.", { granted = granted, requested = quantity })
-  end
-
-  return Result.Ok({ granted = granted, requested = quantity })
+  return TransactionAPI.Transaction({
+    actorSource = actorSource,
+    reason = 'legacy_add',
+    resource = GetInvokingResource() or 'feather-inventory'
+  }, function(tx)
+    local granted = tx:AddQuantity(inventory, itemId, quantity, metadata)
+    if not Result.IsOk(granted) then return granted end
+    return Result.Ok({ granted = #granted.value, requested = quantity,
+      instanceIds = granted.value })
+  end)
 end
 
 -- Removes n number of items by name. (No specific order)
 ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
-  if quantity < 1 then
-    warn('Invalid quantity. Must be creater than 0.')
+  quantity = tonumber(quantity)
+  if not quantity or quantity < 1 or quantity % 1 ~= 0 then
+    warn('Invalid quantity. Must be greater than 0.')
     return Result.Err(Result.Codes.INVALID_INPUT, "Quantity must be greater than 0.")
   end
 
@@ -291,80 +156,53 @@ ItemsAPI.RemoveItemByName = function(itemName, quantity, inventoryId)
     return Result.Err(Result.Codes.NOT_FOUND, "Item does not exist in the items table.")
   end
 
-  local inventory, _, _ = nil, nil, nil
-  if tonumber(inventoryId) then
-    local player = InventoryIdentity.GetCharacter(inventoryId)
+  local actorSource = tonumber(inventoryId)
+  local inventory = nil
+  if actorSource then
+    local player = InventoryIdentity.GetCharacter(actorSource)
     local character = player and player.char
     if character then
-      inventory, _, _ = InventoryControllers.GetInventoryByCharacter(character.id)
+      inventory = InventoryControllers.GetInventoryByCharacter(character.id)
     end
   else
-    inventory, _, _ = InventoryControllers.GetInventoryById(inventoryId)
+    inventory = InventoryControllers.GetInventoryById(inventoryId)
   end
   if not inventory then
     warn('Invalid inventory ID.')
     return Result.Err("invalid_inventory", "Inventory does not exist.")
   end
 
-  local itemCount = InventoryControllers.InventoryItemCount(inventory, itemId)
-  if itemCount < quantity then
-    return Result.Err("item_limit", "Withdrawing more items than available.")
-  end
-
-  -- (Tier 1 audit sweep) Was `inventory.id` -- `inventory` here is already
-  -- the raw numeric inventory id (DeleteInventoryItems' own signature takes
-  -- the id directly), not a table, so this indexed a number and crashed on
-  -- every call. Every caller of this exported function -- crafting
-  -- ingredient consumption, ammo use, anything built on RemoveItemByName --
-  -- was broken.
-  -- (Weapons review #8) Resolve which instances are going before deleting
-  -- them, so the removal events name the rows that actually left rather than
-  -- the definition. Previously this fired ItemRemoved with a definition id
-  -- while RemoveItemById fired the same event with an instance id.
-  local doomed = InventoryControllers.GetInstanceIdsForRemoval(inventory, itemId, quantity)
-
-  -- (Weapons review #4) Every public removal path asks the destroy guards
-  -- first. This previously called the raw delete, so an equipped weapon could
-  -- be removed through a legacy API with no chance for weapons to veto or
-  -- unequip -- the guard registry existed but only the new paths used it.
-  -- All-or-nothing: a partial removal because one unit was vetoed would be
-  -- worse than refusing the whole request.
-  for _, instanceId in ipairs(doomed) do
-    local allowed, reason = GuardsAPI.CanDestroyInstance(instanceId, { reason = 'remove_by_name' })
-    if not allowed then
-      return Result.Err(Result.Codes.DENIED, reason or "Removal blocked by a guard.")
-    end
-  end
-
-  for _, instanceId in ipairs(doomed) do
-    InventoryControllers.DeleteInventoryItem(instanceId)
-  end
-
-  for _, instanceId in ipairs(doomed) do
-    GuardsAPI.EmitItemDestroyed(instanceId, itemId, inventory, { reason = 'remove_by_name' })
-  end
-
-  return Result.Ok({ removed = #doomed, instanceIds = doomed })
+  -- Legacy signature retained, but authority now lives in the same locked
+  -- transaction pipeline as newer consumers. Selection, guard checks, delete,
+  -- rollback and post-commit facts are therefore one operation.
+  return TransactionAPI.Transaction({
+    actorSource = actorSource,
+    reason = 'remove_by_name',
+    resource = GetInvokingResource() or 'feather-inventory'
+  }, function(tx)
+    local removed = tx:RemoveQuantity(inventory, itemId, quantity)
+    if not Result.IsOk(removed) then return removed end
+    return Result.Ok({ removed = #removed.value, instanceIds = removed.value })
+  end)
 end
 
 -- Removes a specific item from the players inventory.
 ItemsAPI.RemoveItemById = function(id)
-  local item = InventoryControllers.GetInventoryItemById(id)
-  if not item then
-    return Result.Err(Result.Codes.NOT_FOUND, "Item not available.")
-  end
-  -- (Weapons review #4) Guarded, like every other removal path. An equipped
-  -- weapon must not be destroyable through a legacy API without weapons
-  -- getting a chance to veto or unequip first.
-  local allowed, reason = GuardsAPI.CanDestroyInstance(item.id, { reason = 'remove_by_id' })
-  if not allowed then
-    return Result.Err(Result.Codes.DENIED, reason or "Removal blocked by a guard.")
+  local numericId = tonumber(id)
+  if not numericId then
+    return Result.Err(Result.Codes.INVALID_INPUT, "A valid item instance id is required.")
   end
 
-  InventoryControllers.DeleteInventoryItem(item.id)
-
-  GuardsAPI.EmitItemDestroyed(item.id, item.item_id, item.inventory_id, { reason = 'remove_by_id' })
-  return Result.Ok(true)
+  return TransactionAPI.Transaction({
+    reason = 'remove_by_id',
+    resource = GetInvokingResource() or 'feather-inventory'
+  }, function(tx)
+    local item = tx:GetItemForUpdate(numericId)
+    if not Result.IsOk(item) then return item end
+    local removed = tx:RemoveInstances(item.value.inventoryId, item.value.definition.id, { numericId })
+    if not Result.IsOk(removed) then return removed end
+    return Result.Ok(true)
+  end)
 end
 
 -- ItemsAPI.SetMetadata was removed. It had become a pure passthrough to
