@@ -279,27 +279,6 @@ function InventoryControllers.GetInventoryTotalItemCounts(inventory)
 end
 
 
--- (Weapons review #4) `metadata` is written in the SAME INSERT that creates
--- the row. Previously the row was created and metadata written afterwards,
--- key by key, so a failure between the two left an item that existed without
--- the state that defines it -- a weapon with no ammo count or serial.
-function InventoryControllers.CreateInventoryItem(inventory, itemId, slotIndex, metadata)
-  local encoded = nil
-  if type(metadata) == 'table' and next(metadata) ~= nil then
-    encoded = json.encode(metadata)
-  end
-
-  local created = MySQL.query.await('INSERT INTO `inventory_items` (`inventory_id`, `item_id`, `slot_index`, `metadata`) VALUES (?, ?, ?, ?) RETURNING *;',
-    { inventory, itemId, slotIndex, encoded })
-
-  -- (INV-W3) Post-commit: the row exists by the time this fires.
-  if created and created[1] then
-    GuardsAPI.EmitItemCreated(created[1].id, itemId, inventory, { reason = 'grant' })
-  end
-
-  return created
-end
-
 -- Set of compartment indices currently holding anything, as { [index] = true }.
 --
 -- Exposed separately from GetFreeSlot because a caller that places several
@@ -433,20 +412,25 @@ function InventoryControllers.MoveSlotItemsPartial(fromInventory, fromSlot, toIn
       local accepted = InventoryControllers.AcceptanceInTransaction(query, toInventory,
         { { item = source[1].name, quantity = amount } })
       if not accepted then return false end
-      for index = 1, amount do
-        local snapshot = NormalizeLockedItem(source[index])
+    end
+    for index = 1, amount do
+      local snapshot = NormalizeLockedItem(source[index])
+      if crossInventory then
         local allowed = GuardsAPI.CanMoveInstanceSnapshot(snapshot, context)
         if not allowed then return false end
-        movedFacts[snapshot.id] = {
-          definitionId = snapshot.definition.id, revision = snapshot.revision + 1 }
       end
+      movedFacts[snapshot.id] = {
+        definitionId = snapshot.definition.id,
+        revision = snapshot.revision + 1,
+        fromSlot = tonumber(fromSlot),
+        toSlot = tonumber(toSlot),
+      }
     end
 
-    local revisionBump = crossInventory and ', `row_revision`=`row_revision`+1' or ''
     for index = 1, amount do
       local row = source[index]
       local changed = query(
-        'UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=?' .. revisionBump ..
+        'UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=?, `row_revision`=`row_revision`+1' ..
           ' WHERE `id`=? AND `inventory_id`=? AND `slot_index`=?;',
         { toInventory, toSlot, row.id, fromInventory, fromSlot })
       local affected = tonumber(changed and (changed.affectedRows or changed.affected_rows)) or 0
@@ -459,10 +443,8 @@ function InventoryControllers.MoveSlotItemsPartial(fromInventory, fromSlot, toIn
 
   if not executed or committed ~= true then return 0, {} end
 
-  if crossInventory then
-    for _, id in ipairs(movedIds) do
-      GuardsAPI.EmitItemMoved(id, fromInventory, toInventory, context, movedFacts[id])
-    end
+  for _, id in ipairs(movedIds) do
+    GuardsAPI.EmitItemMoved(id, fromInventory, toInventory, context, movedFacts[id])
   end
 
   return moved, movedIds
@@ -528,32 +510,34 @@ function InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory
       return false
     end
 
-    if crossInventory then
-      for _, row in ipairs(moving) do
+    for _, row in ipairs(moving) do
+      if crossInventory then
         local allowed = GuardsAPI.CanMoveInstanceSnapshot(NormalizeLockedItem(row), context)
         if not allowed then return false end
-        movedFacts[tonumber(row.id)] = {
-          definitionId = tonumber(row.item_id), revision = (tonumber(row.row_revision) or 0) + 1 }
       end
-      local swapContext = MutationContext(context, 'slot_swap')
-      for _, row in ipairs(occupant or {}) do
+      movedFacts[tonumber(row.id)] = {
+        definitionId = tonumber(row.item_id), revision = (tonumber(row.row_revision) or 0) + 1,
+        fromSlot = tonumber(fromSlot), toSlot = tonumber(toSlot) }
+    end
+    local swapContext = MutationContext(context, 'slot_swap')
+    for _, row in ipairs(occupant or {}) do
+      if crossInventory then
         local allowed = GuardsAPI.CanMoveInstanceSnapshot(NormalizeLockedItem(row), swapContext)
         if not allowed then return false end
-        occupantFacts[tonumber(row.id)] = {
-          definitionId = tonumber(row.item_id), revision = (tonumber(row.row_revision) or 0) + 1 }
       end
+      occupantFacts[tonumber(row.id)] = {
+        definitionId = tonumber(row.item_id), revision = (tonumber(row.row_revision) or 0) + 1,
+        fromSlot = tonumber(toSlot), toSlot = tonumber(fromSlot) }
     end
 
-    local revisionBump = crossInventory and ', `row_revision`=`row_revision`+1' or ''
-
     for _, row in ipairs(occupant or {}) do
-      query('UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=?' .. revisionBump .. ' WHERE `id`=?;',
+      query('UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=?, `row_revision`=`row_revision`+1 WHERE `id`=?;',
         { fromInventory, fromSlot, row.id })
       occupantRows[#occupantRows + 1] = tonumber(row.id)
     end
 
     for _, row in ipairs(moving) do
-      query('UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=?' .. revisionBump .. ' WHERE `id`=?;',
+      query('UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=?, `row_revision`=`row_revision`+1 WHERE `id`=?;',
         { toInventory, toSlot, row.id })
       movedRows[#movedRows + 1] = tonumber(row.id)
     end
@@ -565,16 +549,12 @@ function InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory
     return false, failureCode or 'conflict', failureMessage or 'The inventory changed; try again.'
   end
 
-  -- Post-commit only, and only when the item actually changed inventory --
-  -- rearranging compartments within one book is not a movement.
-  if crossInventory then
-    for _, id in ipairs(movedRows) do
-      GuardsAPI.EmitItemMoved(id, fromInventory, toInventory, context, movedFacts[id])
-    end
-    local swapContext = MutationContext(context, 'slot_swap')
-    for _, id in ipairs(occupantRows) do
-      GuardsAPI.EmitItemMoved(id, toInventory, fromInventory, swapContext, occupantFacts[id])
-    end
+  for _, id in ipairs(movedRows) do
+    GuardsAPI.EmitItemMoved(id, fromInventory, toInventory, context, movedFacts[id])
+  end
+  local swapContext = MutationContext(context, 'slot_swap')
+  for _, id in ipairs(occupantRows) do
+    GuardsAPI.EmitItemMoved(id, toInventory, fromInventory, swapContext, occupantFacts[id])
   end
 
   return #movedRows > 0
@@ -593,11 +573,12 @@ function InventoryControllers.SplitSlotItems(inventory, fromSlot, toSlot, quanti
   local wanted = math.floor(tonumber(quantity) or 0)
   if wanted < 1 then return 0 end
   local moved = 0
+  local movedFacts = {}
 
   local executed, committed = pcall(MySQL.startTransaction, function(query)
     if not ContextCanAccess(context, inventory, InventoryAPI.AccessModes.REMOVE) then return false end
     local source = query(
-      'SELECT `id` FROM `inventory_items` WHERE `inventory_id`=? AND `slot_index`=? ORDER BY `id` FOR UPDATE;',
+      'SELECT `id`, `item_id`, `row_revision` FROM `inventory_items` WHERE `inventory_id`=? AND `slot_index`=? ORDER BY `id` FOR UPDATE;',
       { inventory, fromSlot })
     local target = query(
       'SELECT `id` FROM `inventory_items` WHERE `inventory_id`=? AND `slot_index`=? ORDER BY `id` FOR UPDATE;',
@@ -611,16 +592,26 @@ function InventoryControllers.SplitSlotItems(inventory, fromSlot, toSlot, quanti
 
     for index = 1, wanted do
       local changed = query(
-        'UPDATE `inventory_items` SET `slot_index`=? WHERE `id`=? AND `inventory_id`=? AND `slot_index`=?;',
+        'UPDATE `inventory_items` SET `slot_index`=?, `row_revision`=`row_revision`+1 WHERE `id`=? AND `inventory_id`=? AND `slot_index`=?;',
         { toSlot, source[index].id, inventory, fromSlot })
       local affected = tonumber(changed and (changed.affectedRows or changed.affected_rows)) or 0
       if affected ~= 1 then return false end
       moved = moved + 1
+      movedFacts[#movedFacts + 1] = {
+        instanceId = tonumber(source[index].id),
+        definitionId = tonumber(source[index].item_id),
+        revision = (tonumber(source[index].row_revision) or 0) + 1,
+        fromSlot = tonumber(fromSlot), toSlot = tonumber(toSlot),
+      }
     end
     return true
   end)
 
   if not executed or committed ~= true then return 0 end
+  context = MutationContext(context, 'slot_split')
+  for _, fact in ipairs(movedFacts) do
+    GuardsAPI.EmitItemMoved(fact.instanceId, inventory, inventory, context, fact)
+  end
   return moved
 end
 
@@ -632,62 +623,6 @@ end
 --
 -- The table itself is being removed at its source -- `feather-recipe` stops
 -- creating it -- rather than dropped from here. See MASTER_PLAN §6.2.
-
--- (INV-W3) Destroy guard + post-commit event. Same chokepoint reasoning as
--- the move path: guarding here covers every removal route rather than
--- trusting each caller to remember.
-function InventoryControllers.DeleteInventoryItemGuarded(id, context)
-  if not GuardsAPI.CanDestroyInstance(id, context or { reason = 'destroy' }) then
-    return false
-  end
-
-  local instance = InventoryControllers.GetInventoryItemById(id)
-  InventoryControllers.DeleteInventoryItem(id)
-
-  if instance then
-    GuardsAPI.EmitItemDestroyed(id, instance.item_id, instance.inventory_id, context)
-  end
-  return true
-end
-
-function InventoryControllers.DeleteInventoryItem(id)
-  -- (INV-08) `LIMIT;` with no number is a SQL syntax error -- this deletes
-  -- by unique `id` already, so no LIMIT clause is needed at all.
-  MySQL.query.await('DELETE FROM `inventory_items` WHERE `id`=?;', { id })
-end
-
--- (Weapons review #8) Which instance rows a quantity-based removal will
--- actually delete. DeleteInventoryItems removes by LIMIT, so without this
--- the caller has no idea which rows went and can only name the definition
--- in its removal event. Ordered by id so it matches LIMIT's default order.
-function InventoryControllers.GetInstanceIdsForRemoval(inventory, itemId, quantity)
-  local safeQuantity = math.floor(tonumber(quantity) or 0)
-  if safeQuantity < 1 then
-    return {}
-  end
-  local rows = MySQL.query.await(
-    'SELECT `id` FROM `inventory_items` WHERE `inventory_id`=? AND `item_id`=? ORDER BY `id` LIMIT ' .. safeQuantity .. ';',
-    { inventory, itemId })
-  local ids = {}
-  for _, row in ipairs(rows or {}) do
-    ids[#ids + 1] = tonumber(row.id)
-  end
-  return ids
-end
-
--- (INV-08) `quantity` was concatenated straight into the query string --
--- oxmysql can't bind LIMIT's argument as a `?` parameter, but it must still
--- never be trusted as raw client input. `quantity` today only ever comes
--- from server-side callers, but tonumber+math.floor here makes that a
--- guarantee of this function rather than an assumption about its callers.
-function InventoryControllers.DeleteInventoryItems(inventory, itemId, quantity)
-  local safeQuantity = math.floor(tonumber(quantity) or 0)
-  if safeQuantity < 1 then
-    return
-  end
-  local query = 'DELETE FROM `inventory_items` WHERE `inventory_id`=? AND `item_id`=? LIMIT ' .. safeQuantity .. ';'
-  MySQL.query.await(query, { inventory, itemId })
-end
 
 -- (Drop bugfix) inventory_blacklist has no `id` column at all -- its
 -- primary key is the composite (inventory_id, item_id) -- so this query

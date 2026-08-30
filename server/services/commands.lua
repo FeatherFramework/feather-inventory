@@ -89,7 +89,9 @@ if Config.DevMode then
             if Result.IsOk(added) then ghost = added.value[1] end
             return true
         end)
-        InventoryControllers.DeleteInventoryItem(ghost)
+        -- DevMode fixture: deliberately removes a row outside the transaction
+        -- to prove a stale transaction fails safely when its target vanishes.
+        MySQL.query.await('DELETE FROM `inventory_items` WHERE `id`=?;', { ghost })
         local deleted = InventoryAPI.Transaction({ reason = 'smoketest_deleted' }, function(tx)
             return tx:SetMetadata(ghost, { ammo = 1 }, 0)
         end)
@@ -261,7 +263,8 @@ if Config.DevMode then
                 report('issued instance carries its document',
                     Result.IsOk(stored) and stored.value.metadata.serial == 'SMOKE-1',
                     Result.IsOk(stored) and tostring(stored.value.metadata.serial) or 'unreadable')
-                InventoryControllers.DeleteInventoryItem(issued.value.instanceId)
+                -- DevMode fixture cleanup; production deletion uses Tx:RemoveInstances.
+                MySQL.query.await('DELETE FROM `inventory_items` WHERE `id`=?;', { issued.value.instanceId })
             end
 
             -- 13. CreateInstance must roll back when a gate fails. Zero

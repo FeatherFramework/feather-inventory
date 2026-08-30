@@ -144,20 +144,29 @@ function InstancesAPI.SetInstanceMode(itemId, mode)
         return Result.Err(Result.Codes.INVALID_INPUT, 'Invalid item definition id.')
     end
 
-    local exists = MySQL.query.await('SELECT `id`, `instance_mode` FROM `items` WHERE `id`=? LIMIT 1;', { numericId })[1]
-    if not exists then
-        return Result.Err(Result.Codes.NOT_FOUND, 'Item definition does not exist.')
-    end
-
-    if exists.instance_mode ~= mode then
-        local owned = MySQL.scalar.await(
-            'SELECT COUNT(*) FROM `inventory_items` WHERE `item_id`=?;', { numericId }) or 0
-        if tonumber(owned) > 0 then
-            return Result.Err(Result.Codes.CONFLICT,
-                'Instance mode cannot change while owned instances exist.',
-                { itemId = numericId, instanceMode = exists.instance_mode, ownedInstances = tonumber(owned) })
+    local failure
+    local executed, committed = pcall(MySQL.startTransaction, function(query)
+        local exists = query(
+            'SELECT `id`, `instance_mode` FROM `items` WHERE `id`=? FOR UPDATE;', { numericId })[1]
+        if not exists then
+            failure = Result.Err(Result.Codes.NOT_FOUND, 'Item definition does not exist.')
+            return false
         end
-        MySQL.query.await('UPDATE `items` SET `instance_mode`=? WHERE `id`=?;', { mode, numericId })
+        if exists.instance_mode ~= mode then
+            local ownedRows = query(
+                'SELECT `id` FROM `inventory_items` WHERE `item_id`=? ORDER BY `id` FOR UPDATE;', { numericId }) or {}
+            if #ownedRows > 0 then
+                failure = Result.Err(Result.Codes.CONFLICT,
+                    'Instance mode cannot change while owned instances exist.', {
+                        itemId = numericId, instanceMode = exists.instance_mode, ownedInstances = #ownedRows })
+                return false
+            end
+            query('UPDATE `items` SET `instance_mode`=? WHERE `id`=?;', { mode, numericId })
+        end
+        return true
+    end)
+    if not executed or committed ~= true then
+        return failure or Result.Err(Result.Codes.INTERNAL, 'Instance-mode update rolled back.')
     end
     return Result.Ok({ itemId = numericId, instanceMode = mode })
 end
@@ -170,21 +179,33 @@ function InstancesAPI.SetDefinitionArchived(itemId, archived, reason)
     if archived and (type(reason) ~= 'string' or reason:match('^%s*$')) then
         return Result.Err(Result.Codes.INVALID_INPUT, 'Archiving requires a reason.')
     end
-    local exists = MySQL.query.await('SELECT `id`, `name` FROM `items` WHERE `id`=? LIMIT 1;', { numericId })[1]
-    if not exists then return Result.Err(Result.Codes.NOT_FOUND, 'Item definition does not exist.') end
-
     local archiveReason = archived and reason:sub(1, 255) or nil
-    MySQL.query.await(
-        'UPDATE `items` SET `archived_at`=' .. (archived and 'CURRENT_TIMESTAMP' or 'NULL') ..
-        ', `archive_reason`=? WHERE `id`=?;', { archiveReason, numericId })
-    local owned = MySQL.scalar.await(
-        'SELECT COUNT(*) FROM `inventory_items` WHERE `item_id`=?;', { numericId }) or 0
+    local failure, itemName, owned = nil, nil, 0
+    local executed, committed = pcall(MySQL.startTransaction, function(query)
+        local exists = query(
+            'SELECT `id`, `name` FROM `items` WHERE `id`=? FOR UPDATE;', { numericId })[1]
+        if not exists then
+            failure = Result.Err(Result.Codes.NOT_FOUND, 'Item definition does not exist.')
+            return false
+        end
+        itemName = exists.name
+        local ownedRows = query(
+            'SELECT `id` FROM `inventory_items` WHERE `item_id`=? ORDER BY `id` FOR UPDATE;', { numericId }) or {}
+        owned = #ownedRows
+        query('UPDATE `items` SET `archived_at`=' ..
+            (archived and 'CURRENT_TIMESTAMP' or 'NULL') ..
+            ', `archive_reason`=? WHERE `id`=?;', { archiveReason, numericId })
+        return true
+    end)
+    if not executed or committed ~= true then
+        return failure or Result.Err(Result.Codes.INTERNAL, 'Definition archive update rolled back.')
+    end
     return Result.Ok({
         itemId = numericId,
-        itemName = exists.name,
+        itemName = itemName,
         archived = archived,
         reason = archiveReason,
-        preservedInstances = tonumber(owned) or 0,
+        preservedInstances = owned,
     })
 end
 

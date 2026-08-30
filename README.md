@@ -104,11 +104,35 @@ The server export exposes:
 | `Categories` | Ledger category tabs |
 | `Instances` | Item identity, `stack`/`unique` mode, versioned metadata |
 | `Transaction` / `MutateItem` / `CreateInstance` | Atomic, row-locked multi-item mutations |
+| `DestroyInstances` / `UseItemAction` | Exact audited destruction and declarative atomic use |
 | `Guards` | Veto a move or destroy before it happens |
 | `Equipment` | Persisted `character × slot → instance` |
-| `Diagnostics` | Transaction counters |
+| `Diagnostics` | Transaction counters and read-only integrity scans |
 
-Four provider functions are also aliased at the **top level**, under exactly the names a consumer adapter expects: `GetCapabilities`, `GetItemForCharacter`, `GetEquippedForCharacter`, `SetEquippedForCharacter`.
+Provider functions are also aliased at the **top level**: `GetCapabilities`,
+`GetItemForCharacter`, `GetEquippedForCharacter`,
+`SetEquippedForCharacter`, and `GetCharacterInventory`.
+
+### Supported server surface index
+
+This is the supported `initiate()` contract. Functions present on the Lua
+tables but omitted here—`Internal*`, `RegisterInternalUseGuard`, locked-snapshot
+guard helpers, and `Emit*`—are resource-private implementation details.
+
+| Surface | Supported methods |
+|---|---|
+| Top level | `Transaction`, `MutateItem`, `CreateInstance`, `DestroyInstances`, `UseItemAction`, `GetCapabilities`, `GetItemForCharacter`, `GetEquippedForCharacter`, `SetEquippedForCharacter`, `GetCharacterInventory` |
+| `Inventory` | `RegisterForeignKey`, `RegisterInventory`, `GetInventory`, `GetCustomInventory`, `GetCharacterInventory`, `GetInventoryItems`, `InventoryCanHold`, `InventoryCanHoldById`, `EvaluateSlotMove`, `OpenInventory`, `CloseInventory`, `CanAccessInventory`, `IsInventoryAccessibleBySrc`, `GetInventoryOwner`, `GetInventoryOwnerResult`, `GetInventoryOwnerAndVisibility`, `GrantInventoryAccess`, `RevokeInventoryAccess`, `ListInventoryAccess`, `HasInventoryAccessGrant`, `SetInventoryPublic`, `GrantTemporaryAccess`, `RevokeTemporaryAccess`, `HasTemporaryAccess`, `GetContainerLifecycle`, `DeleteContainerIfEmpty`, `RecoverContainerContents` |
+| `Items` | `GetDefinitions`, `ItemExists`, `GetItem`, `GetItemCount`, `InventoryHasItems`, `GrantItem`, `AddItem`, `RemoveItemByName`, `RemoveItemById`, `DropItemsOnGround`, `RegisterUsableItem`, `RegisterUsableAction`, `UseItem`, `GetCondition`, `SetCondition`, `AdjustCondition` |
+| `Instances` | `GetCapabilities`, `GetInstance`, `GetItemForCharacter`, `FindInstances`, `IsUniqueDefinition`, `SetInstanceMode`, `SetDefinitionArchived`, `GetDefinitionMigrationPreflight`, `MigrateDefinitionInstances`, `ReadMetadata`, `WriteMetadata`, `MergeMetadata` |
+| `Equipment` | `GetEquippedForCharacter`, `SetEquippedForCharacter`, `ClearEquippedInstance`, `IsInstanceEquipped` |
+| `Guards` | `RegisterMoveGuard`, `UnregisterMoveGuard`, `RegisterDestroyGuard`, `UnregisterDestroyGuard`, `CanMoveInstance`, `CanDestroyInstance` |
+| `Diagnostics` | `GetTransactionMetrics`, `RunIntegrityDiagnostics` |
+| `Categories` | `GetCategories` |
+
+Direct Cfx exports are `initiate`, `GetCharacterInventory`,
+`RemoveCharacterInventoryInstance`, and `GrantCharacterItem`. The latter three
+are trusted server-only UUID Character adapters documented below.
 
 The client export exposes only `Action`.
 
@@ -755,7 +779,15 @@ local scan = Inventory.Diagnostics.RunIntegrityDiagnostics({ sampleLimit = 50 })
 
 Returned as a copy, so a caller cannot reset the counters by mutating what it was handed. With real row locking, contending callers queue rather than retry — so `conflicts` is a genuine signal (a cross-request compare-and-set losing) rather than expected background noise, and `rolledBack` is the number to watch.
 
-`/InvTxSmokeTest` (server console, `Config.DevMode`) exercises the whole path in-game: create + metadata + locked read, rollback, stale revision, a row deleted mid-flight, a row moved mid-flight, and a guard veto on a legacy removal.
+`/InvTxSmokeTest` (`Config.DevMode`, run in game by an ACE-authorized player
+with a loaded Character) exercises the whole path: create + metadata + locked
+read, rollback, stale revision, a row deleted mid-flight, a row moved
+mid-flight, acceptance gates, unique issuance, and a guard veto.
+
+The complete release procedure—including exact in-game actions, two-player
+ground/entity tests, required fixture setup, every expected smoke-test line,
+API harness checks, restart testing, and sign-off—is maintained in
+`docs/FEATHER-INVENTORY-TEST-CHECKLIST.md` in the framework workspace.
 
 `RunIntegrityDiagnostics` performs SELECTs only. It reports orphaned ownership
 references and grants, missing/archived definitions, malformed metadata,

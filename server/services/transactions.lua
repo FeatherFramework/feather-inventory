@@ -381,7 +381,7 @@ function Tx:AddQuantity(inventoryId, definitionId, quantity, metadata)
     if denied then return denied end
 
     local defRows = self.query(
-        'SELECT `name`, `max_stack_size`, `instance_mode`, `archived_at` FROM `items` WHERE `id`=? LIMIT 1;', { definitionId })
+        'SELECT `name`, `max_stack_size`, `instance_mode`, `archived_at` FROM `items` WHERE `id`=? LIMIT 1 FOR UPDATE;', { definitionId })
     local def = defRows and defRows[1]
     if not def then
         return Result.Err(Result.Codes.NOT_FOUND, 'Item definition does not exist.')
