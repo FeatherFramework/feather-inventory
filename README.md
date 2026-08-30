@@ -626,7 +626,7 @@ if not caps.value.features.rowLocking then
 end
 ```
 
-Check `contractVersion` **before** registering anything against the API. It is a plain integer, deliberately separate from the human-readable semver `version` — a consumer compares it numerically, and `tonumber('2.0.0')` is `nil`. A key-existence check cannot detect a changed return shape, so this is the gate that turns a version mismatch into a clear startup failure rather than a silently misread result. Current flags include `instanceMode`, `metadataDocument`, `instanceRevision`, `instanceReadModel`, `resultEnvelope`, `transactions`, `movementGuards`, `postCommitEvents`, `accessModes`, `metadataSizeLimit`, `transactionMetrics`, `rowLocking`, `equippedState`, `atomicCreation`, `definitionMigration`, `auditedDestruction`, and `atomicUseActions`.
+Check `contractVersion` **before** registering anything against the API. It is a plain integer, deliberately separate from the human-readable semver `version` — a consumer compares it numerically, and `tonumber('2.0.0')` is `nil`. A key-existence check cannot detect a changed return shape, so this is the gate that turns a version mismatch into a clear startup failure rather than a silently misread result. Current flags include `instanceMode`, `metadataDocument`, `instanceRevision`, `instanceReadModel`, `resultEnvelope`, `transactions`, `movementGuards`, `postCommitEvents`, `accessModes`, `metadataSizeLimit`, `transactionMetrics`, `rowLocking`, `equippedState`, `atomicCreation`, `definitionMigration`, `auditedDestruction`, `atomicUseActions`, and `integrityDiagnostics`.
 
 ---
 
@@ -742,11 +742,29 @@ An `idempotencyKey` in the context makes a repeated call return the first call's
 ```lua
 local m = Inventory.Diagnostics.GetTransactionMetrics()
 --> { started, committed, rolledBack, conflicts, bodyErrors, idempotentHits }
+
+local scan = Inventory.Diagnostics.RunIntegrityDiagnostics({ sampleLimit = 50 })
+-- scan.value = {
+--   dryRun = true,
+--   ok = true, -- no error/critical findings; informational findings may exist
+--   summary = { totalFindings, byCode, bySeverity },
+--   findings = { { code, severity, details }, ... },
+--   truncatedByCode = {},
+-- }
 ```
 
 Returned as a copy, so a caller cannot reset the counters by mutating what it was handed. With real row locking, contending callers queue rather than retry — so `conflicts` is a genuine signal (a cross-request compare-and-set losing) rather than expected background noise, and `rolledBack` is the number to watch.
 
 `/InvTxSmokeTest` (server console, `Config.DevMode`) exercises the whole path in-game: create + metadata + locked read, rollback, stale revision, a row deleted mid-flight, a row moved mid-flight, and a guard veto on a legacy removal.
+
+`RunIntegrityDiagnostics` performs SELECTs only. It reports orphaned ownership
+references and grants, missing/archived definitions, malformed metadata,
+invalid or excessive slots, mixed/oversized/metadata-incompatible stacks,
+stacked unique items, dangling or wrongly-owned equipment, overweight
+inventories, and definition quantity violations. Samples are capped per code
+from 1–500 while summary counts always include every finding. In DevMode,
+`/InvIntegrityCheck [sampleLimit]` prints the same report to the server console.
+There is deliberately no repair flag.
 
 ---
 

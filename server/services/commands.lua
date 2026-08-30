@@ -311,4 +311,24 @@ if Config.DevMode then
             Feather.Notify.RightNotify(source, Translate(source, 'msg_item_added', 'Item added.'), 3000)
         end
     end, true)
+
+    RegisterCommand('InvIntegrityCheck', function(source, args)
+        local result = DiagnosticsAPI.RunIntegrityDiagnostics({ sampleLimit = tonumber(args[1]) or 25 })
+        if not Result.IsOk(result) then
+            print(('[InvIntegrityCheck] failed: %s'):format(
+                result.error and result.error.message or 'unknown error'))
+            return
+        end
+        local report = result.value
+        print(('[InvIntegrityCheck] dry-run complete: %d finding(s) across %d sampled row(s)')
+            :format(report.summary.totalFindings, #report.findings))
+        print(json.encode({
+            generatedAt = report.generatedAt,
+            ok = report.ok,
+            byCode = report.summary.byCode,
+            bySeverity = report.summary.bySeverity,
+            truncatedByCode = report.truncatedByCode,
+            findings = report.findings,
+        }))
+    end, true)
 end

@@ -20,7 +20,10 @@ function StartAPI()
   inventoryServerAPI.Guards = GuardsAPI
   -- (INV-W4) Operational surface: transaction counters for contention
   -- monitoring, and the access-mode decision function.
-  inventoryServerAPI.Diagnostics = { GetTransactionMetrics = TransactionAPI.GetMetrics }
+  inventoryServerAPI.Diagnostics = {
+    GetTransactionMetrics = TransactionAPI.GetMetrics,
+    RunIntegrityDiagnostics = DiagnosticsAPI.RunIntegrityDiagnostics,
+  }
   -- (Weapons review #5) Persisted equipment slots -- generic
   -- character/slot/instance storage, survives restarts.
   inventoryServerAPI.Equipment = EquipmentAPI

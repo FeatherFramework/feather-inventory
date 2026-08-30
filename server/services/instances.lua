@@ -647,7 +647,8 @@ function InstancesAPI.GetCapabilities()
             definitionArchive = true,        -- retirement blocks creation, preserves ownership
             definitionMigration = true,      -- compatible identity-preserving reassignment
             auditedDestruction = true,       -- exact ids + expected owner domain + reason
-            atomicUseActions = true          -- declarative consume/metadata use mutation
+            atomicUseActions = true,         -- declarative consume/metadata use mutation
+            integrityDiagnostics = true      -- bounded, read-only consistency report
         },
         characterIdentity = {
             format = 'uuid-string',
