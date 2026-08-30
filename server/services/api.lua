@@ -1,4 +1,5 @@
 function StartAPI()
+  ItemsAPI.RegisterInternalUseGuard()
   local inventoryServerAPI = {}
   inventoryServerAPI.Inventory = InventoryAPI
   inventoryServerAPI.Items = ItemsAPI
@@ -10,6 +11,8 @@ function StartAPI()
   -- the interface name DEPENDENCY_SUPPORT_PLAN §4.4 specifies.
   inventoryServerAPI.Transaction = TransactionAPI.Transaction
   inventoryServerAPI.MutateItem = TransactionAPI.MutateItem
+  inventoryServerAPI.DestroyInstances = TransactionAPI.DestroyInstances
+  inventoryServerAPI.UseItemAction = TransactionAPI.UseItemAction
   inventoryServerAPI.CreateInstance = TransactionAPI.CreateInstance
   -- (INV-W3) Pre-move/destroy guard registry and structured post-commit
   -- events. This is how feather-weapons forces an authoritative unequip
@@ -17,7 +20,10 @@ function StartAPI()
   inventoryServerAPI.Guards = GuardsAPI
   -- (INV-W4) Operational surface: transaction counters for contention
   -- monitoring, and the access-mode decision function.
-  inventoryServerAPI.Diagnostics = { GetTransactionMetrics = TransactionAPI.GetMetrics }
+  inventoryServerAPI.Diagnostics = {
+    GetTransactionMetrics = TransactionAPI.GetMetrics,
+    RunIntegrityDiagnostics = DiagnosticsAPI.RunIntegrityDiagnostics,
+  }
   -- (Weapons review #5) Persisted equipment slots -- generic
   -- character/slot/instance storage, survives restarts.
   inventoryServerAPI.Equipment = EquipmentAPI

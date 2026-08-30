@@ -282,7 +282,9 @@ function Tx:RemoveQuantity(inventoryId, definitionId, quantity)
     local removed = {}
     for _, row in ipairs(rows) do
         local id = tonumber(row.id)
-        local allowed, reason = GuardsAPI.CanDestroyInstance(id, self.context)
+        local locked = self:GetItemForUpdate(id)
+        if not Result.IsOk(locked) then return locked end
+        local allowed, reason = GuardsAPI.CanDestroyInstanceSnapshot(locked.value, self.context)
         if not allowed then
             return Result.Err(Result.Codes.DENIED, reason or 'Removal blocked by a guard.', { instanceId = id })
         end
@@ -318,7 +320,14 @@ function Tx:RemoveInstances(inventoryId, definitionId, instanceIds)
     for _, instanceId in ipairs(instanceIds) do
         local id = tonumber(instanceId)
         if not id then return Result.Err(Result.Codes.INVALID_INPUT, 'Invalid item instance id.') end
-        local allowed, reason = GuardsAPI.CanDestroyInstance(id, self.context)
+        local locked = self:GetItemForUpdate(id)
+        if not Result.IsOk(locked) then return locked end
+        if locked.value.inventoryId ~= tonumber(inventoryId)
+            or locked.value.definition.id ~= tonumber(definitionId) then
+            return Result.Err(Result.Codes.CONFLICT, 'Selected item instance is no longer available.', {
+                instanceId = id, inventoryId = inventoryId, definitionId = definitionId })
+        end
+        local allowed, reason = GuardsAPI.CanDestroyInstanceSnapshot(locked.value, self.context)
         if not allowed then
             return Result.Err(Result.Codes.DENIED, reason or 'Removal blocked by a guard.', { instanceId = id })
         end
@@ -372,10 +381,14 @@ function Tx:AddQuantity(inventoryId, definitionId, quantity, metadata)
     if denied then return denied end
 
     local defRows = self.query(
-        'SELECT `name`, `max_stack_size`, `instance_mode` FROM `items` WHERE `id`=? LIMIT 1;', { definitionId })
+        'SELECT `name`, `max_stack_size`, `instance_mode`, `archived_at` FROM `items` WHERE `id`=? LIMIT 1 FOR UPDATE;', { definitionId })
     local def = defRows and defRows[1]
     if not def then
         return Result.Err(Result.Codes.NOT_FOUND, 'Item definition does not exist.')
+    end
+    if def.archived_at ~= nil then
+        return Result.Err(Result.Codes.DENIED, 'Item definition is archived and cannot create new instances.',
+            { definitionId = definitionId, itemName = def.name })
     end
 
     local stackSize = math.max(tonumber(def.max_stack_size) or 1, 1)
@@ -418,19 +431,27 @@ function Tx:AddQuantity(inventoryId, definitionId, quantity, metadata)
     -- Lock the destination's occupied compartments so a concurrent transfer
     -- cannot claim the same ones between this read and the inserts below.
     local occupiedRows = self.query([[
-        SELECT `slot_index`, `item_id`, COUNT(*) AS `count`
+        SELECT `slot_index`, `item_id`, `metadata`
         FROM `inventory_items`
         WHERE `inventory_id`=? AND `slot_index` IS NOT NULL
-        GROUP BY `slot_index`, `item_id` FOR UPDATE;
+        ORDER BY `slot_index`, `id` FOR UPDATE;
     ]], { inventoryId })
 
     local occupied, joinSlot, joinCount = {}, nil, 0
+    local slots = {}
     for _, row in ipairs(occupiedRows or {}) do
         local slot = tonumber(row.slot_index)
         occupied[slot] = true
-        if not unique and joinSlot == nil and tostring(row.item_id) == tostring(definitionId)
-            and (tonumber(row.count) or 0) < stackSize then
-            joinSlot, joinCount = slot, tonumber(row.count) or 0
+        slots[slot] = slots[slot] or {}
+        slots[slot][#slots[slot] + 1] = row
+    end
+    local desiredMetadata = metadata or {}
+    for slot, rows in pairs(slots) do
+        if not unique and joinSlot == nil and tostring(rows[1].item_id) == tostring(definitionId)
+            and #rows < stackSize and InventoryMetadata.RowsCompatible(rows)
+            and InventoryMetadata.DocumentsEqual(
+                InventoryMetadata.Decode(rows[1].metadata) or {}, desiredMetadata) then
+            joinSlot, joinCount = slot, #rows
         end
     end
 
@@ -538,19 +559,68 @@ function Tx:SetMetadata(instanceId, document, expectedRevision)
             { size = #encoded, limit = 4096 })
     end
 
+    -- Locate first, then lock the complete compartment in one ordered query.
+    -- Locking the target and its peers separately would let two callers take
+    -- opposite row locks and deadlock while updating different units in the
+    -- same stack. If the row moves between these reads it will be absent from
+    -- the locked snapshot and the operation fails safely as a conflict.
+    local located = self.query([[
+        SELECT `inventory_id`, `slot_index`
+        FROM `inventory_items`
+        WHERE `id`=? LIMIT 1;
+    ]], { id })
+    local location = located and located[1]
+    if not location then
+        return Result.Err(Result.Codes.NOT_FOUND, 'Item instance does not exist.')
+    end
+
+    local locked
+    if location.slot_index == nil then
+        locked = self.query([[
+            SELECT `id`, `inventory_id`, `item_id`, `slot_index`, `row_revision`, `metadata`
+            FROM `inventory_items`
+            WHERE `id`=? FOR UPDATE;
+        ]], { id })
+    else
+        locked = self.query([[
+            SELECT `id`, `inventory_id`, `item_id`, `slot_index`, `row_revision`, `metadata`
+            FROM `inventory_items`
+            WHERE `inventory_id`=? AND `slot_index`=?
+            ORDER BY `id` FOR UPDATE;
+        ]], { location.inventory_id, location.slot_index })
+    end
+
+    local row
+    for _, candidate in ipairs(locked or {}) do
+        if tonumber(candidate.id) == id then row = candidate break end
+    end
+    if not row then
+        return Result.Err(Result.Codes.CONFLICT, 'Instance moved while metadata was being written.')
+    end
+    local actual = row and tonumber(row.row_revision)
+
     -- Compared against row_revision: the caller is asserting "nothing about
     -- this instance has changed since I read it", and a MOVE is such a change
     -- even though it leaves the document untouched.
-    if expectedRevision ~= nil then
-        local current = self.query(
-            'SELECT `row_revision` FROM `inventory_items` WHERE `id`=? FOR UPDATE;', { id })
-        local actual = current and current[1] and tonumber(current[1].row_revision)
-        if actual == nil then
-            return Result.Err(Result.Codes.NOT_FOUND, 'Item instance does not exist.')
-        end
-        if actual ~= tonumber(expectedRevision) then
-            return Result.Err(Result.Codes.CONFLICT, 'Instance revision has moved since it was read.',
-                { expected = tonumber(expectedRevision), actual = actual })
+    if expectedRevision ~= nil and actual ~= tonumber(expectedRevision) then
+        return Result.Err(Result.Codes.CONFLICT, 'Instance revision has moved since it was read.',
+            { expected = tonumber(expectedRevision), actual = actual })
+    end
+
+    if row.slot_index ~= nil and #(locked or {}) > 1 then
+        for _, peer in ipairs(locked) do
+                if tonumber(peer.id) ~= id then
+                    local peerDocument = InventoryMetadata.Decode(peer.metadata)
+                    if not peerDocument or not InventoryMetadata.DocumentsEqual(peerDocument, document) then
+                        return Result.Err(Result.Codes.CONFLICT,
+                            'Metadata cannot diverge within an existing stack.', {
+                                inventoryId = tonumber(row.inventory_id),
+                                slot = tonumber(row.slot_index),
+                                instanceId = id,
+                                peerInstanceId = tonumber(peer.id),
+                            })
+                    end
+                end
         end
     end
 
@@ -565,7 +635,13 @@ function Tx:SetMetadata(instanceId, document, expectedRevision)
     local revision = updated and updated[1] and tonumber(updated[1].row_revision)
 
     self.metadataChanged = self.metadataChanged or {}
-    self.metadataChanged[#self.metadataChanged + 1] = { instanceId = id, revision = revision }
+    self.metadataChanged[#self.metadataChanged + 1] = {
+        instanceId = id,
+        definitionId = tonumber(row.item_id),
+        inventoryId = tonumber(row.inventory_id),
+        slot = tonumber(row.slot_index),
+        revision = revision,
+    }
 
     return Result.Ok({ revision = revision })
 end
@@ -588,7 +664,7 @@ function Tx:MoveInstance(instanceId, toInventoryId, toSlot)
     end
 
     local rows = self.query(
-        'SELECT `inventory_id`, `item_id`, `row_revision` FROM `inventory_items` WHERE `id`=? FOR UPDATE;', { id })
+        'SELECT `inventory_id`, `item_id`, `slot_index`, `row_revision` FROM `inventory_items` WHERE `id`=? FOR UPDATE;', { id })
     local row = rows and rows[1]
     if not row then
         return Result.Err(Result.Codes.NOT_FOUND, 'Item instance does not exist.')
@@ -609,6 +685,8 @@ function Tx:MoveInstance(instanceId, toInventoryId, toSlot)
         fromInventoryId = from,
         toInventoryId = toInventoryId,
         definitionId = tonumber(row.item_id),
+        fromSlot = tonumber(row.slot_index),
+        toSlot = tonumber(toSlot),
         revision = (tonumber(row.row_revision) or 0) + 1,
     }
 
@@ -693,7 +771,7 @@ function TransactionAPI.Transaction(context, fn)
                 { definitionId = entry.definitionId, revision = entry.revision })
         end
         for _, entry in ipairs(handle.metadataChanged or {}) do
-            GuardsAPI.EmitItemMetadataChanged(entry.instanceId, entry.revision, context)
+            GuardsAPI.EmitItemMetadataChanged(entry.instanceId, entry.revision, context, entry)
         end
         for _, entry in ipairs(handle.destroyed or {}) do
             GuardsAPI.EmitItemDestroyed(entry.instanceId, entry.definitionId, entry.inventoryId, context)
@@ -775,6 +853,107 @@ function TransactionAPI.MutateItem(context, spec)
         end
 
         return { itemInstanceId = item.id, inventoryId = item.inventoryId, revision = revision }
+    end)
+end
+
+--- Explicit destructive operation for trusted consumers and administration.
+-- Exact instance ids, expected container/domain and a human-readable reason
+-- are mandatory so destruction cannot degrade into an ambiguous quantity
+-- adjustment. The normal destroy guards and post-commit facts still apply.
+function TransactionAPI.DestroyInstances(context, spec)
+    context = context or {}
+    if type(spec) ~= 'table' or not tonumber(spec.inventoryId)
+        or type(spec.instanceIds) ~= 'table' or #spec.instanceIds < 1
+        or type(spec.expectedLocation) ~= 'string' or spec.expectedLocation == ''
+        or type(context.reason) ~= 'string' or context.reason:match('^%s*$') then
+        return Result.Err(Result.Codes.INVALID_INPUT,
+            'Inventory, exact instance ids, expected owner domain, and destruction reason are required.')
+    end
+
+    local inventoryId = tonumber(spec.inventoryId)
+    local instanceIds, seen = {}, {}
+    for _, value in ipairs(spec.instanceIds) do
+        local id = tonumber(value)
+        if not id or seen[id] then
+            return Result.Err(Result.Codes.INVALID_INPUT,
+                'Destruction instance ids must be valid and unique.')
+        end
+        seen[id] = true
+        instanceIds[#instanceIds + 1] = id
+    end
+    table.sort(instanceIds)
+
+    return TransactionAPI.Transaction(context, function(tx)
+        local containers = tx.query(
+            'SELECT `location` FROM `inventory` WHERE `id`=? FOR UPDATE;', { inventoryId })
+        local container = containers and containers[1]
+        if not container then return Result.Err(Result.Codes.NOT_FOUND, 'Inventory does not exist.') end
+        if container.location ~= spec.expectedLocation then
+            return Result.Err(Result.Codes.DENIED, 'Inventory owner domain does not match.', {
+                expected = spec.expectedLocation, actual = container.location })
+        end
+
+        local byDefinition = {}
+        for _, value in ipairs(instanceIds) do
+            local locked = tx:GetItemForUpdate(value)
+            if not Result.IsOk(locked) then return locked end
+            if locked.value.inventoryId ~= inventoryId then
+                return Result.Err(Result.Codes.CONFLICT, 'Selected item is no longer in the expected inventory.', {
+                    instanceId = tonumber(value), inventoryId = inventoryId })
+            end
+            local definitionId = locked.value.definition.id
+            byDefinition[definitionId] = byDefinition[definitionId] or {}
+            byDefinition[definitionId][#byDefinition[definitionId] + 1] = locked.value.id
+        end
+
+        local destroyed = {}
+        for definitionId, ids in pairs(byDefinition) do
+            local removed = tx:RemoveInstances(inventoryId, definitionId, ids)
+            if not Result.IsOk(removed) then return removed end
+            for _, id in ipairs(removed.value) do destroyed[#destroyed + 1] = id end
+        end
+        return Result.Ok({ inventoryId = inventoryId, destroyedInstanceIds = destroyed,
+            quantity = #destroyed })
+    end)
+end
+
+--- Apply a registered, data-only use action atomically to the clicked row.
+-- Arbitrary gameplay code intentionally does not run while the DB transaction
+-- is open; consumers receive the committed result afterward.
+function TransactionAPI.UseItemAction(context, spec)
+    if type(spec) ~= 'table' or not tonumber(spec.instanceId)
+        or (spec.consume ~= true and type(spec.metadata) ~= 'table')
+        or (spec.consume == true and spec.metadata ~= nil) then
+        return Result.Err(Result.Codes.INVALID_INPUT,
+            'A use action must consume the instance or replace its metadata.')
+    end
+
+    return TransactionAPI.Transaction(context, function(tx)
+        local locked = tx:GetItemForUpdate(spec.instanceId)
+        if not Result.IsOk(locked) then return locked end
+        local item = locked.value
+        local denied = tx:RequireAccess(item.inventoryId, InventoryAPI.AccessModes.REMOVE)
+        if denied then return denied end
+        if tonumber(spec.definitionId) and tonumber(spec.definitionId) ~= item.definition.id then
+            return Result.Err(Result.Codes.CONFLICT, 'The item definition changed before use.')
+        end
+        if spec.expectedRevision ~= nil and tonumber(spec.expectedRevision) ~= item.revision then
+            return Result.Err(Result.Codes.CONFLICT, 'Instance revision has moved since it was read.', {
+                expected = tonumber(spec.expectedRevision), actual = item.revision })
+        end
+
+        if spec.consume == true then
+            local removed = tx:RemoveInstances(item.inventoryId, item.definition.id, { item.id })
+            if not Result.IsOk(removed) then return removed end
+            return Result.Ok({ consumed = true, instanceId = item.id,
+                definitionId = item.definition.id, inventoryId = item.inventoryId })
+        end
+
+        local written = tx:SetMetadata(item.id, spec.metadata, item.revision)
+        if not Result.IsOk(written) then return written end
+        return Result.Ok({ consumed = false, instanceId = item.id,
+            definitionId = item.definition.id, inventoryId = item.inventoryId,
+            revision = written.value.revision })
     end)
 end
 ---

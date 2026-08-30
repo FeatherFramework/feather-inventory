@@ -88,7 +88,15 @@ function EquipmentAPI.SetEquippedForCharacter(characterId, slot, instanceId)
     end
 
     if instanceId == nil then
-        MySQL.query.await('DELETE FROM `character_equipment` WHERE `character_id`=? AND `slot`=?;', { id, slot })
+        local executed, committed = pcall(MySQL.startTransaction, function(query)
+            query('SELECT `inventory_items_id` FROM `character_equipment` WHERE `character_id`=? AND `slot`=? FOR UPDATE;',
+                { id, slot })
+            query('DELETE FROM `character_equipment` WHERE `character_id`=? AND `slot`=?;', { id, slot })
+            return true
+        end)
+        if not executed or committed ~= true then
+            return Result.Err(Result.Codes.INTERNAL, 'Equipment update rolled back.')
+        end
         return Result.Ok({ slot = slot, instanceId = nil })
     end
 
@@ -97,24 +105,35 @@ function EquipmentAPI.SetEquippedForCharacter(characterId, slot, instanceId)
         return Result.Err(Result.Codes.INVALID_INPUT, 'Invalid instance id.')
     end
 
-    local owned = MySQL.query.await([[
-        SELECT ii.`id` FROM `inventory_items` ii
-        INNER JOIN `inventory` inv ON inv.`id` = ii.`inventory_id`
-        WHERE ii.`id` = ? AND inv.`character_id` = ? LIMIT 1;
-    ]], { numericInstance, id })[1]
+    local failure
+    local executed, committed = pcall(MySQL.startTransaction, function(query)
+        local owned = query([[
+            SELECT ii.`id` FROM `inventory_items` ii
+            INNER JOIN `inventory` inv ON inv.`id` = ii.`inventory_id`
+            WHERE ii.`id` = ? AND inv.`character_id` = ? FOR UPDATE;
+        ]], { numericInstance, id })[1]
+        if not owned then
+            failure = Result.Err(Result.Codes.DENIED, 'That item is not in this character\'s inventory.',
+                { instanceId = numericInstance, characterId = id })
+            return false
+        end
 
-    if not owned then
-        return Result.Err(Result.Codes.DENIED, 'That item is not in this character\'s inventory.',
-            { instanceId = numericInstance, characterId = id })
+        -- Lock both possible conflicts before changing either: the requested
+        -- character slot and any slot currently holding this instance.
+        query([[
+            SELECT `inventory_items_id` FROM `character_equipment`
+            WHERE (`character_id`=? AND `slot`=?) OR `inventory_items_id`=?
+            ORDER BY `character_id`, `slot` FOR UPDATE;
+        ]], { id, slot, numericInstance })
+        query('DELETE FROM `character_equipment` WHERE (`character_id`=? AND `slot`=?) OR `inventory_items_id`=?;',
+            { id, slot, numericInstance })
+        query('INSERT INTO `character_equipment` (`character_id`, `slot`, `inventory_items_id`) VALUES (?, ?, ?);',
+            { id, slot, numericInstance })
+        return true
+    end)
+    if not executed or committed ~= true then
+        return failure or Result.Err(Result.Codes.INTERNAL, 'Equipment update rolled back.')
     end
-
-    -- REPLACE rather than INSERT..ON DUPLICATE: the UNIQUE on
-    -- inventory_items_id means moving an already-equipped instance to a
-    -- different slot must clear the old row, which a per-key upsert would not.
-    MySQL.query.await('DELETE FROM `character_equipment` WHERE `inventory_items_id`=?;', { numericInstance })
-    MySQL.query.await(
-        'REPLACE INTO `character_equipment` (`character_id`, `slot`, `inventory_items_id`) VALUES (?, ?, ?);',
-        { id, slot, numericInstance })
 
     return Result.Ok({ slot = slot, instanceId = numericInstance })
 end
@@ -131,7 +150,15 @@ function EquipmentAPI.ClearEquippedInstance(instanceId)
     if not numericInstance then
         return Result.Err(Result.Codes.INVALID_INPUT, 'Invalid instance id.')
     end
-    MySQL.query.await('DELETE FROM `character_equipment` WHERE `inventory_items_id`=?;', { numericInstance })
+    local executed, committed = pcall(MySQL.startTransaction, function(query)
+        query('SELECT `character_id`, `slot` FROM `character_equipment` WHERE `inventory_items_id`=? FOR UPDATE;',
+            { numericInstance })
+        query('DELETE FROM `character_equipment` WHERE `inventory_items_id`=?;', { numericInstance })
+        return true
+    end)
+    if not executed or committed ~= true then
+        return Result.Err(Result.Codes.INTERNAL, 'Equipment clear rolled back.')
+    end
     return Result.Ok(true)
 end
 

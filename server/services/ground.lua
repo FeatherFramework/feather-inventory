@@ -86,7 +86,12 @@ Feather.RPC.Register("Feather:Inventory:DropItemsOnGround", function(params, res
     -- (§10.1 rejection-surfacing) DropItemsOnGround already returns a real
     -- {error, message} on capacity rejection (INV-14) -- it just never
     -- reached the player; the NUI only logged it to the browser console.
-    local dropResult = ItemsAPI.DropItemsOnGround(inventoryID, params.items, params.x, params.y, params.z)
+    local dropResult = ItemsAPI.DropItemsOnGround(inventoryID, params.items, params.x, params.y, params.z, {
+        actorSource = src,
+        actorCharacterId = character.id,
+        reason = 'ground_drop',
+        resource = 'feather-inventory'
+    })
     if not Result.IsOk(dropResult) then
         Feather.Notify.RightNotify(src, TranslateResult(src, dropResult, 'err_drop_failed'), 3000)
         return res({ error = true, code = dropResult.error.code, message = dropResult.error.message })
@@ -105,12 +110,12 @@ AddEventHandler("Feather:Inventory:Empty", function(args)
     local location = InventoryControllers.GetInventoryLocationById(args.id)
     if location == 'ground' then
         local GID = GroundControllers.GetGroundID(args.id)
-        GroundControllers.DeleteGround(GID)
-        -- (Ground cleanup bugfix) This deleted the world-position row but
-        -- left the inventory row itself (args.id) sitting in the DB
-        -- forever -- orphaned rows accumulate with every emptied pile.
-        InventoryControllers.DeleteInventoryById(args.id)
-        UpdateClientWithGroundLocations(-1)
+        -- Recheck emptiness in the DELETE itself. If another drop reached this
+        -- pile after CloseInventory observed it empty, the pile and its new
+        -- contents survive instead of being cascade-deleted.
+        if GID and GroundControllers.DeleteGroundIfEmpty(GID) then
+            UpdateClientWithGroundLocations(-1)
+        end
     end
 end)
 
@@ -119,28 +124,19 @@ RegisterServerEvent("Feather:Inventory:GetGroundLocations", function()
     UpdateClientWithGroundLocations(src)
 end)
 
--- Street Sweepers Logic (Essentially a garbage collector)
---
--- (Ground cleanup bugfix) Wiping `ground` (world positions) without also
--- clearing the `inventory` rows pointing at `location = 'ground'` left every
--- one of them orphaned -- on a server with StreetSweep = 0 (the default),
--- this meant a fresh, empty `inventory` row got left behind on every single
--- restart, forever. Worse: RegisterInventory looks up an existing inventory
--- by ground_id before creating a new one, so if a freshly created ground
--- row's auto-increment id ever coincided with an old orphaned row's
--- ground_id, a brand new drop could silently reuse that stale row instead
--- of getting its own.
+-- Street sweeping is garbage collection, not item destruction. Only empty
+-- piles are eligible; deleting a ground row cascades its empty inventory.
+-- Non-empty piles persist across restarts and timed sweeps until an explicit,
+-- audited TTL/destruction policy is introduced.
 CreateThread(function()
     if Config.Dropped.StreetSweep ~= nil then
         if (Config.Dropped.StreetSweep == 0) then
-            GroundControllers.DeleteAllGround()
-            InventoryControllers.DeleteInventoriesByLocation('ground')
+            GroundControllers.DeleteEmptyGround()
             UpdateClientWithGroundLocations(-1)
         else
             while true do
                 Wait(Config.Dropped.StreetSweep * 60000)
-                GroundControllers.DeleteAllGround()
-                InventoryControllers.DeleteInventoriesByLocation('ground')
+                GroundControllers.DeleteEmptyGround()
                 UpdateClientWithGroundLocations(-1)
             end
         end

@@ -16,6 +16,9 @@ const DEFAULTS = {
   ui_carrying: 'CARRYING',
   ui_stored: 'STORED',
   ui_all: 'ALL',
+  ui_search: 'SEARCH',
+  ui_assign_hotbar: 'Assign Hotbar',
+  ui_choose_hotbar_slot: 'Choose a quick slot.',
 
   ui_use: 'Use',
   ui_give: 'Give',

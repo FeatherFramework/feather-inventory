@@ -25,12 +25,6 @@
 
 InstancesAPI = {}
 
--- Documents are bounded so a caller cannot park unbounded state on a row.
--- Deliberately generous relative to anything weapons is expected to need
--- (ammo, condition, attachments, serial) while still being a real ceiling --
--- INV-W4 lists metadata size limits as hardening, this is the first cut.
-local MAX_METADATA_BYTES = 4096
-
 ------------------------------------------------------------------
 -- Schema
 ------------------------------------------------------------------
@@ -49,6 +43,15 @@ local function EnsureInstanceSchema()
         -- a later deliberate change to a definition is never stomped by a
         -- restart.
         MySQL.query.await("UPDATE `items` SET `instance_mode`='unique' WHERE `max_stack_size` <= 1;")
+    end
+
+    columns = MySQL.query.await("SHOW COLUMNS FROM `items` LIKE 'archived_at';")
+    if #columns < 1 then
+        MySQL.query.await("ALTER TABLE `items` ADD COLUMN `archived_at` DATETIME NULL;")
+    end
+    columns = MySQL.query.await("SHOW COLUMNS FROM `items` LIKE 'archive_reason';")
+    if #columns < 1 then
+        MySQL.query.await("ALTER TABLE `items` ADD COLUMN `archive_reason` VARCHAR(255) NULL;")
     end
 
     columns = MySQL.query.await("SHOW COLUMNS FROM `inventory_items` LIKE 'metadata';")
@@ -141,13 +144,235 @@ function InstancesAPI.SetInstanceMode(itemId, mode)
         return Result.Err(Result.Codes.INVALID_INPUT, 'Invalid item definition id.')
     end
 
-    local exists = MySQL.query.await('SELECT `id` FROM `items` WHERE `id`=? LIMIT 1;', { numericId })[1]
-    if not exists then
-        return Result.Err(Result.Codes.NOT_FOUND, 'Item definition does not exist.')
+    local failure
+    local executed, committed = pcall(MySQL.startTransaction, function(query)
+        local exists = query(
+            'SELECT `id`, `instance_mode` FROM `items` WHERE `id`=? FOR UPDATE;', { numericId })[1]
+        if not exists then
+            failure = Result.Err(Result.Codes.NOT_FOUND, 'Item definition does not exist.')
+            return false
+        end
+        if exists.instance_mode ~= mode then
+            local ownedRows = query(
+                'SELECT `id` FROM `inventory_items` WHERE `item_id`=? ORDER BY `id` FOR UPDATE;', { numericId }) or {}
+            if #ownedRows > 0 then
+                failure = Result.Err(Result.Codes.CONFLICT,
+                    'Instance mode cannot change while owned instances exist.', {
+                        itemId = numericId, instanceMode = exists.instance_mode, ownedInstances = #ownedRows })
+                return false
+            end
+            query('UPDATE `items` SET `instance_mode`=? WHERE `id`=?;', { mode, numericId })
+        end
+        return true
+    end)
+    if not executed or committed ~= true then
+        return failure or Result.Err(Result.Codes.INTERNAL, 'Instance-mode update rolled back.')
+    end
+    return Result.Ok({ itemId = numericId, instanceMode = mode })
+end
+
+function InstancesAPI.SetDefinitionArchived(itemId, archived, reason)
+    local numericId = tonumber(itemId)
+    if not numericId or type(archived) ~= 'boolean' then
+        return Result.Err(Result.Codes.INVALID_INPUT, 'Item definition id and archived boolean are required.')
+    end
+    if archived and (type(reason) ~= 'string' or reason:match('^%s*$')) then
+        return Result.Err(Result.Codes.INVALID_INPUT, 'Archiving requires a reason.')
+    end
+    local archiveReason = archived and reason:sub(1, 255) or nil
+    local failure, itemName, owned = nil, nil, 0
+    local executed, committed = pcall(MySQL.startTransaction, function(query)
+        local exists = query(
+            'SELECT `id`, `name` FROM `items` WHERE `id`=? FOR UPDATE;', { numericId })[1]
+        if not exists then
+            failure = Result.Err(Result.Codes.NOT_FOUND, 'Item definition does not exist.')
+            return false
+        end
+        itemName = exists.name
+        local ownedRows = query(
+            'SELECT `id` FROM `inventory_items` WHERE `item_id`=? ORDER BY `id` FOR UPDATE;', { numericId }) or {}
+        owned = #ownedRows
+        query('UPDATE `items` SET `archived_at`=' ..
+            (archived and 'CURRENT_TIMESTAMP' or 'NULL') ..
+            ', `archive_reason`=? WHERE `id`=?;', { archiveReason, numericId })
+        return true
+    end)
+    if not executed or committed ~= true then
+        return failure or Result.Err(Result.Codes.INTERNAL, 'Definition archive update rolled back.')
+    end
+    return Result.Ok({
+        itemId = numericId,
+        itemName = itemName,
+        archived = archived,
+        reason = archiveReason,
+        preservedInstances = owned,
+    })
+end
+
+function InstancesAPI.GetDefinitionMigrationPreflight(sourceItemId, targetItemId)
+    local sourceId, targetId = tonumber(sourceItemId), tonumber(targetItemId)
+    if not sourceId or not targetId or sourceId == targetId then
+        return Result.Err(Result.Codes.INVALID_INPUT, 'Distinct source and target definitions are required.')
+    end
+    local definitions = MySQL.query.await([[
+        SELECT `id`, `name`, `weight`, `max_quantity`, `max_stack_size`,
+               `instance_mode`, `archived_at`
+        FROM `items` WHERE `id` IN (?, ?);
+    ]], { sourceId, targetId }) or {}
+    local byId = {}
+    for _, definition in ipairs(definitions) do byId[tonumber(definition.id)] = definition end
+    if not byId[sourceId] or not byId[targetId] then
+        return Result.Err(Result.Codes.NOT_FOUND, 'Source or target definition does not exist.')
+    end
+    local source, target = byId[sourceId], byId[targetId]
+    local compatible = tostring(source.instance_mode) == tostring(target.instance_mode)
+        and tonumber(source.max_stack_size) == tonumber(target.max_stack_size)
+        and tonumber(source.max_quantity) == tonumber(target.max_quantity)
+        and tonumber(source.weight) == tonumber(target.weight)
+    local counts = MySQL.single.await([[
+        SELECT COUNT(*) AS `instances`, COUNT(DISTINCT `inventory_id`) AS `inventories`
+        FROM `inventory_items` WHERE `item_id`=?;
+    ]], { sourceId }) or {}
+    return Result.Ok({
+        sourceDefinitionId = sourceId,
+        targetDefinitionId = targetId,
+        sourceName = source.name,
+        targetName = target.name,
+        ownedInstances = tonumber(counts.instances) or 0,
+        affectedInventories = tonumber(counts.inventories) or 0,
+        storageSemanticsCompatible = compatible,
+        targetArchived = target.archived_at ~= nil,
+        advisory = true,
+    })
+end
+
+--- Reassign every owned row from one definition to another without changing
+-- instance ids, inventories, slots, or metadata. Storage semantics must match
+-- exactly; migrations requiring reweighting or re-stacking need an explicit
+-- domain-specific migration rather than an implicit destructive rewrite.
+function InstancesAPI.MigrateDefinitionInstances(sourceItemId, targetItemId, reason)
+    local sourceId, targetId = tonumber(sourceItemId), tonumber(targetItemId)
+    if not sourceId or not targetId or sourceId == targetId
+        or type(reason) ~= 'string' or reason:match('^%s*$') then
+        return Result.Err(Result.Codes.INVALID_INPUT,
+            'Distinct source/target definitions and a migration reason are required.')
     end
 
-    MySQL.query.await('UPDATE `items` SET `instance_mode`=? WHERE `id`=?;', { mode, numericId })
-    return Result.Ok({ itemId = numericId, instanceMode = mode })
+    local failure, migrated = nil, 0
+    local executed, committed = pcall(MySQL.startTransaction, function(query)
+        local definitions = query([[
+            SELECT `id`, `name`, `weight`, `max_quantity`, `max_stack_size`,
+                   `instance_mode`, `archived_at`
+            FROM `items` WHERE `id` IN (?, ?) ORDER BY `id` FOR UPDATE;
+        ]], { sourceId, targetId }) or {}
+        local byId = {}
+        for _, definition in ipairs(definitions) do byId[tonumber(definition.id)] = definition end
+        local sourceDefinition, targetDefinition = byId[sourceId], byId[targetId]
+        if not sourceDefinition or not targetDefinition then
+            failure = Result.Err(Result.Codes.NOT_FOUND, 'Source or target definition does not exist.')
+            return false
+        end
+        if targetDefinition.archived_at ~= nil then
+            failure = Result.Err(Result.Codes.CONFLICT, 'Target definition is archived.')
+            return false
+        end
+
+        local compatible = tostring(sourceDefinition.instance_mode) == tostring(targetDefinition.instance_mode)
+            and tonumber(sourceDefinition.max_stack_size) == tonumber(targetDefinition.max_stack_size)
+            and tonumber(sourceDefinition.max_quantity) == tonumber(targetDefinition.max_quantity)
+            and tonumber(sourceDefinition.weight) == tonumber(targetDefinition.weight)
+        if not compatible then
+            failure = Result.Err(Result.Codes.CONFLICT,
+                'Definitions have incompatible storage semantics.', {
+                    sourceDefinitionId = sourceId, targetDefinitionId = targetId })
+            return false
+        end
+
+        local rows = query([[
+            SELECT `id`, `inventory_id`, `slot_index`, `metadata`
+            FROM `inventory_items` WHERE `item_id`=?
+            ORDER BY `inventory_id`, `slot_index`, `id` FOR UPDATE;
+        ]], { sourceId }) or {}
+        migrated = #rows
+
+        local inventories, inventoryIds = {}, {}
+        local slots, slotList = {}, {}
+        for _, row in ipairs(rows) do
+            local inventoryId = tonumber(row.inventory_id)
+            if not inventories[inventoryId] then
+                inventories[inventoryId] = true
+                inventoryIds[#inventoryIds + 1] = inventoryId
+            end
+            if row.slot_index ~= nil then
+                local key = tostring(row.inventory_id) .. ':' .. tostring(row.slot_index)
+                if not slots[key] then
+                    slots[key] = true
+                    slotList[#slotList + 1] = {
+                        inventoryId = inventoryId, slot = tonumber(row.slot_index) }
+                end
+            end
+        end
+        table.sort(inventoryIds)
+        table.sort(slotList, function(left, right)
+            return left.inventoryId < right.inventoryId
+                or (left.inventoryId == right.inventoryId and left.slot < right.slot)
+        end)
+
+        local limit = tonumber(targetDefinition.max_quantity) or 0
+        for _, inventoryId in ipairs(inventoryIds) do
+            local counts = query([[
+                SELECT `id`, `item_id` FROM `inventory_items`
+                WHERE `inventory_id`=? AND `item_id` IN (?, ?)
+                ORDER BY `id` FOR UPDATE;
+            ]], { inventoryId, sourceId, targetId }) or {}
+            local total = #counts
+            if limit > 0 and total > limit then
+                failure = Result.Err(Result.Codes.LIMIT_EXCEEDED,
+                    'Migration would exceed the target definition quantity limit.', {
+                        inventoryId = inventoryId, quantity = total, limit = limit })
+                return false
+            end
+        end
+
+        local stackSize = tonumber(targetDefinition.max_stack_size) or 1
+        for _, slot in ipairs(slotList) do
+            local occupants = query([[
+                SELECT `item_id`, `metadata` FROM `inventory_items`
+                WHERE `inventory_id`=? AND `slot_index`=? ORDER BY `id` FOR UPDATE;
+            ]], { slot.inventoryId, slot.slot }) or {}
+            if #occupants > stackSize or not InventoryMetadata.RowsCompatible(occupants) then
+                failure = Result.Err(Result.Codes.CONFLICT,
+                    'Migration would create an invalid or metadata-incompatible stack.', slot)
+                return false
+            end
+            for _, occupant in ipairs(occupants) do
+                local definitionId = tonumber(occupant.item_id)
+                if definitionId ~= sourceId and definitionId ~= targetId then
+                    failure = Result.Err(Result.Codes.CONFLICT,
+                        'Migration encountered a mixed-definition compartment.', slot)
+                    return false
+                end
+            end
+        end
+
+        query([[
+            UPDATE `inventory_items` SET `item_id`=?, `row_revision`=`row_revision`+1
+            WHERE `item_id`=?;
+        ]], { targetId, sourceId })
+        query([[
+            UPDATE `items` SET `archived_at`=CURRENT_TIMESTAMP, `archive_reason`=?
+            WHERE `id`=?;
+        ]], { reason:sub(1, 255), sourceId })
+        return true
+    end)
+
+    if not executed or committed ~= true then
+        return failure or Result.Err(Result.Codes.INTERNAL, 'Definition migration rolled back.')
+    end
+    local context = { reason = reason:sub(1, 255), resource = GetInvokingResource() or 'feather-inventory' }
+    GuardsAPI.EmitDefinitionMigrated(sourceId, targetId, migrated, context)
+    return Result.Ok({ sourceDefinitionId = sourceId, targetDefinitionId = targetId,
+        migratedInstances = migrated, sourceArchived = true })
 end
 
 ------------------------------------------------------------------
@@ -199,7 +424,7 @@ end
 ---
 -- Write Metadata
 --
--- Replaces the whole document in one statement and bumps the revision.
+-- Replaces the whole document transactionally and bumps the revision.
 --
 -- Optimistic concurrency: pass `expectedRevision` and the write only lands if
 -- the stored revision still matches, reported as CONFLICT otherwise. That is
@@ -223,40 +448,16 @@ function InstancesAPI.WriteMetadata(instanceId, document, expectedRevision, corr
         return Result.Err(Result.Codes.INVALID_INPUT, 'Metadata document must be a table.', nil, correlationId)
     end
 
-    local encoded = json.encode(document)
-    if #encoded > MAX_METADATA_BYTES then
-        return Result.Err(Result.Codes.LIMIT_EXCEEDED,
-            ('Metadata document exceeds %d bytes.'):format(MAX_METADATA_BYTES),
-            { size = #encoded, limit = MAX_METADATA_BYTES }, correlationId)
-    end
-
-    local affected
-    if expectedRevision ~= nil then
-        affected = MySQL.update.await(
-            'UPDATE `inventory_items` SET `metadata`=?, `row_revision`=`row_revision`+1 WHERE `id`=? AND `row_revision`=?;',
-            { encoded, numericId, tonumber(expectedRevision) })
-    else
-        affected = MySQL.update.await(
-            'UPDATE `inventory_items` SET `metadata`=?, `row_revision`=`row_revision`+1 WHERE `id`=?;',
-            { encoded, numericId })
-    end
-
-    if not affected or affected < 1 then
-        -- Zero affected rows is ambiguous on its own -- the row may not exist,
-        -- or the revision may have moved. Distinguish them, because a caller
-        -- retries a CONFLICT and gives up on a NOT_FOUND.
-        local exists = MySQL.query.await('SELECT `row_revision` FROM `inventory_items` WHERE `id`=? LIMIT 1;',
-            { numericId })[1]
-        if not exists then
-            return Result.Err(Result.Codes.NOT_FOUND, 'Item instance does not exist.', nil, correlationId)
-        end
-        return Result.Err(Result.Codes.CONFLICT, 'Instance revision has moved since it was read.',
-            { expected = tonumber(expectedRevision), actual = tonumber(exists.row_revision) }, correlationId)
-    end
-
-    local updated = MySQL.query.await('SELECT `row_revision` FROM `inventory_items` WHERE `id`=? LIMIT 1;',
-        { numericId })[1]
-    return Result.Ok({ revision = updated and tonumber(updated.row_revision) or nil }, correlationId)
+    -- Use the same locked primitive as compound mutations. In particular,
+    -- this prevents a public metadata write from making one unit in an
+    -- existing stack differ from the other rows occupying that compartment.
+    return InventoryAPI.Transaction({
+        reason = 'write_metadata',
+        correlationId = correlationId,
+        resource = GetInvokingResource and GetInvokingResource() or nil,
+    }, function(tx)
+        return tx:SetMetadata(numericId, document, expectedRevision)
+    end)
 end
 
 ---
@@ -463,7 +664,12 @@ function InstancesAPI.GetCapabilities()
             atomicCreation = true,      -- instance + metadata in one statement
             characterInventoryLookup = true, -- UUID Character -> owned container read
             adminExactRemoval = true,        -- locked ownership assertion + destroy guards
-            characterItemGrant = true        -- atomic stack grants by UUID Character
+            characterItemGrant = true,       -- atomic stack grants by UUID Character
+            definitionArchive = true,        -- retirement blocks creation, preserves ownership
+            definitionMigration = true,      -- compatible identity-preserving reassignment
+            auditedDestruction = true,       -- exact ids + expected owner domain + reason
+            atomicUseActions = true,         -- declarative consume/metadata use mutation
+            integrityDiagnostics = true      -- bounded, read-only consistency report
         },
         characterIdentity = {
             format = 'uuid-string',

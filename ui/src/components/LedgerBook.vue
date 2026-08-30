@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { t, conditionStage, conditionMax } from '@/i18n';
 
 // One "1899 personal effects ledger" book -- either the player's own
@@ -16,6 +16,7 @@ const props = defineProps({
   items: { type: Array, required: true }, // flat rows, each with slot_index
   categories: { type: Array, required: true }, // [{ id: null, label: <localized ALL> }, { id, label }, ...]
   activeCategoryId: { default: null },
+  searchQuery: { type: String, default: '' },
   selectedIndex: { type: Number, default: -1 },
   paired: { type: Boolean, default: false },
   // Drag/hover state for THIS book specifically, already resolved by the
@@ -30,6 +31,7 @@ const props = defineProps({
 
 const emit = defineEmits([
   'update:activeCategoryId',
+  'update:searchQuery',
   'update:selectedIndex',
   'cellMouseDown',
   'cellMouseEnter',
@@ -53,10 +55,31 @@ const slots = computed(() => {
   return grouped;
 });
 
+const categoryOpen = ref(false);
+const activeCategory = computed(() =>
+  props.categories.find((category) => category.id === props.activeCategoryId) || props.categories[0],
+);
+
+function selectCategory(id) {
+  emit('update:activeCategoryId', id);
+  categoryOpen.value = false;
+}
+
+function closeCategoryOnBlur(event) {
+  if (!event.currentTarget.contains(event.relatedTarget)) categoryOpen.value = false;
+}
+
 const cells = computed(() => {
+  const query = props.searchQuery.trim().toLocaleLowerCase();
   return slots.value.map((stack, index) => {
     const repItem = stack ? stack[0] : null;
-    const visible = repItem && (props.activeCategoryId == null || repItem.category_id === props.activeCategoryId);
+    const matchesCategory = repItem &&
+      (props.activeCategoryId == null || repItem.category_id === props.activeCategoryId);
+    const searchableText = repItem
+      ? `${repItem.display_name || ''} ${repItem.name || ''} ${repItem.description || ''}`.toLocaleLowerCase()
+      : '';
+    const matchesSearch = !query || searchableText.includes(query);
+    const visible = repItem && matchesCategory && matchesSearch;
     return {
       index,
       stack,
@@ -116,9 +139,8 @@ const carrying = computed(() => {
 });
 
 function iconSrc(name) {
-  // Relative, not root-absolute: the release layout flattens the build so
-  // images/ sits next to index.html inside ui/, not at the resource root
-  // (see fxmanifest.lua's files{} -- "ui/index.html", "ui/images/*.*"). A
+  // Relative, not root-absolute: the release action flattens Vite's dist
+  // contents into ui/, so images/ sits next to ui/index.html. A
   // leading "/" resolves against the resource root under nui:// and misses
   // entirely; this must resolve against index.html's own location instead.
   return `images/items/${name}.png`;
@@ -152,11 +174,6 @@ function cellBg(cell) {
   return 'transparent';
 }
 
-function tabLabelSize(count) {
-  if (count >= 9) return '11px';
-  if (count >= 7) return '12px';
-  return '13px';
-}
 </script>
 
 <template>
@@ -171,20 +188,39 @@ function tabLabelSize(count) {
 
       <div class="ledger-rule"></div>
 
-      <div class="ledger-tabs" :style="{ fontSize: tabLabelSize(categories.length) }">
-        <div
-          v-for="cat in categories"
-          :key="cat.label"
-          class="ledger-tab"
-          @click="emit('update:activeCategoryId', cat.id)"
-        >
-          <div :class="{ active: cat.id === activeCategoryId }">{{ cat.label }}</div>
-          <img
-            v-if="cat.id === activeCategoryId"
-            src="@/assets/ledger/tab-marker.png"
-            class="tab-marker"
-          />
+      <div class="ledger-filters">
+        <div class="ledger-category" tabindex="-1" @focusout="closeCategoryOnBlur">
+          <button
+            type="button"
+            class="ledger-category-trigger"
+            :aria-expanded="categoryOpen"
+            @click="categoryOpen = !categoryOpen"
+          >
+            <span>{{ activeCategory?.label || t('ui_all') }}</span>
+            <span class="ledger-category-caret" aria-hidden="true">&#9662;</span>
+          </button>
+          <div v-if="categoryOpen" class="ledger-category-menu">
+            <button
+              v-for="cat in categories"
+              :key="cat.label"
+              type="button"
+              class="ledger-category-option"
+              :class="{ active: cat.id === activeCategoryId }"
+              @click="selectCategory(cat.id)"
+            >
+              {{ cat.label }}
+            </button>
+          </div>
         </div>
+        <input
+          class="ledger-search"
+          type="text"
+          :value="searchQuery"
+          :placeholder="t('ui_search')"
+          :aria-label="t('ui_search')"
+          autocomplete="off"
+          @input="emit('update:searchQuery', $event.target.value)"
+        />
       </div>
 
       <div class="ledger-rule"></div>
@@ -342,46 +378,104 @@ function tabLabelSize(count) {
   background: rgba(43, 32, 19, 0.55);
 }
 
-.ledger-tabs {
+.ledger-filters {
   margin-top: 9px;
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  flex-wrap: wrap;
-  row-gap: 4px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
   font-family: 'Playfair Display', serif;
   font-weight: 500;
-  letter-spacing: 0.07em;
+  letter-spacing: 0.04em;
 }
 
-.paired .ledger-tabs {
-  font-size: 12px;
-  letter-spacing: 0.06em;
-}
-
-.ledger-tab {
+.ledger-category {
   position: relative;
-  padding: 0 3px;
-  cursor: pointer;
-  text-align: center;
+  min-width: 0;
 }
 
-.ledger-tab div {
-  color: #5c4a30;
-}
-
-.ledger-tab div.active {
+.ledger-category-trigger,
+.ledger-search,
+.ledger-category-option {
   color: #2b2013;
+  font: inherit;
 }
 
-.tab-marker {
+.ledger-category-trigger,
+.ledger-search {
+  width: 100%;
+  height: 31px;
+  box-sizing: border-box;
+  border: 0;
+  border-bottom: 1px solid rgba(43, 32, 19, 0.55);
+  background: rgba(120, 96, 56, 0.04);
+}
+
+.ledger-category-trigger {
+  padding: 3px 7px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.ledger-category-caret {
+  margin-left: 8px;
+  font-size: 12px;
+}
+
+.ledger-category-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  padding: 4px;
+  border: 1px solid rgba(43, 32, 19, 0.55);
+  background: #d7c39a;
+  box-shadow: 0 8px 16px rgba(43, 32, 19, 0.28);
+}
+
+.ledger-category-option {
   display: block;
-  width: 62px;
-  margin: 3px auto 0;
+  width: 100%;
+  padding: 5px 7px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  text-transform: uppercase;
 }
 
-.paired .tab-marker {
-  width: 54px;
+.ledger-category-option:hover,
+.ledger-category-option.active {
+  background: rgba(90, 68, 34, 0.14);
+}
+
+.ledger-category-option.active {
+  font-weight: 700;
+}
+
+.ledger-search {
+  padding: 3px 7px;
+  outline: none;
+}
+
+.ledger-search::placeholder {
+  color: rgba(43, 32, 19, 0.56);
+  text-transform: uppercase;
+}
+
+.ledger-search:focus,
+.ledger-category-trigger:focus-visible {
+  background: rgba(90, 68, 34, 0.1);
+  outline: 1px solid rgba(43, 32, 19, 0.38);
+}
+
+.paired .ledger-filters {
+  gap: 10px;
+  font-size: 12px;
 }
 
 /* (§10.4 scrollable grid) The book art is a fixed-size asset calibrated for
@@ -656,7 +750,9 @@ function tabLabelSize(count) {
 .ledger-title,
 .ledger-cell-qty,
 .ledger-carrying-text,
-.ledger-tab {
+.ledger-category-trigger,
+.ledger-category-option,
+.ledger-search {
   text-shadow: none;
 }
 

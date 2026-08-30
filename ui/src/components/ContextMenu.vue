@@ -6,20 +6,21 @@ const props = defineProps({
   x: { type: Number, required: true },
   y: { type: Number, required: true },
   canUse: { type: Boolean, default: false },
+  canAssignHotbar: { type: Boolean, default: false },
   // Only meaningful for a compartment holding more than one unit -- splitting
   // a single item, or the whole stack, is just a move (see the server's
   // SplitStack RPC, which rejects both).
   canSplit: { type: Boolean, default: false },
 });
 
-const emit = defineEmits(['use', 'give', 'drop', 'split', 'close']);
+const emit = defineEmits(['use', 'assignHotbar', 'give', 'drop', 'split', 'close']);
 
 // Keep the menu on-screen near the click point rather than letting it run
 // off the right/bottom edge -- flip anchor side instead of clamping
 // position so it never overlaps the cursor.
 const style = computed(() => {
   const flipX = props.x > window.innerWidth - 160;
-  const flipY = props.y > window.innerHeight - 140;
+  const flipY = props.y > window.innerHeight - 190;
   return {
     left: flipX ? 'auto' : props.x + 'px',
     right: flipX ? window.innerWidth - props.x + 'px' : 'auto',
@@ -33,6 +34,7 @@ const style = computed(() => {
   <div class="ctx-backdrop" @click="emit('close')" @contextmenu.prevent="emit('close')"></div>
   <div class="ctx-menu" :style="style">
     <div v-if="canUse" class="ctx-item" @click="(event) => emit('use', event)">{{ t('ui_use') }}</div>
+    <div v-if="canAssignHotbar" class="ctx-item" @click="emit('assignHotbar')">{{ t('ui_assign_hotbar') }}</div>
     <div class="ctx-item" @click="(event) => emit('give', event)">{{ t('ui_give') }}</div>
     <div class="ctx-item" @click="(event) => emit('drop', event)">{{ t('ui_drop') }}</div>
     <div v-if="canSplit" class="ctx-item" @click="(event) => emit('split', event)">{{ t('ui_split') }}</div>

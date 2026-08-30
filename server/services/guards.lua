@@ -87,6 +87,20 @@ end
 -- Evaluation
 ------------------------------------------------------------------
 
+local function RunResolvedGuards(registry, instance, context)
+    for name, guard in pairs(registry) do
+        local ok, allowed, reason = pcall(guard, instance, context or {})
+        if not ok then
+            warn(('Guard "%s" errored (%s); vetoing as fail-closed.'):format(name, tostring(allowed)))
+            return false, ('Guard "%s" failed.'):format(name)
+        end
+        if allowed == false then
+            return false, reason or ('Blocked by guard "%s".'):format(name)
+        end
+    end
+    return true
+end
+
 local function RunGuards(registry, instanceId, context)
     -- Nothing registered is the overwhelmingly common case (no consumer
     -- resource loaded), so skip the instance read entirely rather than
@@ -102,20 +116,7 @@ local function RunGuards(registry, instanceId, context)
         return false, 'Item instance could not be read for guard evaluation.'
     end
 
-    for name, guard in pairs(registry) do
-        local ok, allowed, reason = pcall(guard, instance.value, context or {})
-        if not ok then
-            -- A guard that throws is a broken guard, and a broken guard must
-            -- not become permission by accident.
-            warn(('Guard "%s" errored (%s); vetoing as fail-closed.'):format(name, tostring(allowed)))
-            return false, ('Guard "%s" failed.'):format(name)
-        end
-        if allowed == false then
-            return false, reason or ('Blocked by guard "%s".'):format(name)
-        end
-    end
-
-    return true
+    return RunResolvedGuards(registry, instance.value, context)
 end
 
 ---
@@ -127,8 +128,27 @@ function GuardsAPI.CanMoveInstance(instanceId, context)
     return RunGuards(MoveGuards, instanceId, context)
 end
 
+-- Transaction paths already hold a normalized snapshot from their locking
+-- SELECT. Reusing it prevents a second connection from querying a row locked
+-- by the transaction itself while preserving the exact guard contract.
+function GuardsAPI.CanMoveInstanceSnapshot(instance, context)
+    if next(MoveGuards) == nil then return true end
+    if type(instance) ~= 'table' or not tonumber(instance.id) then
+        return false, 'Item instance could not be read for guard evaluation.'
+    end
+    return RunResolvedGuards(MoveGuards, instance, context)
+end
+
 function GuardsAPI.CanDestroyInstance(instanceId, context)
     return RunGuards(DestroyGuards, instanceId, context)
+end
+
+function GuardsAPI.CanDestroyInstanceSnapshot(instance, context)
+    if next(DestroyGuards) == nil then return true end
+    if type(instance) ~= 'table' or not tonumber(instance.id) then
+        return false, 'Item instance could not be read for guard evaluation.'
+    end
+    return RunResolvedGuards(DestroyGuards, instance, context)
 end
 
 ------------------------------------------------------------------
@@ -142,6 +162,7 @@ GuardsAPI.Events = {
     ItemMoved = 'Feather:Inventory:ItemMoved',
     ItemMetadataChanged = 'Feather:Inventory:ItemMetadataChanged',
     ItemDestroyed = 'Feather:Inventory:ItemDestroyed',
+    DefinitionMigrated = 'Feather:Inventory:DefinitionMigrated',
     TransactionCommitted = 'Feather:Inventory:TransactionCommitted',
 }
 
@@ -152,14 +173,27 @@ local function Emit(eventName, payload)
     TriggerEvent(eventName, payload)
 end
 
-function GuardsAPI.EmitItemCreated(instanceId, definitionId, inventoryId, context)
-    Emit(GuardsAPI.Events.ItemCreated, {
-        instanceId = instanceId,
-        definitionId = definitionId,
-        inventoryId = inventoryId,
+local function MutationFact(operation, context)
+    return {
+        operation = operation,
+        outcome = 'committed',
+        quantity = 1,
+        actorSource = context and context.actorSource,
+        actorCharacterId = context and context.actorCharacterId,
+        resource = context and context.resource,
         correlationId = context and context.correlationId,
         reason = context and context.reason,
-    })
+        occurredAt = os.time(),
+    }
+end
+
+function GuardsAPI.EmitItemCreated(instanceId, definitionId, inventoryId, context)
+    local fact = MutationFact('create', context)
+    fact.instanceId = instanceId
+    fact.definitionId = definitionId
+    fact.inventoryId = inventoryId
+    fact.destination = { inventoryId = inventoryId }
+    Emit(GuardsAPI.Events.ItemCreated, fact)
 end
 
 function GuardsAPI.EmitItemMoved(instanceId, fromInventoryId, toInventoryId, context, extra)
@@ -167,44 +201,49 @@ function GuardsAPI.EmitItemMoved(instanceId, fromInventoryId, toInventoryId, con
     -- knows them. The transaction path previously passed nil for both, so a
     -- consumer had to re-query to learn what had just moved.
     extra = extra or {}
-    Emit(GuardsAPI.Events.ItemMoved, {
-        operation = 'move',
-        instanceId = instanceId,
-        definitionId = extra.definitionId,
-        revision = extra.revision,
-        fromInventoryId = fromInventoryId,
-        toInventoryId = toInventoryId,
-        actorSource = context and context.actorSource,
-        actorCharacterId = context and context.actorCharacterId,
-        correlationId = context and context.correlationId,
-        reason = context and context.reason,
-    })
+    local fact = MutationFact('move', context)
+    fact.instanceId = instanceId
+    fact.definitionId = extra.definitionId
+    fact.revision = extra.revision
+    fact.fromInventoryId = fromInventoryId
+    fact.toInventoryId = toInventoryId
+    fact.origin = { inventoryId = fromInventoryId, slot = extra.fromSlot }
+    fact.destination = { inventoryId = toInventoryId, slot = extra.toSlot }
+    Emit(GuardsAPI.Events.ItemMoved, fact)
 end
 
-function GuardsAPI.EmitItemMetadataChanged(instanceId, revision, context)
-    Emit(GuardsAPI.Events.ItemMetadataChanged, {
-        instanceId = instanceId,
-        revision = revision,
-        correlationId = context and context.correlationId,
-        reason = context and context.reason,
-    })
+function GuardsAPI.EmitItemMetadataChanged(instanceId, revision, context, extra)
+    extra = extra or {}
+    local fact = MutationFact('metadata_write', context)
+    fact.instanceId = instanceId
+    fact.definitionId = extra.definitionId
+    fact.inventoryId = extra.inventoryId
+    fact.origin = { inventoryId = extra.inventoryId, slot = extra.slot }
+    fact.destination = { inventoryId = extra.inventoryId, slot = extra.slot }
+    fact.revision = revision
+    Emit(GuardsAPI.Events.ItemMetadataChanged, fact)
 end
 
 function GuardsAPI.EmitItemDestroyed(instanceId, definitionId, inventoryId, context)
-    Emit(GuardsAPI.Events.ItemDestroyed, {
-        instanceId = instanceId,
-        definitionId = definitionId,
-        inventoryId = inventoryId,
-        correlationId = context and context.correlationId,
-        reason = context and context.reason,
-    })
+    local fact = MutationFact('destroy', context)
+    fact.instanceId = instanceId
+    fact.definitionId = definitionId
+    fact.inventoryId = inventoryId
+    fact.origin = { inventoryId = inventoryId }
+    Emit(GuardsAPI.Events.ItemDestroyed, fact)
 end
 
 function GuardsAPI.EmitTransactionCommitted(context, summary)
-    Emit(GuardsAPI.Events.TransactionCommitted, {
-        correlationId = context and context.correlationId,
-        reason = context and context.reason,
-        resource = context and context.resource,
-        summary = summary,
-    })
+    local fact = MutationFact('transaction', context)
+    fact.quantity = nil
+    fact.summary = summary
+    Emit(GuardsAPI.Events.TransactionCommitted, fact)
+end
+
+function GuardsAPI.EmitDefinitionMigrated(sourceDefinitionId, targetDefinitionId, quantity, context)
+    local fact = MutationFact('definition_migration', context)
+    fact.quantity = tonumber(quantity) or 0
+    fact.sourceDefinitionId = tonumber(sourceDefinitionId)
+    fact.targetDefinitionId = tonumber(targetDefinitionId)
+    Emit(GuardsAPI.Events.DefinitionMigrated, fact)
 end

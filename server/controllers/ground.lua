@@ -47,12 +47,30 @@ function GroundControllers.CreateGround(x, y, z)
         { x, y, z })
 end
 
-function GroundControllers.DeleteGround(id)
-     MySQL.query.await('DELETE FROM `ground` WHERE `id` = ?;', { id })
+function GroundControllers.DeleteGroundIfEmpty(id)
+    local result = MySQL.query.await([[
+        DELETE FROM `ground`
+        WHERE `id`=? AND NOT EXISTS (
+            SELECT 1 FROM `inventory` i
+            INNER JOIN `inventory_items` ii ON ii.`inventory_id`=i.`id`
+            WHERE i.`ground_id`=`ground`.`id`
+            LIMIT 1
+        );
+    ]], { id })
+    return (tonumber(result and (result.affectedRows or result.affected_rows)) or 0) == 1
 end
 
-function GroundControllers.DeleteAllGround()
-    MySQL.query.await('DELETE FROM `ground`;')
+function GroundControllers.DeleteEmptyGround()
+    local result = MySQL.query.await([[
+        DELETE FROM `ground`
+        WHERE NOT EXISTS (
+            SELECT 1 FROM `inventory` i
+            INNER JOIN `inventory_items` ii ON ii.`inventory_id`=i.`id`
+            WHERE i.`ground_id`=`ground`.`id`
+            LIMIT 1
+        );
+    ]])
+    return tonumber(result and (result.affectedRows or result.affected_rows)) or 0
 end
 
 function GroundControllers.GetGroundID(id)

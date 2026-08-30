@@ -54,7 +54,14 @@ Feather.RPC.Register('Feather:Inventory:UpdateInventory', function(params, res, 
   -- browser devtools console (see App.vue's onDrop), which nobody sees
   -- in-game. Reusing Feather.Notify.RightNotify the same way this file's
   -- other rejection paths already do.
-  local result = InventoryControllers.MoveInventoryItems(sourceInventory, targetInventory, items)
+  local player = InventoryIdentity.GetCharacter(src)
+  local character = player and player.char
+  local result = InventoryControllers.MoveInventoryItems(sourceInventory, targetInventory, items, {
+    actorSource = src,
+    actorCharacterId = character and character.id,
+    reason = 'inventory_transfer',
+    resource = 'feather-inventory'
+  })
   if result and result.error then
     Feather.Notify.RightNotify(src, TranslateResult(src, result, 'err_move_failed'), 3000)
   end
@@ -107,7 +114,15 @@ Feather.RPC.Register('Feather:Inventory:GiveItem', function(params, res, src)
     return res({ error = true, message = 'Inventory not available.' })
   end
 
-  local giveResult = InventoryControllers.MoveInventoryItems(sourceInventoryId, destinationInventoryId, { item })
+  local giveResult = InventoryControllers.MoveInventoryItems(sourceInventoryId, destinationInventoryId, { item }, {
+    actorSource = src,
+    actorCharacterId = character.id,
+    reason = 'give',
+    resource = 'feather-inventory',
+    -- Proximity authorizes this specific deposit without granting the giver
+    -- general access to the recipient's inventory.
+    allowTargetInsert = true
+  })
   if giveResult and giveResult.error then
     Feather.Notify.RightNotify(src, TranslateResult(src, giveResult, 'err_give_failed'), 3000)
   end
@@ -186,7 +201,8 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
   local mergeCount = 0
 
   if #movingBreakdown == 1 and #occupantBreakdown == 1
-      and tostring(movingBreakdown[1].item_id) == tostring(occupantBreakdown[1].item_id) then
+      and tostring(movingBreakdown[1].item_id) == tostring(occupantBreakdown[1].item_id)
+      and InventoryControllers.AreSlotsStackCompatible(fromInventory, fromSlot, toInventory, toSlot) then
     local stackSize = math.max(tonumber(occupantBreakdown[1].max_stack_size) or 1, 1)
     local room = stackSize - (tonumber(occupantBreakdown[1].count) or 0)
     if room > 0 then
@@ -246,19 +262,35 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
     -- MoveSlotItemsPartial had no emit at all -- for as long as the legacy
     -- ItemAdded/ItemRemoved pair existed here, that gap was invisible,
     -- because those two were firing in its place. Removing them surfaced it.
-    local _, mergedIds = InventoryControllers.MoveSlotItemsPartial(
-      fromInventory, fromSlot, toInventory, toSlot, mergeCount)
-    if tostring(fromInventory) ~= tostring(toInventory) then
-      for _, id in ipairs(mergedIds) do
-        GuardsAPI.EmitItemMoved(id, fromInventory, toInventory,
-          { reason = 'slot_merge', actorSource = src },
-          { definitionId = tonumber(movingBreakdown[1].item_id) })
-      end
+    local player = InventoryIdentity.GetCharacter(src)
+    local character = player and player.char
+    local merged = InventoryControllers.MoveSlotItemsPartial(
+      fromInventory, fromSlot, toInventory, toSlot, mergeCount, {
+        actorSource = src,
+        actorCharacterId = character and character.id,
+        reason = 'slot_merge',
+        resource = 'feather-inventory'
+      })
+    if merged < 1 then
+      Feather.Notify.RightNotify(src, Translate(src, 'err_move_failed', 'The inventory changed; try again.'), 3000)
+      return res({ error = true, code = 'conflict', message = 'The inventory changed; try again.' })
     end
   else
     -- MoveSlotItems emits ItemMoved itself, post-commit, and only when the
     -- item actually changed inventory.
-    InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory, toSlot)
+    local player = InventoryIdentity.GetCharacter(src)
+    local character = player and player.char
+    local moved, code, message = InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory, toSlot, {
+      actorSource = src,
+      actorCharacterId = character and character.id,
+      reason = 'slot_move',
+      resource = 'feather-inventory'
+    })
+    if not moved then
+      local failure = { error = true, code = code or 'conflict', message = message or 'The inventory changed; try again.' }
+      Feather.Notify.RightNotify(src, TranslateResult(src, failure, 'err_move_failed'), 3000)
+      return res(failure)
+    end
   end
 
   res({
@@ -317,7 +349,18 @@ Feather.RPC.Register('Feather:Inventory:SplitStack', function(params, res, src)
     return res({ error = true, message = 'No free compartment to split into.' })
   end
 
-  InventoryControllers.SplitSlotItems(inventory, fromSlot, freeSlot, quantity)
+  local player = InventoryIdentity.GetCharacter(src)
+  local character = player and player.char
+  local moved = InventoryControllers.SplitSlotItems(inventory, fromSlot, freeSlot, quantity, {
+    actorSource = src,
+    actorCharacterId = character and character.id,
+    reason = 'split_stack',
+    resource = 'feather-inventory'
+  })
+  if moved ~= quantity then
+    Feather.Notify.RightNotify(src, Translate(src, 'err_move_failed', 'The inventory changed; try again.'), 3000)
+    return res({ error = true, code = 'conflict', message = 'The inventory changed; try again.' })
+  end
 
   res({
     sourceItems = InventoryControllers.GetInventoryItems(inventory),
@@ -373,7 +416,12 @@ Feather.RPC.Register('Feather:Inventory:TakeAll', function(params, res, src)
   local moved, skipped = 0, 0
 
   for _, item in pairs(sourceItems) do
-    local result = InventoryControllers.MoveInventoryItems(fromInventory, targetInventory, { item.id })
+    local result = InventoryControllers.MoveInventoryItems(fromInventory, targetInventory, { item.id }, {
+      actorSource = src,
+      actorCharacterId = character.id,
+      reason = 'take_all',
+      resource = 'feather-inventory'
+    })
     if result and result.error then
       skipped = skipped + 1
     else

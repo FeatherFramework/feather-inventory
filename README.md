@@ -1,8 +1,38 @@
 # Feather Inventory
 
-Feather inventory is designed to provide a realistic and immersive inventory system for players. It is based on weight, allowing players to manage their items effectively. Additionally, it features a unique player-to-player robbery system and the ability to register usable items. Moreover, the script comes with an API that enables the registration of custom inventories for various entities.
+Feather inventory is designed to provide a realistic and immersive inventory system for players. It is based on weight, allowing players to manage their items effectively. Additionally, it includes a player-to-player looting/search access system for lawful and criminal consumers and the ability to register usable items. Moreover, the script comes with an API that enables the registration of custom inventories for various entities.
 
 ## Features
+
+### Hotbar
+
+The inventory hotbar provides persistent per-character quick-slot bindings and
+uses `Shift+1` through `Shift+6` by default so it does not collide with RedM's
+built-in plain-number weapon wheel. Stackable items bind by definition and
+continue to work as individual instances are consumed/replenished; unique items
+bind to their exact instance.
+
+```lua
+Config.Hotbar = {
+    Enabled = true,
+    Visibility = 'UserDefined', -- Temporary | Always | UserDefined
+    DefaultVisibility = 'Temporary',
+    TemporaryDuration = 4000,
+    Modifier = 'SHIFT',
+    Slots = 6,
+}
+```
+
+`Enabled=false` disables assignment, input, rendering, and server use requests.
+`Temporary` and `Always` are forced operator policies. `UserDefined` exposes a
+Temporary/Always choice through `feather-settings`; the presentation preference
+is stored locally by Inventory and survives resource/game restarts. Existing
+bindings/preferences are preserved while the feature or player choice is
+disabled.
+
+Right-click a usable item in the player's book and select **Assign Hotbar** to
+assign, replace, or clear a slot. Every use re-resolves current ownership on the
+server; the client never supplies the item instance to use.
 
 1. **Player inventory**: Provides players with an inventory
 2. **Secondary/Custom inventory**: Developers can utilize the API provided by the script to register custom inventories for various entities within the game. This feature allows for expanded gameplay possibilities, such as creating unique loot systems or interactive objects.
@@ -74,11 +104,35 @@ The server export exposes:
 | `Categories` | Ledger category tabs |
 | `Instances` | Item identity, `stack`/`unique` mode, versioned metadata |
 | `Transaction` / `MutateItem` / `CreateInstance` | Atomic, row-locked multi-item mutations |
+| `DestroyInstances` / `UseItemAction` | Exact audited destruction and declarative atomic use |
 | `Guards` | Veto a move or destroy before it happens |
 | `Equipment` | Persisted `character × slot → instance` |
-| `Diagnostics` | Transaction counters |
+| `Diagnostics` | Transaction counters and read-only integrity scans |
 
-Four provider functions are also aliased at the **top level**, under exactly the names a consumer adapter expects: `GetCapabilities`, `GetItemForCharacter`, `GetEquippedForCharacter`, `SetEquippedForCharacter`.
+Provider functions are also aliased at the **top level**: `GetCapabilities`,
+`GetItemForCharacter`, `GetEquippedForCharacter`,
+`SetEquippedForCharacter`, and `GetCharacterInventory`.
+
+### Supported server surface index
+
+This is the supported `initiate()` contract. Functions present on the Lua
+tables but omitted here—`Internal*`, `RegisterInternalUseGuard`, locked-snapshot
+guard helpers, and `Emit*`—are resource-private implementation details.
+
+| Surface | Supported methods |
+|---|---|
+| Top level | `Transaction`, `MutateItem`, `CreateInstance`, `DestroyInstances`, `UseItemAction`, `GetCapabilities`, `GetItemForCharacter`, `GetEquippedForCharacter`, `SetEquippedForCharacter`, `GetCharacterInventory` |
+| `Inventory` | `RegisterForeignKey`, `RegisterInventory`, `GetInventory`, `GetCustomInventory`, `GetCharacterInventory`, `GetInventoryItems`, `InventoryCanHold`, `InventoryCanHoldById`, `EvaluateSlotMove`, `OpenInventory`, `CloseInventory`, `CanAccessInventory`, `IsInventoryAccessibleBySrc`, `GetInventoryOwner`, `GetInventoryOwnerResult`, `GetInventoryOwnerAndVisibility`, `GrantInventoryAccess`, `RevokeInventoryAccess`, `ListInventoryAccess`, `HasInventoryAccessGrant`, `SetInventoryPublic`, `GrantTemporaryAccess`, `RevokeTemporaryAccess`, `HasTemporaryAccess`, `GetContainerLifecycle`, `DeleteContainerIfEmpty`, `RecoverContainerContents` |
+| `Items` | `GetDefinitions`, `ItemExists`, `GetItem`, `GetItemCount`, `InventoryHasItems`, `GrantItem`, `AddItem`, `RemoveItemByName`, `RemoveItemById`, `DropItemsOnGround`, `RegisterUsableItem`, `RegisterUsableAction`, `UseItem`, `GetCondition`, `SetCondition`, `AdjustCondition` |
+| `Instances` | `GetCapabilities`, `GetInstance`, `GetItemForCharacter`, `FindInstances`, `IsUniqueDefinition`, `SetInstanceMode`, `SetDefinitionArchived`, `GetDefinitionMigrationPreflight`, `MigrateDefinitionInstances`, `ReadMetadata`, `WriteMetadata`, `MergeMetadata` |
+| `Equipment` | `GetEquippedForCharacter`, `SetEquippedForCharacter`, `ClearEquippedInstance`, `IsInstanceEquipped` |
+| `Guards` | `RegisterMoveGuard`, `UnregisterMoveGuard`, `RegisterDestroyGuard`, `UnregisterDestroyGuard`, `CanMoveInstance`, `CanDestroyInstance` |
+| `Diagnostics` | `GetTransactionMetrics`, `RunIntegrityDiagnostics` |
+| `Categories` | `GetCategories` |
+
+Direct Cfx exports are `initiate`, `GetCharacterInventory`,
+`RemoveCharacterInventoryInstance`, and `GrantCharacterItem`. The latter three
+are trusted server-only UUID Character adapters documented below.
 
 The client export exposes only `Action`.
 
@@ -145,6 +199,36 @@ Notes that catch people out:
 - `maxWeight` — `nil` uses `Config.maxWeight`; **`0` means no weight limit** (ground piles register this way, since a heap on the floor has nothing doing the carrying). Slot and per-item quantity limits still apply at `0`.
 - `maxSlots` — `nil` uses `Config.maxItemSlots`. Capacity is per-inventory and the ledger grid scrolls, so it is not bounded by what fits on one visible page.
 - `ownerCharacterId` / `isPublic` / `maxSlots` / `maxWeight` are written **only when explicitly passed**. Omitting one on a re-register never resets a stored setting — so calling `RegisterInventory('wagons', id)` on every spawn is safe.
+
+Before deleting an entity that owns a container, its resource can inspect and
+close the Inventory side safely:
+
+```lua
+local state = Inventory.Inventory.GetContainerLifecycle(inventoryId)
+if state.ok and state.value.itemCount == 0 then
+  local deleted = Inventory.Inventory.DeleteContainerIfEmpty(
+    inventoryId, 'wagons', 'wagon permanently deleted')
+end
+```
+
+Deletion locks the container and its item rows, rechecks the owner domain, and
+fails with `conflict` if anything remains. Character and Ground containers are
+protected from this consumer API. Deleting the owning wagon/property row before
+this succeeds is a consumer bug: its foreign-key cascade is cleanup machinery,
+not permission to destroy player property.
+
+To retain property while deleting its owner, recover and delete atomically:
+
+```lua
+local recovered = Inventory.Inventory.RecoverContainerContents(
+  wagonInventoryId, characterInventoryId, 'wagons', 'wagon permanently deleted')
+```
+
+Every instance is locked, guard-checked, capacity-checked, moved to the named
+recovery inventory, and announced through normal post-commit movement facts.
+The source container is deleted in that same transaction only if no unlisted or
+concurrently-added item remains. The consumer may delete its owning entity only
+after this call succeeds.
 - `tableName` and `primaryKeyName` must be valid SQL identifiers; they are concatenated into DDL and are rejected otherwise.
 
 ### Reads
@@ -344,15 +428,49 @@ for _, instanceId in ipairs(result.value.instanceIds) do
 end
 ```
 
-`AddItem` is the older path. It accepts initial metadata (written in the same `INSERT`, so an instance is never briefly visible without the state that defines it) and reports `granted`/`requested` so a partial grant is distinguishable from a complete one.
+`AddItem` is the older compatibility path. It accepts initial metadata and now
+delegates to the same row-locked transaction used by newer grants, so capacity,
+placement, creation, and post-commit facts are atomic. Success reports
+`granted`/`requested` plus the created instance ids; failure grants nothing.
 
 ```lua
 local result = Inventory.Items.AddItem('consumable_apple', 10, { picked = true }, source)
 
 if not result.ok then
-  print(result.error.code, result.error.message, result.error.details.granted)
+  print(result.error.code, result.error.message)
 end
 ```
+
+Definitions may be retired without deleting player property:
+
+```lua
+local archived = Inventory.Instances.SetDefinitionArchived(definitionId, true,
+  'Replaced by the revised medical item catalog')
+
+local migrated = Inventory.Instances.MigrateDefinitionInstances(
+  oldDefinitionId, replacementDefinitionId, 'Catalog replacement')
+```
+
+Use `GetDefinitionMigrationPreflight(oldDefinitionId, replacementDefinitionId)`
+for advisory counts and compatibility before presenting confirmation; the
+committing call repeats authoritative validation under locks.
+
+Archived definitions disappear from the grant catalog and every transactional
+creation path rejects them. Existing instances remain readable, movable,
+usable, and removable. Passing `false` restores the definition. Changing a
+definition between `stack` and `unique` is rejected while any owned instances
+exist; that change requires an explicit migration.
+
+`MigrateDefinitionInstances` preserves every owned instance id, inventory,
+slot, and metadata document while atomically reassigning it and archiving the
+source. It rejects incompatible weight, quantity-limit, stack-size, or
+instance-mode semantics and revalidates affected stacks before commit.
+
+Stackable units share a compartment only when their decoded metadata documents
+are semantically equal. JSON key order does not matter, but different quality,
+condition, stolen state, batch, label, or spoilage data prevents joining. The
+unit receives a separate compartment instead; Inventory never chooses one
+unit's metadata as representative for a heterogeneous stack.
 
 ### Removing and dropping
 
@@ -370,7 +488,11 @@ local gone = Inventory.Items.RemoveItemById(instanceId)
 local dropped = Inventory.Items.DropItemsOnGround(inventoryId, { { id = instanceId } }, x, y, z)
 ```
 
-All three consult the **destroy guards** first and refuse with `code = 'denied'` if any guard vetoes. `RemoveItemByName` is all-or-nothing: a partial removal because one unit was vetoed would be worse than refusing the request.
+Both removal helpers run inside the row-locked transaction pipeline, consult
+the **destroy guards**, and refuse with `code = 'denied'` if any guard vetoes.
+`RemoveItemByName` is all-or-nothing: a partial removal because one unit was
+vetoed would be worse than refusing the request. Ground dropping is movement,
+so it consults move guards and preserves the item instances.
 
 ### Usable items
 
@@ -378,15 +500,47 @@ All three consult the **destroy guards** first and refuse with `code = 'denied'`
 -- Register once at startup:
 Inventory.Items.RegisterUsableItem('consumable_apple', function(item, src, refresh)
   Feather.Character.AdjustHunger(src, 10)
-  Inventory.Items.RemoveItemById(item.id)
+  local removed = Inventory.Items.RemoveItemById(item.id)
+  if not removed.ok then return removed end
   refresh()  -- re-opens/refreshes the ledger for that player
+  return { ok = true }
 end)
 
 -- Called for you when a player uses the item from the ledger; also callable directly.
 Inventory.Items.UseItem(instanceId, source)
 ```
 
-The callback receives the joined item row, the player source, and a `refresh` callback. Registering the same name twice warns and keeps the first registration. `UseItem` re-derives ownership from the item's own `inventory_id` — a client cannot use an item it does not hold.
+For inventory-owned effects, prefer the atomic data-only contract:
+
+```lua
+Inventory.Items.RegisterUsableAction('consumable_apple', {
+  consume = true,
+}, function(committed, item, src, refresh)
+  TriggerEvent('my-health:apple-eaten', src)
+  refresh()
+end)
+```
+
+An action uses either `consume = true` or `metadata = { ... }` (whole-document
+replacement), never both. Ownership, live access, revision, guards, mutation,
+and audit events share one transaction. The optional callback is explicitly
+post-commit; if it fails, the error reports `mutationCommitted = true` because
+arbitrary gameplay effects cannot roll back a committed database mutation.
+
+Only one usable callback may run for a given instance at a time. While it is
+running, Inventory's internal guards prevent that instance from being moved or
+destroyed by another operation. Callback errors become an `internal` failure, and a callback may
+return a failed Result to propagate a domain rejection. Legacy callbacks that
+return nothing retain their successful behavior. Consumers that consume or
+mutate the item should use Inventory's transactional APIs inside the callback;
+arbitrary cross-resource gameplay callbacks are not held inside a database
+transaction.
+
+The callback receives the joined item row, the player source, and a `refresh`
+callback. The owning resource may replace its own registration; another
+resource receives a conflict and cannot take it over. `UseItem` re-derives
+ownership from the item's own `inventory_id` — a client cannot use an item it
+does not hold.
 
 ### Metadata
 
@@ -416,7 +570,10 @@ else
 end
 ```
 
-> `SetCondition` **refuses stackable definitions**. Compartments stack on `item_id` alone — metadata is invisible to `GetJoinableSlot` — so two units carrying different conditions would silently merge and one value would be lost. Set `instance_mode = 'unique'` on anything that carries per-instance state.
+> `SetCondition` **refuses stackable definitions**. New joins are metadata-safe,
+> but changing one row already inside a multi-unit compartment would make that
+> existing stack heterogeneous unless the mutation also split it. Set
+> `instance_mode = 'unique'` on definitions carrying independently mutable state.
 
 ---
 
@@ -454,7 +611,10 @@ Inventory.Instances.IsUniqueDefinition(definitionId)          --> boolean
 Inventory.Instances.SetInstanceMode(definitionId, 'unique')   --> Result
 ```
 
-A `unique` definition never joins an existing compartment, enforced at `GetJoinableSlot` — the single placement chokepoint, so one check covers `AddItem`, `GrantItem`, bulk movement and transactional grants alike. Changing mode does **not** retroactively split stacks that already exist; it governs future placement only.
+A `unique` definition never joins an existing compartment. Transactional
+creation and movement enforce that rule alongside metadata compatibility.
+Changing mode is rejected while owned instances exist, because silently
+reinterpreting existing stacks would change their identity semantics.
 
 ### Metadata document
 
@@ -474,6 +634,7 @@ Inventory.Instances.MergeMetadata(instanceId, { chambered = true, jammed = nil }
 ```
 
 - `WriteMetadata` **replaces** the whole document; `MergeMetadata` patches it. Omitting `expectedRevision` on `WriteMetadata` is deliberate last-writer-wins for callers that genuinely do not care.
+- Metadata writes are transactional. A row sharing a compartment with other units may only be written to the same semantic document as its peers; independently mutable state belongs on a `unique` definition.
 - Documents are capped at **4096 bytes** (`limit_exceeded`, with `details.size` and `details.limit`).
 - A row whose JSON will not parse warns and reads as an empty document rather than stranding the instance.
 
@@ -489,7 +650,7 @@ if not caps.value.features.rowLocking then
 end
 ```
 
-Check `contractVersion` **before** registering anything against the API. It is a plain integer, deliberately separate from the human-readable semver `version` — a consumer compares it numerically, and `tonumber('2.0.0')` is `nil`. A key-existence check cannot detect a changed return shape, so this is the gate that turns a version mismatch into a clear startup failure rather than a silently misread result. Current flags: `instanceMode`, `metadataDocument`, `instanceRevision`, `instanceReadModel`, `resultEnvelope`, `transactions`, `movementGuards`, `postCommitEvents`, `accessModes`, `metadataSizeLimit`, `transactionMetrics`, `rowLocking`, `equippedState`, `atomicCreation`.
+Check `contractVersion` **before** registering anything against the API. It is a plain integer, deliberately separate from the human-readable semver `version` — a consumer compares it numerically, and `tonumber('2.0.0')` is `nil`. A key-existence check cannot detect a changed return shape, so this is the gate that turns a version mismatch into a clear startup failure rather than a silently misread result. Current flags include `instanceMode`, `metadataDocument`, `instanceRevision`, `instanceReadModel`, `resultEnvelope`, `transactions`, `movementGuards`, `postCommitEvents`, `accessModes`, `metadataSizeLimit`, `transactionMetrics`, `rowLocking`, `equippedState`, `atomicCreation`, `definitionMigration`, `auditedDestruction`, `atomicUseActions`, and `integrityDiagnostics`.
 
 ---
 
@@ -577,6 +738,23 @@ local created = Inventory.CreateInstance({ reason = 'weapon_purchase' }, {
 --> Result< { instanceId, revision, inventoryId, characterId } >
 ```
 
+Explicit destruction names exact property and its expected owner domain:
+
+```lua
+Inventory.DestroyInstances({
+  reason = 'approved evidence disposal',
+  resource = GetCurrentResourceName(),
+}, {
+  inventoryId = evidenceInventoryId,
+  expectedLocation = 'evidence',
+  instanceIds = { instanceA, instanceB },
+})
+```
+
+Moved/missing rows or a mismatched domain abort the whole operation. Destroy
+guards evaluate locked snapshots and successful deletion emits one committed
+fact per instance.
+
 ### Idempotency
 
 An `idempotencyKey` in the context makes a repeated call return the first call's cached result instead of executing again.
@@ -588,11 +766,37 @@ An `idempotencyKey` in the context makes a repeated call return the first call's
 ```lua
 local m = Inventory.Diagnostics.GetTransactionMetrics()
 --> { started, committed, rolledBack, conflicts, bodyErrors, idempotentHits }
+
+local scan = Inventory.Diagnostics.RunIntegrityDiagnostics({ sampleLimit = 50 })
+-- scan.value = {
+--   dryRun = true,
+--   ok = true, -- no error/critical findings; informational findings may exist
+--   summary = { totalFindings, byCode, bySeverity },
+--   findings = { { code, severity, details }, ... },
+--   truncatedByCode = {},
+-- }
 ```
 
 Returned as a copy, so a caller cannot reset the counters by mutating what it was handed. With real row locking, contending callers queue rather than retry — so `conflicts` is a genuine signal (a cross-request compare-and-set losing) rather than expected background noise, and `rolledBack` is the number to watch.
 
-`/InvTxSmokeTest` (server console, `Config.DevMode`) exercises the whole path in-game: create + metadata + locked read, rollback, stale revision, a row deleted mid-flight, a row moved mid-flight, and a guard veto on a legacy removal.
+`/InvTxSmokeTest` (`Config.DevMode`, run in game by an ACE-authorized player
+with a loaded Character) exercises the whole path: create + metadata + locked
+read, rollback, stale revision, a row deleted mid-flight, a row moved
+mid-flight, acceptance gates, unique issuance, and a guard veto.
+
+The complete release procedure—including exact in-game actions, two-player
+ground/entity tests, required fixture setup, every expected smoke-test line,
+API harness checks, restart testing, and sign-off—is maintained in
+`docs/FEATHER-INVENTORY-TEST-CHECKLIST.md` in the framework workspace.
+
+`RunIntegrityDiagnostics` performs SELECTs only. It reports orphaned ownership
+references and grants, missing/archived definitions, malformed metadata,
+invalid or excessive slots, mixed/oversized/metadata-incompatible stacks,
+stacked unique items, dangling or wrongly-owned equipment, overweight
+inventories, and definition quantity violations. Samples are capped per code
+from 1–500 while summary counts always include every finding. In DevMode,
+`/InvIntegrityCheck [sampleLimit]` prints the same report to the server console.
+There is deliberately no repair flag.
 
 ---
 
@@ -629,7 +833,12 @@ The guard receives the **normalized instance** (same shape as `GetInstance().val
 - Guards hold no state, so a crashed consumer cannot wedge the inventory — there is nothing to release.
 - Re-registering the same `name` replaces it, so a resource restart cannot accumulate duplicate guards.
 
-Guards run at the chokepoints every route funnels through — bulk transfer and give and ground drop and take-all (`MoveInventoryItems`), drag and swap (`MoveSlotItems`), grants (`CreateInventoryItem`), the legacy `RemoveItemByName`/`RemoveItemById`, and inside a transaction at queue time, so a veto aborts before anything is written.
+Guards run at the chokepoints every route funnels through — bulk transfer and
+give and ground drop and take-all (`MoveInventoryItems`), drag and swap
+(`MoveSlotItems`), grants (`CreateInventoryItem`), and the legacy
+`RemoveItemByName`/`RemoveItemById`. The two legacy removal helpers now delegate
+to the transaction pipeline, so their veto aborts before any delete and their
+destruction facts emit only after commit.
 
 You can also ask the question directly, which is useful for greying out an action before the player attempts it:
 
@@ -653,15 +862,17 @@ end)
 
 | Event | Payload keys |
 |---|---|
-| `Feather:Inventory:ItemCreated` | `instanceId, definitionId, inventoryId, correlationId, reason` |
-| `Feather:Inventory:ItemMoved` | `operation, instanceId, definitionId, revision, fromInventoryId, toInventoryId, actorSource, actorCharacterId, correlationId, reason` |
-| `Feather:Inventory:ItemMetadataChanged` | `instanceId, revision, correlationId, reason` |
-| `Feather:Inventory:ItemDestroyed` | `instanceId, definitionId, inventoryId, correlationId, reason` |
-| `Feather:Inventory:TransactionCommitted` | `correlationId, reason, resource, summary = { created, moved, destroyed }` |
+| `Feather:Inventory:ItemCreated` | Common audit keys plus `instanceId, definitionId, inventoryId, destination` |
+| `Feather:Inventory:ItemMoved` | Common audit keys plus `instanceId, definitionId, revision, fromInventoryId, toInventoryId, origin, destination` |
+| `Feather:Inventory:ItemMetadataChanged` | Common audit keys plus `instanceId, definitionId, inventoryId, revision, origin, destination` |
+| `Feather:Inventory:ItemDestroyed` | Common audit keys plus `instanceId, definitionId, inventoryId, origin` |
+| `Feather:Inventory:DefinitionMigrated` | Common audit keys plus `sourceDefinitionId, targetDefinitionId` |
+| `Feather:Inventory:TransactionCommitted` | Common audit keys plus `summary = { created, moved, destroyed }` |
 
-Emitted only **after** commit, so a consumer can trust that what it is told already happened.
-
-> Known gap: on the non-transactional movement path (`MoveInventoryItems` — give, ground drop, take-all, shift-transfer) `ItemMoved` currently arrives with `definitionId`, `revision` and the actor fields unset. Read them defensively, or re-query. Tracked in `MASTER_PLAN.md` §6.1.
+Common audit keys are `operation, outcome, quantity, actorSource,
+actorCharacterId, resource, correlationId, reason, occurredAt`. Events are
+emitted only **after** commit, so `outcome` is always `committed`; rejected
+attempt storage belongs to an external audit consumer at the API boundary.
 
 These five are the only mutation signals. The old `feather-inventory:ItemAdded` / `feather-inventory:ItemRemoved` pair was removed — every one of its fire sites already sat beside a structured emit carrying strictly more (correlation id, actor, definition id, revision), and its own first argument had meant a *definition* id on one path and an *instance* id on another. Listen for the events above instead.
 
@@ -769,14 +980,13 @@ Huge inspiration to RDO's inventory system with many QOL improvements.
 
 The full tracked backlog — including decisions deferred or declined, with reasons — is maintained by the team outside this repository. Section references in the code comments below (`§6.1`, `§10.4`, …) point into it.
 
-- **Hotbar** — parked pending internal design discussion.
-- **Robbery** — built server-side but deliberately inert: the statuses it gates on are client-authoritative in RedM, so it stays fail-closed until `feather-core` has an authoritative model for them.
+- **Hotbar** — implemented; final RedM release gate is the in-game `Shift+1–6` control-suppression matrix.
+- **Looting** — built server-side but deliberately inert: it stays fail-closed until `feather-status`/`feather-health` provides authoritative restraint/incapacitation state. Law-enforcement and criminal resources may both consume the capability.
 - **Perishables** — blocked on unique-instance support for definitions that must stack.
-- **Search/filter within a book** — needs a UI design decision; the ledger art has no obvious home for a text input.
+- **Search/filter within a book** — shipped as a themed category dropdown and search field in a two-column filter row.
 - **Sound/haptic feedback** — none exists today; wants a period-fit sound-set decision first.
 - **In-game item-definition editor** — ownership decision pending (`feather-inventory` API + `feather-admin` UI is the current recommendation).
 
 Known gaps in the API surface above, tracked in `MASTER_PLAN.md` §6.1:
 
-- `ItemMoved` arrives without `definitionId`/`revision`/actor fields on the `MoveInventoryItems` path (give, ground drop, take-all, shift-transfer). Read them defensively, or re-query.
 - `RunGuards` re-reads the instance on a separate connection instead of being handed the row the transaction already locked.

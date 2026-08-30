@@ -1,12 +1,24 @@
 -- This file allows us to run validations against the config.
 
--- if Config.hotbarLimit > 10 then
---   error('Hotbar limit is beyond acceptable range. Must not be greater than 10')
--- end
+local hotbarVisibility = Config.Hotbar and Config.Hotbar.Visibility
+if hotbarVisibility ~= 'Temporary' and hotbarVisibility ~= 'Always'
+    and hotbarVisibility ~= 'UserDefined' then
+  error('Config.Hotbar.Visibility must be Temporary, Always, or UserDefined.')
+end
 
--- if Config.maxItemSlots < Config.hotbarLimit then
---   error('Your inventory slots cannot be less than your hotbar slots')
--- end
+if Config.Hotbar.Visibility == 'UserDefined'
+    and Config.Hotbar.DefaultVisibility ~= 'Temporary'
+    and Config.Hotbar.DefaultVisibility ~= 'Always' then
+  error('Config.Hotbar.DefaultVisibility must be Temporary or Always.')
+end
+
+if type(Config.Hotbar.Slots) ~= 'number' or Config.Hotbar.Slots < 1 or Config.Hotbar.Slots > 8 then
+  error('Config.Hotbar.Slots must be a number from 1 through 8.')
+end
+
+if type(Config.Hotbar.TemporaryDuration) ~= 'number' or Config.Hotbar.TemporaryDuration < 250 then
+  error('Config.Hotbar.TemporaryDuration must be at least 250 milliseconds.')
+end
 
 if type(Config.maxWeight) ~= 'number' or Config.maxWeight < 1 then
   error('Your max weight must be a number greater than 1.')
@@ -22,6 +34,19 @@ end
 
 if type(Config.Dropped.LoadDistance) ~= 'number' or Config.Dropped.LoadDistance < Config.Dropped.PromptViewDistance then
   error('Config.Dropped.LoadDistance must be a number greater than or equal to PromptViewDistance.')
+end
+if Config.Dropped.WalkToPickup ~= nil and type(Config.Dropped.WalkToPickup) ~= 'boolean' then
+  error('Config.Dropped.WalkToPickup must be a boolean.')
+end
+if type(Config.Dropped.WalkSpeed) ~= 'number' or Config.Dropped.WalkSpeed <= 0 then
+  error('Config.Dropped.WalkSpeed must be a positive number.')
+end
+if type(Config.Dropped.WalkStopDistance) ~= 'number' or Config.Dropped.WalkStopDistance <= 0
+  or Config.Dropped.WalkStopDistance >= Config.Dropped.PromptViewDistance then
+  error('Config.Dropped.WalkStopDistance must be positive and less than PromptViewDistance.')
+end
+if type(Config.Dropped.WalkTimeout) ~= 'number' or Config.Dropped.WalkTimeout < 1000 then
+  error('Config.Dropped.WalkTimeout must be at least 1000 milliseconds.')
 end
 
 if not Config.Dropped.Item then
