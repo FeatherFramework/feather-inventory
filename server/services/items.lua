@@ -615,7 +615,7 @@ ItemsAPI.RegisterUsableItem = function(itemName, callback)
   return Result.Ok(true)
 end
 
-ItemsAPI.UseItem = function(itemID, src)
+ItemsAPI.UseItem = function(itemID, src, context)
   local item = InventoryControllers.GetInventoryItemById(itemID)
   if not item then
     warn('Item not found in the database! ItemID: ' .. tostring(itemID))
@@ -652,8 +652,15 @@ ItemsAPI.UseItem = function(itemID, src)
   -- else
   if UsableItemCallbacks[item.name] then
     UsableItemCallbacks[item.name](item, src, function()
-      -- Refresh the inventory ui on callback
-      TriggerClientEvent('Feather:Inventory:OpenInventory', src, nil, "player")
+      -- A hotbar use happens while the ledger is closed; refreshing it by
+      -- firing OpenInventory would unexpectedly open the whole book after a
+      -- quick-use action. Refresh the compact HUD instead. Existing callers
+      -- keep the original inventory refresh behavior.
+      if context and context.hotbar then
+        TriggerClientEvent('Feather:Inventory:HotbarRefresh', src)
+      else
+        TriggerClientEvent('Feather:Inventory:OpenInventory', src, nil, "player")
+      end
     end)
   else
     warn('No usable callback defined for item: ' .. item.name)

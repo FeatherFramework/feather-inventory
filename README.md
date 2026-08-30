@@ -1,8 +1,38 @@
 # Feather Inventory
 
-Feather inventory is designed to provide a realistic and immersive inventory system for players. It is based on weight, allowing players to manage their items effectively. Additionally, it features a unique player-to-player robbery system and the ability to register usable items. Moreover, the script comes with an API that enables the registration of custom inventories for various entities.
+Feather inventory is designed to provide a realistic and immersive inventory system for players. It is based on weight, allowing players to manage their items effectively. Additionally, it includes a player-to-player looting/search access system for lawful and criminal consumers and the ability to register usable items. Moreover, the script comes with an API that enables the registration of custom inventories for various entities.
 
 ## Features
+
+### Hotbar
+
+The inventory hotbar provides persistent per-character quick-slot bindings and
+uses `Shift+1` through `Shift+6` by default so it does not collide with RedM's
+built-in plain-number weapon wheel. Stackable items bind by definition and
+continue to work as individual instances are consumed/replenished; unique items
+bind to their exact instance.
+
+```lua
+Config.Hotbar = {
+    Enabled = true,
+    Visibility = 'UserDefined', -- Temporary | Always | UserDefined
+    DefaultVisibility = 'Temporary',
+    TemporaryDuration = 4000,
+    Modifier = 'SHIFT',
+    Slots = 6,
+}
+```
+
+`Enabled=false` disables assignment, input, rendering, and server use requests.
+`Temporary` and `Always` are forced operator policies. `UserDefined` exposes a
+Temporary/Always choice through `feather-settings`; the presentation preference
+is stored locally by Inventory and survives resource/game restarts. Existing
+bindings/preferences are preserved while the feature or player choice is
+disabled.
+
+Right-click a usable item in the player's book and select **Assign Hotbar** to
+assign, replace, or clear a slot. Every use re-resolves current ownership on the
+server; the client never supplies the item instance to use.
 
 1. **Player inventory**: Provides players with an inventory
 2. **Secondary/Custom inventory**: Developers can utilize the API provided by the script to register custom inventories for various entities within the game. This feature allows for expanded gameplay possibilities, such as creating unique loot systems or interactive objects.
@@ -769,10 +799,10 @@ Huge inspiration to RDO's inventory system with many QOL improvements.
 
 The full tracked backlog — including decisions deferred or declined, with reasons — is maintained by the team outside this repository. Section references in the code comments below (`§6.1`, `§10.4`, …) point into it.
 
-- **Hotbar** — parked pending internal design discussion.
-- **Robbery** — built server-side but deliberately inert: the statuses it gates on are client-authoritative in RedM, so it stays fail-closed until `feather-core` has an authoritative model for them.
+- **Hotbar** — implemented; final RedM release gate is the in-game `Shift+1–6` control-suppression matrix.
+- **Looting** — built server-side but deliberately inert: it stays fail-closed until `feather-status`/`feather-health` provides authoritative restraint/incapacitation state. Law-enforcement and criminal resources may both consume the capability.
 - **Perishables** — blocked on unique-instance support for definitions that must stack.
-- **Search/filter within a book** — needs a UI design decision; the ledger art has no obvious home for a text input.
+- **Search/filter within a book** — shipped as a themed category dropdown and search field in a two-column filter row.
 - **Sound/haptic feedback** — none exists today; wants a period-fit sound-set decision first.
 - **In-game item-definition editor** — ownership decision pending (`feather-inventory` API + `feather-admin` UI is the current recommendation).
 

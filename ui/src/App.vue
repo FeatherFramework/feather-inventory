@@ -5,10 +5,18 @@ import '@/assets/tailwind.css';
 import LedgerBook from '@/components/LedgerBook.vue';
 import ContextMenu from '@/components/ContextMenu.vue';
 import ItemCountModal from '@/components/ItemCountModal.vue';
+import Hotbar from '@/components/Hotbar.vue';
+import HotbarSlotModal from '@/components/HotbarSlotModal.vue';
 import { t, setStrings, setConditionStages } from '@/i18n';
 
 const visible = ref(false);
-const devmode = ref(false);
+const previewMode = import.meta.env.DEV
+  ? new URLSearchParams(window.location.search).get('preview')
+  : null;
+// Keep the ledger visible under Vite so its static layout can be developed
+// and visually verified without a running RedM NUI message bridge. This is
+// compile-time false in the production build.
+const devmode = ref(import.meta.env.DEV && previewMode !== 'hotbar');
 
 function makeBook(footerLabel) {
   return reactive({
@@ -21,6 +29,7 @@ function makeBook(footerLabel) {
     ignoreLimits: 0,
     items: [],
     activeCategoryId: null,
+    searchQuery: '',
     selectedIndex: -1,
   });
 }
@@ -28,12 +37,40 @@ function makeBook(footerLabel) {
 const player = makeBook('ui_carrying');
 const other = makeBook('ui_stored');
 const hasOther = computed(() => other.inventoryId !== null);
+const hotbar = reactive({ enabled: false, visible: false, slots: 6, bindings: [] });
 
 const rawCategories = ref([]);
 const categoryOptions = computed(() => [
   { id: null, label: t('ui_all') },
   ...rawCategories.value.map((c) => ({ id: c.id, label: String(c.name).toUpperCase() })),
 ]);
+
+// Vite-only preview data: makes the complete NUI reviewable in a browser
+// without RedM or a live server message bridge. import.meta.env.DEV is
+// compile-time false in the packaged production build.
+if (import.meta.env.DEV) {
+  player.title = 'PERSONAL EFFECTS';
+  player.subtitle = 'Arthur Morgan';
+  player.capacity = 40;
+  player.maxWeight = 125;
+  player.items = [
+    { id: 101, slot_index: 0, name: 'consumable_apple', display_name: 'Apple', description: 'A fresh apple.', usable: 1, weight: 0.25, category_id: 1 },
+    { id: 102, slot_index: 0, name: 'consumable_apple', display_name: 'Apple', description: 'A fresh apple.', usable: 1, weight: 0.25, category_id: 1 },
+    { id: 103, slot_index: 1, name: 'consumable_coffee', display_name: 'Coffee', description: 'Ground coffee for the trail.', usable: 1, weight: 1, category_id: 1 },
+    { id: 104, slot_index: 7, name: 'medical_tonic', display_name: 'Health Tonic', description: 'Restores health.', usable: 1, weight: 1, category_id: 2 },
+  ];
+  rawCategories.value = [{ id: 1, name: 'provisions' }, { id: 2, name: 'medical' }];
+  Object.assign(hotbar, {
+    enabled: true,
+    visible: true,
+    slots: 6,
+    bindings: [
+      { slot: 1, itemName: 'consumable_apple', displayName: 'Apple', quantity: 2, available: true },
+      { slot: 2, itemName: 'consumable_coffee', displayName: 'Coffee', quantity: 1, available: true },
+      { slot: 3, itemName: 'medical_tonic', displayName: 'Health Tonic', quantity: 0, available: false },
+    ],
+  });
+}
 
 // Single global drag pointer shared across both books -- lets a drag that
 // started in one book highlight valid drop targets in the other.
@@ -54,6 +91,13 @@ function dragArmedFor(bookKey) {
 
 const onMessage = (event) => {
   const data = event.data;
+  if (data.type === 'hotbar') {
+    hotbar.enabled = data.enabled === true;
+    hotbar.visible = data.visible === true;
+    hotbar.slots = Number(data.slots) || 6;
+    hotbar.bindings = Array.isArray(data.bindings) ? data.bindings : [];
+    return;
+  }
   if (data.type !== 'toggleInventory') return;
 
   visible.value = data.visible;
@@ -71,6 +115,7 @@ const onMessage = (event) => {
   player.ignoreLimits = data.playerIgnoreLimits || 0;
   player.items = data.playerItems || [];
   player.activeCategoryId = null;
+  player.searchQuery = '';
   player.selectedIndex = -1;
 
   if (data.otherItems != null) {
@@ -82,6 +127,7 @@ const onMessage = (event) => {
     other.ignoreLimits = data.otherIgnoreLimits || 0;
     other.items = data.otherItems;
     other.activeCategoryId = null;
+    other.searchQuery = '';
     other.selectedIndex = -1;
   } else {
     other.inventoryId = null;
@@ -431,6 +477,43 @@ async function performGive(book, items) {
 }
 
 const contextCanUse = computed(() => !!contextStack().items[0]?.usable);
+const contextCanAssignHotbar = computed(() => {
+  const context = contextStack();
+  return hotbar.enabled && contextMenu.value?.book === 'player' && !!context.items[0]?.usable;
+});
+const hotbarPrompt = ref(null);
+
+function onContextAssignHotbar() {
+  const { items } = contextStack();
+  contextMenu.value = null;
+  if (items.length === 0 || !items[0].usable) return;
+  hotbarPrompt.value = { item: items[0], itemName: items[0].display_name };
+}
+
+async function assignHotbarSlot(slot) {
+  const prompt = hotbarPrompt.value;
+  hotbarPrompt.value = null;
+  if (!prompt) return;
+  try {
+    const { data } = await api.post('Feather:Inventory:Hotbar:Set', {
+      slot,
+      itemId: prompt.item.id,
+    });
+    if (data?.error) console.log('Hotbar assignment rejected: ' + (data.message || 'unknown error'));
+  } catch (error) {
+    console.log(error.message);
+  }
+}
+
+async function clearHotbarSlot(slot) {
+  hotbarPrompt.value = null;
+  try {
+    const { data } = await api.post('Feather:Inventory:Hotbar:Set', { slot, itemId: null });
+    if (data?.error) console.log('Hotbar clear rejected: ' + (data.message || 'unknown error'));
+  } catch (error) {
+    console.log(error.message);
+  }
+}
 // Only offer Split where there's actually something to split -- a single
 // unit has nothing to peel off.
 const contextCanSplit = computed(() => contextStack().items.length > 1);
@@ -443,6 +526,7 @@ const quantityActionLabel = computed(() => {
 </script>
 
 <template>
+  <Hotbar v-if="hotbar.enabled && hotbar.visible && !visible && !devmode" :slots="hotbar.slots" :bindings="hotbar.bindings" />
   <div v-if="visible || devmode" class="ledger-overlay">
     <div class="ledger-vignette"></div>
     <div class="ledger-close" @click="closeApp">&times;</div>
@@ -457,6 +541,7 @@ const quantityActionLabel = computed(() => {
         :items="player.items"
         :categories="categoryOptions"
         v-model:active-category-id="player.activeCategoryId"
+        v-model:search-query="player.searchQuery"
         v-model:selected-index="player.selectedIndex"
         :paired="hasOther"
         :drag-slot="drag && drag.book === 'player' ? drag.slot : -1"
@@ -479,6 +564,7 @@ const quantityActionLabel = computed(() => {
         :items="other.items"
         :categories="categoryOptions"
         v-model:active-category-id="other.activeCategoryId"
+        v-model:search-query="other.searchQuery"
         v-model:selected-index="other.selectedIndex"
         paired
         :drag-slot="drag && drag.book === 'other' ? drag.slot : -1"
@@ -501,8 +587,10 @@ const quantityActionLabel = computed(() => {
       :x="contextMenu.x"
       :y="contextMenu.y"
       :can-use="contextCanUse"
+      :can-assign-hotbar="contextCanAssignHotbar"
       :can-split="contextCanSplit"
       @use="onContextUse"
+      @assign-hotbar="onContextAssignHotbar"
       @give="onContextGive"
       @drop="onContextDrop"
       @split="onContextSplit"
@@ -516,6 +604,16 @@ const quantityActionLabel = computed(() => {
       :max="quantityPrompt.max"
       @confirm="onQuantityConfirm"
       @cancel="quantityPrompt = null"
+    />
+
+    <HotbarSlotModal
+      v-if="hotbarPrompt"
+      :item-name="hotbarPrompt.itemName"
+      :slots="hotbar.slots"
+      :bindings="hotbar.bindings"
+      @select="assignHotbarSlot"
+      @clear="clearHotbarSlot"
+      @cancel="hotbarPrompt = null"
     />
   </div>
 </template>
@@ -555,6 +653,7 @@ const quantityActionLabel = computed(() => {
 body {
   margin: 0;
   overflow: hidden;
+  background: transparent;
 }
 
 #app {
@@ -572,7 +671,7 @@ body {
   background: rgba(18, 14, 10, 0.42);
   /* Design is authored for 1920x1080 -- scale the whole overlay to fit any
      viewport while keeping the book's proportions. */
-  --ledger-scale: min(calc(100vw / 1920), calc(100vh / 1080));
+  --ledger-scale: min(calc(100vw / 1920px), calc(100vh / 1080px));
 }
 
 .ledger-vignette {

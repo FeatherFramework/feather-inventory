@@ -39,7 +39,13 @@ RegisterNetEvent("Feather:Character:Spawned", function()
 end)
 
 function SpawnGroundItemEntity(item)
-    local spawnedGroundItem = Feather.Object:Create(Config.Dropped.Item, tonumber(item.x), tonumber(item.y), tonumber(item.z), 0, true)
+    -- GroundItems is already replicated as authoritative data by the server;
+    -- the prop is only this client's LOD representation of that data. Making
+    -- it a network entity causes every nearby player to publish their own
+    -- copy to everybody else (two players see two stacked boxes, etc.) until
+    -- one client's LOD removes its copy. Keep the representation local so
+    -- every client renders exactly one prop for each ground id.
+    local spawnedGroundItem = Feather.Object:Create(Config.Dropped.Item, tonumber(item.x), tonumber(item.y), tonumber(item.z), 0, false)
     spawnedGroundItem:SetAsMission()
     spawnedGroundItem:Freeze()
 

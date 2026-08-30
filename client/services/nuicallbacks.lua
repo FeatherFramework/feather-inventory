@@ -14,6 +14,15 @@ RegisterNUICallback('Feather:Inventory:UseItem', function(args, cb)
   cb(res)
 end)
 
+RegisterNUICallback('Feather:Inventory:Hotbar:Set', function(args, cb)
+  local result = Feather.RPC.CallAsync('Feather:Inventory:Hotbar:Set', {
+    slot = args.slot,
+    itemId = args.itemId,
+  })
+  if result and result.value then ApplyHotbarPayload(result.value, true) end
+  cb(result or { error=true, message='The hotbar could not be updated.' })
+end)
+
 RegisterNUICallback('Feather:Inventory:UpdateInventory', function(args, cb)
   -- TODO: Test what happens if two players open an inventory at the same time. (OR add system to lock the ability to open an inventory if someone else has it open)
 

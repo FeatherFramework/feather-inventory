@@ -2,9 +2,9 @@ Config = {}
 
 -- (INV-05) Was `true`, shipping `/AddItems` and friends open to every
 -- player by default -- free item generation for the entire economy out of
--- the box. Defaults to false now; the commands below are also
--- ACE-restricted so flipping this back on for testing doesn't hand them to
--- every player either.
+-- the box. Keep enabled during pre-release development; switch this to false
+-- for the first production release. The commands below are also ACE-restricted
+-- so enabling it for testing does not hand them to every player.
 Config.DevMode = true
 
 -- Gates verbose server-console logging (currently the access/ground
@@ -15,6 +15,18 @@ Config.Debug = false
 
 -- Opens player inventory
 Config.hotkey = "I"
+
+-- Player hotbar. Enabled is enforced on both client input/rendering and the
+-- server use path. Visibility accepts Temporary, Always, or UserDefined; only
+-- UserDefined exposes the Temporary/Always preference in feather-settings.
+Config.Hotbar = {
+    Enabled = true,
+    Visibility = 'UserDefined',
+    DefaultVisibility = 'Temporary',
+    TemporaryDuration = 4000,
+    Modifier = 'SHIFT',
+    Slots = 6,
+}
 
 -- (§10.4) The DEFAULT compartment count, used by any inventory that doesn't
 -- register a capacity of its own. Capacity is per-inventory now
@@ -88,8 +100,6 @@ Config.Condition = {
         { at = 0,  label = 'ui_condition_ruined' },
     }
 }
--- Config.hotbarLimit = 6
-
 -- (INV-11/INV-12/INV-23) Access control for opening an inventory that isn't
 -- your own -- see server/services/access.lua.
 Config.Access = {

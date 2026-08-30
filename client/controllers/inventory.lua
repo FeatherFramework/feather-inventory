@@ -13,7 +13,8 @@ InventoryAction = {}
 -- through unformatted -- the UI substitutes them, since only it knows the
 -- runtime value.
 local UI_STRING_KEYS = {
-  'ui_personal_effects', 'ui_storage', 'ui_carrying', 'ui_stored', 'ui_all',
+  'ui_personal_effects', 'ui_storage', 'ui_carrying', 'ui_stored', 'ui_all', 'ui_search',
+  'ui_assign_hotbar', 'ui_choose_hotbar_slot',
   'ui_use', 'ui_give', 'ui_drop', 'ui_split', 'ui_cancel', 'ui_confirm',
   'ui_quantity', 'ui_weight', 'ui_how_many', 'ui_use_all', 'ui_invalid_amount',
   'ui_no_entry',
@@ -131,6 +132,10 @@ InventoryAction.Close = function()
     isInvOpen = false
 
     Feather.RPC.CallAsync('Feather:Inventory:Server:CloseInventory', {})
+    -- Give/drop/move operations may have changed quantities while the ledger
+    -- hid the hotbar. Reconcile from the server before an Always-visible bar
+    -- reappears (Temporary stays hidden until its next chord/action).
+    TriggerEvent('Feather:Inventory:HotbarRefreshAfterInventory')
   end
 end
 
