@@ -1,6 +1,87 @@
 # Feather Inventory
 
-Feather inventory is designed to provide a realistic and immersive inventory system for players. It is based on weight, allowing players to manage their items effectively. Additionally, it includes a player-to-player looting/search access system for lawful and criminal consumers and the ability to register usable items. Moreover, the script comes with an API that enables the registration of custom inventories for various entities.
+Feather Inventory gives each character a weight- and slot-based inventory presented as an immersive ledger. It also supports persistent hotbar bindings, custom storage, ground drops, usable items, item condition, access sharing, unique item instances, and safe server-side transactions.
+
+This page starts with server setup. The [API reference](#api-reference) is for resource developers.
+
+## Server owner setup
+
+### Requirements
+
+- A RedM server using a current Cfx.re artifact
+- MariaDB/MySQL with `oxmysql`
+- `feather-core`
+- `feather-notify` for client notifications
+- `feather-settings` if players should control hotbar visibility and opacity
+
+Download a packaged release from [GitHub Releases](https://github.com/FeatherFramework/feather-inventory/releases). It already contains the built inventory interface; server owners do not need Node.js, pnpm, or Vite.
+
+### Installation
+
+1. Stop the server and back up its database.
+2. Extract the release into the resources directory. Keep the folder name `feather-inventory`.
+3. Install the required resources listed above.
+4. Add the resources to `server.cfg` in this order:
+
+   ```cfg
+   ensure oxmysql
+   ensure feather-core
+   ensure feather-notify
+   ensure feather-settings
+   ensure feather-inventory
+   ```
+
+   `feather-settings` is optional. Without it, Inventory still works, but players cannot change their hotbar presentation settings.
+
+5. Review `feather-inventory/config.lua` before starting the server.
+6. Start the server and check the server console for Lua or SQL errors.
+
+Do not point `ui_page` at `ui/dist`. Packaged releases are flattened into `ui/`, which is the path used by `fxmanifest.lua`.
+
+### Database setup and upgrades
+
+For a new Feather installation, use the current schema supplied by `feather-recipe`. Inventory also creates the compatible columns and tables it owns when it starts.
+
+The current Character contract uses UUIDs. Numeric legacy character IDs are rejected. Feather UUIDs are stored as `CHAR(36)` for compatibility with MariaDB versions that do not provide a native UUID type.
+
+For an existing development database, rebuilding from the current recipe is recommended. If you must retain it:
+
+1. Stop the server and make a verified backup.
+2. Apply `database/character_uuid_cutover.sql` for the Character UUID conversion.
+3. Apply `database/inventory_uuid_char36.sql` only when converting an existing native `inventory.uuid` column without the full Character cutover.
+4. Perform a full server restart.
+5. Run `InvCharacterUuidSmokeTest <player-server-id>` in the server console. All six checks must pass.
+
+Never run migration or lifecycle tests against a database containing property you cannot afford to lose.
+
+### Configuration
+
+All common settings are in `config.lua`. The defaults are playable, but review every section before opening the server to players.
+
+| Setting | What it controls | Production guidance |
+|---|---|---|
+| `Config.DevMode` | Development and item-spawn test commands | Set to `false` on a live server |
+| `Config.Debug` | Extra access and ground-resolution logging | Leave `false`; enable temporarily while diagnosing |
+| `Config.hotkey` | Opens the player's inventory | Default: `I` |
+| `Config.maxItemSlots` | Default number of compartments | Default: `40`; custom inventories may override it |
+| `Config.maxWeight` | Default carrying limit in pounds | Default: `125`; item weights are whole pounds |
+| `Config.Hotbar` | Quick-slot behavior | Default chord: `Shift+1` through `Shift+6` |
+| `Config.Dropped` | Ground grouping, draw distance, pickup, and cleanup | Keep `LoadDistance` above `PromptViewDistance` |
+| `Config.Condition` | Condition key, maximum, and display labels | Gameplay resources decide when condition changes |
+| `Config.Access` | Give, robbery, and temporary-access distances | Keep distances small enough to require nearby interaction |
+
+`Config.Hotbar.Visibility` may be `Temporary`, `Always`, or `UserDefined`. In `UserDefined` mode, players choose through `feather-settings`. Players drag usable items onto hotbar slots while the ledger is open and right-click a slot to clear it. The server verifies ownership again on every use.
+
+Ground piles are temporary world state. With `Config.Dropped.ClearOnStart = true`, items left on the ground are destroyed through the audited mutation API whenever Inventory starts. Player and custom inventories persist; ground piles do not.
+
+### Production checklist
+
+- Set `Config.DevMode = false`.
+- Confirm dependencies and Inventory start without errors.
+- Confirm a player can open the ledger, move and use an item, and reconnect without losing it.
+- Confirm the inventory key and hotbar chord do not conflict with other resources.
+- Confirm the database backup and restore process works.
+- Run the release smoke and integrity checks in staging before an upgrade.
 
 ## Features
 
@@ -52,44 +133,6 @@ never supplies the item instance to use.
 9. **Movement guards & post-commit events**: Other resources can veto a move before it happens and observe every mutation after it commits.
 10. **Persisted equipment slots**: A generic `character × slot → instance` store that survives a reconnect or a restart, with no idea what a weapon is.
 11. **Canonical character UUID support**: Character ownership, access grants, equipment, and transactional issuance preserve Contract 1 UUIDs end to end.
-
-## Character UUID cutover
-
-The clean-slate Character rebuild replaces numeric character IDs with UUIDs. New databases created from `feather-recipe/database/migration.sql` use `CHAR(36)` ownership columns and do not create cross-resource foreign keys to the legacy `characters` table.
-
-All Feather UUID values, including `inventory.uuid`, are stored as `CHAR(36)`. Inventory generates each value explicitly before insertion. Feather does not require MariaDB's newer native `UUID` datatype or UUID expression defaults, preserving compatibility with older MariaDB installations.
-
-To convert only an existing native `inventory.uuid` column without performing
-the Character identity cutover, back up the database and run
-`feather-inventory/database/inventory_uuid_char36.sql`.
-
-For an existing development database, either rebuild the inventory tables from the updated recipe (recommended) or back up the database and run:
-
-```text
-feather-inventory/database/character_uuid_cutover.sql
-```
-
-Character identity is UUID-only. Numeric legacy character IDs are rejected at Inventory boundaries and are not part of the release contract.
-
-After applying the schema and performing a full server restart, run in the server console:
-
-```text
-InvCharacterUuidSmokeTest [serverId]
-```
-
-All six checks must pass before enabling the UUID Character flow.
-
-## Getting Started
-
-Follow these steps to set up the RedM inventory script in your server:
-
-1. **Prerequisites**: Download the latest release from [Releases](https://github.com/FeatherFramework/feather-inventory/releases)
-2. **Installation**: Place the script files in your RedM server's resource folder. Ensure the feather-inventory in your [RESOURCE CONFIG FILE]
-3. **Dependencies**: Feather Core - Feather core is the only dependency as of now.
-4. **Configuration**: Adjust the settings in the configuration file to suit your server's gameplay style and preferences.
-5. **Database Setup**: The database should be created for you automatically. If you are having issues please delete the table and restart the script.
-
----
 
 # API Reference
 
@@ -168,6 +211,15 @@ Stable codes: `invalid_input`, `not_found`, `denied`, `conflict`, `unsupported`,
 
 Two calls, in this order. `RegisterForeignKey` runs once per resource at startup and adds a `<tablename>_id` column to `inventory`; `RegisterInventory` runs once per entity and hands you back the UUID to store on your own row.
 
+**Signatures**
+
+```lua
+Inventory.Inventory.RegisterForeignKey(tableName, foreignKeyType, primaryKeyName) -> Result
+Inventory.Inventory.RegisterInventory(tableName, id, displayName?, ignoreItemLimits?, maxWeight?, restrictedItems?, ownerCharacterId?, isPublic?, maxSlots?) -> Result<{ uuid, id }>
+```
+
+**Example**
+
 ```lua
 local Inventory = exports['feather-inventory'].initiate()
 
@@ -210,6 +262,16 @@ Notes that catch people out:
 Before deleting an entity that owns a container, its resource can inspect and
 close the Inventory side safely:
 
+**Lifecycle signatures**
+
+```lua
+Inventory.Inventory.GetContainerLifecycle(inventoryId) -> Result
+Inventory.Inventory.DeleteContainerIfEmpty(inventoryId, expectedLocation, reason) -> Result
+Inventory.Inventory.RecoverContainerContents(inventoryId, targetInventoryId, expectedLocation, reason) -> Result
+```
+
+**Lifecycle example**
+
 ```lua
 local state = Inventory.Inventory.GetContainerLifecycle(inventoryId)
 if state.ok and state.value.itemCount == 0 then
@@ -239,6 +301,21 @@ after this call succeeds.
 - `tableName` and `primaryKeyName` must be valid SQL identifiers; they are concatenated into DDL and are rejected otherwise.
 
 ### Reads
+
+**Signatures**
+
+```lua
+Inventory.Inventory.GetInventory(inventoryUuidOrId) -> Result<Inventory>
+Inventory.Inventory.GetCustomInventory(tableName, ownerId) -> Result<Inventory>
+Inventory.Inventory.GetCharacterInventory(characterUuid) -> Result<Inventory>
+Inventory.Inventory.GetInventoryItems(inventoryId) -> Result<Item[]>
+
+exports['feather-inventory']:GetCharacterInventory(characterUuid) -> Result<Inventory>
+exports['feather-inventory']:RemoveCharacterInventoryInstance(characterUuid, instanceId, reason?) -> Result
+exports['feather-inventory']:GrantCharacterItem(characterUuid, itemName, quantity, reason?) -> Result
+```
+
+**Example**
 
 ```lua
 -- By UUID or by raw id -- GetInventoryById handles both.
@@ -287,6 +364,17 @@ local granted = exports['feather-inventory']:GrantCharacterItem(
 
 ### Capacity
 
+**Signatures**
+
+```lua
+Inventory.Inventory.InventoryCanHold(items, playerSourceOrInventoryUuid) -> Result<Acceptance>
+Inventory.Inventory.InventoryCanHoldById(items, inventoryId) -> Result<Acceptance>
+Inventory.Inventory.EvaluateInventoryAcceptance(inventoryId, maxWeight, ignoreItemLimit, items) -> Result<Acceptance>
+Inventory.Inventory.EvaluateSlotMove(fromInventoryId, fromSlot, toInventoryId, toSlot) -> Result<Acceptance>
+```
+
+**Example**
+
 ```lua
 local items = { { item = 'consumable_apple', quantity = 5 }, { item = 'matches', quantity = 10 } }
 
@@ -322,6 +410,15 @@ All four return `Ok({ accepted = boolean, code = string?, message = string })`.
 
 ### Open / close
 
+**Signatures**
+
+```lua
+Inventory.Inventory.OpenInventory(source, otherInventoryUuid?, target?) -> Result
+Inventory.Inventory.CloseInventory(source) -> Result
+```
+
+**Example**
+
 ```lua
 -- Open the player's own book:
 Inventory.Inventory.OpenInventory(source)
@@ -335,6 +432,22 @@ Inventory.Inventory.CloseInventory(source)
 `OpenInventory`/`CloseInventory` are the client-facing pair — they trigger the ledger UI. `InternalOpenInventory(src, otherInventoryId)` returns the item payload directly without touching the UI, and `InternalCloseInventory(src)` releases the open-inventory lock (called for you on disconnect).
 
 ### Access control
+
+**Signatures**
+
+```lua
+Inventory.Inventory.CanAccessInventory(source, inventoryId, action, context?) -> Result
+Inventory.Inventory.GrantInventoryAccess(source, inventoryId, characterUuid) -> Result
+Inventory.Inventory.RevokeInventoryAccess(source, inventoryId, characterUuid) -> Result
+Inventory.Inventory.SetInventoryPublic(source, inventoryId, isPublic) -> Result
+Inventory.Inventory.ListInventoryAccess(source, inventoryId) -> Result
+Inventory.Inventory.HasInventoryAccessGrant(characterUuid, inventoryId) -> Result<boolean>
+Inventory.Inventory.GrantTemporaryAccess(source, inventoryId, ttlSeconds?) -> Result
+Inventory.Inventory.RevokeTemporaryAccess(source, inventoryId) -> Result
+Inventory.Inventory.HasTemporaryAccess(source, inventoryId) -> Result<boolean>
+```
+
+**Example**
 
 ```lua
 local modes = Inventory.Inventory.AccessModes  -- READ | INSERT | REMOVE | MANAGE
@@ -389,6 +502,18 @@ Throughout this table, `inventoryId` follows the framework's dual convention: **
 
 ### Definitions and counts
 
+**Signatures**
+
+```lua
+Inventory.Items.GetDefinitions() -> Result<Definition[]>
+Inventory.Items.ItemExists(itemName) -> Result<boolean>
+Inventory.Items.GetItem(instanceId) -> Result<Item>
+Inventory.Items.GetItemCount(itemName, playerSourceOrInventoryUuid) -> Result<number>
+Inventory.Items.InventoryHasItems(items, playerSourceOrInventoryUuid) -> Result<boolean>
+```
+
+**Example**
+
 ```lua
 local defs = Inventory.Items.GetDefinitions()
 for _, def in ipairs(defs.value) do
@@ -417,7 +542,19 @@ Inventory.Items.InventoryHasItems({
 
 `GrantItem` is the **trusted** path — admin tools, rewards, scripted payouts. It validates quantity, catalog membership, slot capacity, weight, per-item quantity cap and the blacklist atomically, and returns stable codes.
 
+**Signatures**
+
+```lua
+Inventory.Items.GrantItem(itemName, quantity, playerSourceOrInventoryUuid) -> Result
+Inventory.Items.AddItem(itemName, quantity, metadata?, playerSourceOrInventoryUuid) -> Result
+Inventory.Instances.GetDefinitionMigrationPreflight(sourceDefinitionId, targetDefinitionId) -> Result
+Inventory.Instances.SetDefinitionArchived(definitionId, archived, reason?) -> Result
+Inventory.Instances.MigrateDefinitionInstances(sourceDefinitionId, targetDefinitionId, reason) -> Result
+```
+
 > **`GrantItem` refuses `unique` definitions** with `unique_requires_issuer`. It creates rows through a batched `INSERT` with no metadata, so granting a weapon this way would produce an instance with an empty document — present and equippable, with nothing for its owning resource to read. Unique items are issued by whichever resource models them, which creates the instance and its complete document in one transaction. Filter them out of any generic grant UI using `instance_mode` from `GetDefinitions`.
+
+**Example**
 
 ```lua
 local result = Inventory.Items.GrantItem('consumable_apple', 10, source)
@@ -481,6 +618,16 @@ unit's metadata as representative for a heterogeneous stack.
 
 ### Removing and dropping
 
+**Signatures**
+
+```lua
+Inventory.Items.RemoveItemByName(itemName, quantity, playerSourceOrInventoryUuid?) -> Result
+Inventory.Items.RemoveItemById(instanceId) -> Result
+Inventory.Items.DropItemsOnGround(inventoryId, items, x, y, z, context?) -> Result
+```
+
+**Example**
+
 ```lua
 -- Any n units of a definition, no particular order.
 local removed = Inventory.Items.RemoveItemByName('wood', 4, source)
@@ -502,6 +649,16 @@ vetoed would be worse than refusing the request. Ground dropping is movement,
 so it consults move guards and preserves the item instances.
 
 ### Usable items
+
+**Signatures**
+
+```lua
+Inventory.Items.RegisterUsableItem(itemName, callback, ownerResource?) -> Result
+Inventory.Items.RegisterUsableAction(itemName, action, afterCommit?, ownerResource?) -> Result
+Inventory.Items.UseItem(instanceId, source, context?) -> Result
+```
+
+**Example**
 
 ```lua
 -- Register once at startup:
@@ -553,6 +710,14 @@ does not hold.
 
 Per-instance metadata lives on `Instances` — see [that section](#instances--item-identity-and-versioned-metadata). There is no `Items.SetMetadata`; it was a passthrough that discarded the envelope and the correlation id.
 
+**Signature**
+
+```lua
+Inventory.Instances.MergeMetadata(instanceId, patch, correlationId?) -> Result
+```
+
+**Example**
+
 ```lua
 Inventory.Instances.MergeMetadata(instanceId, { ammo = 5, chambered = true })
 ```
@@ -560,6 +725,16 @@ Inventory.Instances.MergeMetadata(instanceId, { ammo = 5, chambered = true })
 ### Condition / durability
 
 A generic per-instance `0..Config.Condition.Max` wear value stored in the metadata document. This resource owns the **convention** — key, range, clamping, display — and none of the **policy**: when an item wears and by how much belongs to whichever resource models that behaviour.
+
+**Signatures**
+
+```lua
+Inventory.Items.GetCondition(instanceId) -> Result<number|nil>
+Inventory.Items.SetCondition(instanceId, value) -> Result
+Inventory.Items.AdjustCondition(instanceId, delta) -> Result
+```
+
+**Example**
 
 ```lua
 local condition = Inventory.Items.GetCondition(instanceId)  --> Ok(number|nil)
@@ -590,6 +765,16 @@ end
 
 ### Reading
 
+**Signatures**
+
+```lua
+Inventory.Instances.GetInstance(instanceId) -> Result<Instance>
+Inventory.Instances.GetItemForCharacter(characterUuid, instanceId) -> Result<Instance>
+Inventory.Instances.FindInstances(inventoryId, definitionName?) -> Result<Instance[]>
+```
+
+**Example**
+
 ```lua
 local result = Inventory.Instances.GetInstance(instanceId)
 if result.ok then
@@ -613,6 +798,15 @@ if rounds.ok then print(#rounds.value) end
 
 ### Stack vs unique
 
+**Signatures**
+
+```lua
+Inventory.Instances.IsUniqueDefinition(definitionId) -> boolean
+Inventory.Instances.SetInstanceMode(definitionId, mode) -> Result
+```
+
+**Example**
+
 ```lua
 Inventory.Instances.IsUniqueDefinition(definitionId)          --> boolean
 Inventory.Instances.SetInstanceMode(definitionId, 'unique')   --> Result
@@ -624,6 +818,16 @@ Changing mode is rejected while owned instances exist, because silently
 reinterpreting existing stacks would change their identity semantics.
 
 ### Metadata document
+
+**Signatures**
+
+```lua
+Inventory.Instances.ReadMetadata(instanceId) -> Result<{ document, revision }>
+Inventory.Instances.WriteMetadata(instanceId, document, expectedRevision?, correlationId?) -> Result
+Inventory.Instances.MergeMetadata(instanceId, patch, correlationId?) -> Result
+```
+
+**Example**
 
 ```lua
 local current = Inventory.Instances.ReadMetadata(instanceId)
@@ -647,6 +851,15 @@ Inventory.Instances.MergeMetadata(instanceId, { chambered = true, jammed = nil }
 
 ### Capabilities
 
+**Signatures**
+
+```lua
+Inventory.GetCapabilities() -> Result<Capabilities>
+Inventory.Instances.GetCapabilities() -> Result<Capabilities>
+```
+
+**Example**
+
 ```lua
 local caps = Inventory.GetCapabilities()   -- also Inventory.Instances.GetCapabilities()
 if not caps.ok or (tonumber(caps.value.contractVersion) or 0) < 2 then
@@ -664,6 +877,14 @@ Check `contractVersion` **before** registering anything against the API. It is a
 ## `Transaction` — atomic, row-locked multi-item mutations
 
 Everything inside the body either commits together or not at all. Rows read with `GetItemForUpdate` are **locked** for the rest of the transaction, so a concurrent caller queues rather than racing you.
+
+**Signature**
+
+```lua
+Inventory.Transaction(context, transactionBody) -> Result
+```
+
+**Example**
 
 ```lua
 local result = Inventory.Transaction({
@@ -705,6 +926,20 @@ Returning a **failure envelope** from the body is a deliberate rejection: everyt
 
 ### Handle methods
 
+**Signatures**
+
+```lua
+tx:GetItemForUpdate(instanceId) -> Result<Instance>
+tx:GetQuantity(inventoryId, definitionId) -> Result<number>
+tx:AddQuantity(inventoryId, definitionId, quantity, metadata?) -> Result
+tx:CreateInstance(inventoryId, definitionId, metadata) -> Result
+tx:RemoveQuantity(inventoryId, definitionId, quantity) -> Result
+tx:RemoveInstances(inventoryId, definitionId, instanceIds) -> Result
+tx:SetMetadata(instanceId, document, expectedRevision?) -> Result
+tx:MoveInstance(instanceId, toInventoryId, toSlot) -> Result
+tx:AssertAccess(source, inventoryId, action) -> Result
+```
+
 | Method | Effect |
 |---|---|
 | `tx:GetItemForUpdate(instanceId)` | Read **and lock** one instance. `Result<instance>` in the same shape `GetInstance` returns. |
@@ -720,6 +955,17 @@ Returning a **failure envelope** from the body is a deliberate rejection: everyt
 ### Crossing a resource boundary
 
 A Lua handle carrying methods cannot cross a Cfx export; only data can. These two take a specification and run the locked mutation entirely inside `feather-inventory`:
+
+**Signatures**
+
+```lua
+Inventory.MutateItem(context, spec) -> Result
+Inventory.CreateInstance(context, spec) -> Result
+Inventory.DestroyInstances(context, spec) -> Result
+Inventory.UseItemAction(context, spec) -> Result
+```
+
+**Example**
 
 ```lua
 -- Consume 6 rounds and update the weapon's document, atomically:
@@ -769,6 +1015,15 @@ An `idempotencyKey` in the context makes a repeated call return the first call's
 > **The cache is in-memory and does not survive a restart.** A request retried across a resource or server restart finds no record and **will execute again**. That is fine for a reload or a repair. For anything **economic** — a purchase, a payout, anything a player is charged for — keep your own persisted idempotency record keyed on your own domain. The cache is bounded at 500 entries / 60s, because an unbounded cache keyed by caller-supplied strings is a memory-exhaustion vector.
 
 ### Diagnostics
+
+**Signatures**
+
+```lua
+Inventory.Diagnostics.GetTransactionMetrics() -> TransactionMetrics
+Inventory.Diagnostics.RunIntegrityDiagnostics(options?) -> Result<IntegrityReport>
+```
+
+**Example**
 
 ```lua
 local m = Inventory.Diagnostics.GetTransactionMetrics()
@@ -824,6 +1079,19 @@ There is deliberately no repair flag.
 ---
 
 ## `Guards` — vetoing movement, observing mutations
+
+**Signatures**
+
+```lua
+Inventory.Guards.RegisterMoveGuard(name, callback) -> Result
+Inventory.Guards.RegisterDestroyGuard(name, callback) -> Result
+Inventory.Guards.UnregisterMoveGuard(name)
+Inventory.Guards.UnregisterDestroyGuard(name)
+Inventory.Guards.CanMoveInstance(instanceId, context?) -> boolean, reason?
+Inventory.Guards.CanDestroyInstance(instanceId, context?) -> boolean, reason?
+```
+
+**Example**
 
 ```lua
 local Inventory = exports['feather-inventory'].initiate()
@@ -907,6 +1175,19 @@ Generic `character × slot → instance` storage. `slot` is an arbitrary string 
 
 This exists because equipped state cannot live only in a consumer's memory: it has to survive a reconnect and a resource or server restart.
 
+**Signatures**
+
+```lua
+Inventory.Equipment.GetEquippedForCharacter(characterUuid, slot?) -> Result
+Inventory.Equipment.SetEquippedForCharacter(characterUuid, slot, instanceId?) -> Result
+Inventory.Equipment.ClearEquippedInstance(instanceId) -> Result
+Inventory.Equipment.IsInstanceEquipped(instanceId) -> Result<boolean>
+```
+
+`GetEquippedForCharacter` and `SetEquippedForCharacter` are also available at the top level.
+
+**Example**
+
 ```lua
 -- Equip. Rejects an instance the character does not actually hold --
 -- ownership is re-derived from the item's own row, not taken on your word.
@@ -935,6 +1216,14 @@ An instance can only occupy one slot at a time (enforced by a unique key), and d
 
 ## `Categories`
 
+**Signature**
+
+```lua
+Inventory.Categories.GetCategories() -> Result<Category[]>
+```
+
+**Example**
+
 ```lua
 local categories = Inventory.Categories.GetCategories()
 for _, category in ipairs(categories.value) do
@@ -947,6 +1236,15 @@ These are the ledger's category tabs. Items land in a tab via `items.category_id
 ---
 
 ## Client
+
+**Signatures**
+
+```lua
+Inventory.Action.Open(otherInventoryUuid?, target?)
+Inventory.Action.Close()
+```
+
+**Example**
 
 ```lua
 local Inventory = exports['feather-inventory'].initiate()
