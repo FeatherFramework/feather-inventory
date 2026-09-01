@@ -27,6 +27,7 @@ const props = defineProps({
   // (§10.3 quick-loot) Only the paired "other" book offers Take All --
   // there is nowhere to take your own inventory to.
   canTakeAll: { type: Boolean, default: false },
+  takeAllBusy: { type: Boolean, default: false },
 });
 
 const emit = defineEmits([
@@ -242,6 +243,7 @@ function cellBg(cell) {
             <div class="ledger-cell-icon">
               <img
                 v-if="cell.repItem"
+                :key="cell.repItem.name"
                 :src="iconSrc(cell.repItem.name)"
                 class="ink"
                 draggable="false"
@@ -259,7 +261,7 @@ function cellBg(cell) {
 
       <div class="ledger-detail">
         <div class="ledger-detail-icon">
-          <img v-if="detail.img" :src="detail.img" class="ink" draggable="false" @error="onIconError" />
+          <img v-if="detail.img" :key="detail.img" :src="detail.img" class="ink" draggable="false" @error="onIconError" />
         </div>
         <div class="ledger-detail-body">
           <div class="ledger-detail-name">{{ detail.label }}</div>
@@ -272,7 +274,14 @@ function cellBg(cell) {
         </div>
       </div>
 
-      <div v-if="canTakeAll" class="ledger-take-all" @click="emit('takeAll')">{{ t('ui_take_all') }}</div>
+      <button
+        v-if="canTakeAll"
+        type="button"
+        class="ledger-take-all"
+        :class="{ busy: takeAllBusy }"
+        :disabled="takeAllBusy"
+        @click="emit('takeAll')"
+      >{{ takeAllBusy ? t('ui_taking_all') : t('ui_take_all') }}</button>
 
       <div class="ledger-carrying">
         <img src="@/assets/ledger/carry-arrow-left.png" class="carry-arrow" />
@@ -552,6 +561,11 @@ function cellBg(cell) {
 /* Sits between the detail box and the carrying line, outside the scrolling
    viewport, so it never moves with the compartments. */
 .ledger-take-all {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
   margin-top: 6px;
   text-align: center;
   font-family: 'Playfair Display', serif;
@@ -567,6 +581,13 @@ function cellBg(cell) {
 
 .ledger-take-all:hover {
   color: #2b2013;
+}
+
+.ledger-take-all:disabled,
+.ledger-take-all.busy {
+  color: #786b58;
+  cursor: wait;
+  text-decoration: none;
 }
 
 .ledger-cell-wear {

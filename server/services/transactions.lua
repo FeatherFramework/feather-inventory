@@ -679,6 +679,16 @@ function Tx:MoveInstance(instanceId, toInventoryId, toSlot)
         WHERE `id`=?;
     ]], { toInventoryId, toSlot, id })
 
+    -- Equipment and movement lock the instance row first, so they serialize.
+    -- If equip wins, a move out of its inventory must clear the binding in
+    -- this same transaction; if move wins, the later equip re-derives
+    -- ownership and is denied. Moving between compartments in the same
+    -- inventory does not unequip the item.
+    if from ~= tonumber(toInventoryId) then
+        self.query(
+            'DELETE FROM `character_equipment` WHERE `inventory_items_id`=?;', { id })
+    end
+
     self.moved = self.moved or {}
     self.moved[#self.moved + 1] = {
         instanceId = id,

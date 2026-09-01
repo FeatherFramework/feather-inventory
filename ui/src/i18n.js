@@ -33,6 +33,10 @@ const DEFAULTS = {
   ui_no_entry: 'No entry selected.',
 
   ui_take_all: 'Take All',
+  ui_taking_all: 'Taking items…',
+  ui_using_item: 'Using item…',
+  ui_dropping_items: 'Dropping items…',
+  ui_working: 'Working…',
   ui_condition: 'Condition',
   ui_condition_pristine: 'Pristine',
   ui_condition_worn: 'Worn',

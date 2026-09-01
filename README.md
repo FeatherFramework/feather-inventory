@@ -791,6 +791,22 @@ with a loaded Character) exercises the whole path: create + metadata + locked
 read, rollback, stale revision, a row deleted mid-flight, a row moved
 mid-flight, acceptance gates, unique issuance, and a guard veto.
 
+`InvLifecycleSmokeTest` (F8 console, no leading slash; use
+`/InvLifecycleSmokeTest` in chat) uses three fixed disposable definitions to exercise
+definition-migration preflight, incompatible rollback, compatible identity and
+metadata preservation, revision bumps, source archival, exact destruction,
+wrong-domain and stale-set rollback, and post-commit lifecycle facts. It has
+the same DevMode, ACE, connected-player, and loaded-Character requirements.
+Fixture setup and inspection use SQL; all owned-item mutations use the supported
+Inventory transaction contracts. An interrupted run is cleaned up safely by
+its exact `inv_smoke_migrate_*` definition names on the next invocation.
+
+`InvConcurrencySmokeTest` (F8; slash-prefixed in chat) coordinates simultaneous
+archive/grant and equipment/move requests. It accepts either valid serial
+ordering while rejecting retired-item creation and any equipment row whose item
+has moved out of the owning Character inventory. Its fixtures use the exact
+`inv_smoke_archive_race` definition and a reserved disposable inventory UUID.
+
 The complete release procedure—including exact in-game actions, two-player
 ground/entity tests, required fixture setup, every expected smoke-test line,
 API harness checks, restart testing, and sign-off—is maintained in
@@ -987,12 +1003,15 @@ Huge inspiration to RDO's inventory system with many QOL improvements.
 
 The full tracked backlog — including decisions deferred or declined, with reasons — is maintained by the team outside this repository. Section references in the code comments below (`§6.1`, `§10.4`, …) point into it.
 
-- **Hotbar** — implemented; final RedM release gate is the in-game `Shift+1–6` control-suppression matrix.
+- **Hotbar** — implemented and live-tested, including the RedM `Shift+1–6` control-suppression matrix.
 - **Looting** — built server-side but deliberately inert: it stays fail-closed until `feather-status`/`feather-health` provides authoritative restraint/incapacitation state. Law-enforcement and criminal resources may both consume the capability.
 - **Perishables** — blocked on unique-instance support for definitions that must stack.
 - **Search/filter within a book** — shipped as a themed category dropdown and search field in a two-column filter row.
 - **Sound/haptic feedback** — none exists today; wants a period-fit sound-set decision first.
-- **In-game item-definition editor** — ownership decision pending (`feather-inventory` API + `feather-admin` UI is the current recommendation).
+- **In-game item-definition editor** — ownership settled: `feather-inventory`
+  owns validated preflight/write and identity-migration contracts;
+  `feather-admin` owns permissioned operator UX, confirmations, and audit
+  presentation. Safe catalog edits precede identity-changing migration tools.
 
 Known gaps in the API surface above, tracked in `MASTER_PLAN.md` §6.1:
 

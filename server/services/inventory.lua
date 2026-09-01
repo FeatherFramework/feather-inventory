@@ -33,9 +33,18 @@ InventoryAPI.RegisterForeignKey = function(tableName, foreignKeyType, primaryKey
     return Result.Err(Result.Codes.INVALID_INPUT, 'tableName and primaryKeyName must be valid SQL identifiers.')
   end
 
+  local invokingResource = GetInvokingResource() or GetCurrentResourceName()
   if RegisteredForeignKeys[tableName] then
-    warn('This foreign key has already been registered by a different resource.')
-    return Result.Err(Result.Codes.CONFLICT, 'That foreign key is already registered by another resource.', { tableName = tableName })
+    if RegisteredForeignKeys[tableName] == invokingResource then
+      return Result.Ok({ alreadyRegistered = true, tableName = tableName })
+    end
+    warn(('Foreign key %s is already registered by resource %s; rejected resource %s.')
+      :format(tableName, tostring(RegisteredForeignKeys[tableName]), tostring(invokingResource)))
+    return Result.Err(Result.Codes.CONFLICT, 'That foreign key is already registered by another resource.', {
+      tableName = tableName,
+      ownerResource = RegisteredForeignKeys[tableName],
+      invokingResource = invokingResource,
+    })
   end
 
   local foreignKey = string.lower(tableName) .. '_id'
@@ -61,7 +70,7 @@ InventoryAPI.RegisterForeignKey = function(tableName, foreignKeyType, primaryKey
   -- the dict key the guard above (`RegisteredForeignKeys[tableName]`)
   -- actually reads, so the "already registered by a different resource"
   -- check never triggered.
-  RegisteredForeignKeys[tableName] = true
+  RegisteredForeignKeys[tableName] = invokingResource
   return Result.Ok(true)
 end
 
@@ -178,6 +187,14 @@ InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItem
 
   if not inventory or not inventory[1] then
     return Result.Err(Result.Codes.INTERNAL, 'Inventory could not be created.')
+  end
+
+  -- Creation must apply the same policy as re-registration. Previously the
+  -- blacklist was updated only in the existing-inventory branch above, so a
+  -- freshly created (or lifecycle-recreated) container silently accepted
+  -- every item until its resource registered it a second time.
+  if restrictedItems then
+    InventoryControllers.UpdateRestrictedItems(inventory[1].id, restrictedItems)
   end
 
   return Result.Ok({ uuid = inventory[1].uuid, id = inventory[1].id })

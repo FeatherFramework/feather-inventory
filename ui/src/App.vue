@@ -1,6 +1,6 @@
 <script setup>
 import api from './api';
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue';
 import '@/assets/tailwind.css';
 import LedgerBook from '@/components/LedgerBook.vue';
 import ContextMenu from '@/components/ContextMenu.vue';
@@ -81,6 +81,33 @@ const hotbarDragEligible = computed(() => {
 });
 
 const contextMenu = ref(null); // { book, slot, x, y } | null
+const mutationBusy = ref(false);
+const mutationBusyLabel = ref('ui_working');
+
+async function withMutationBusy(labelKey, action) {
+  if (mutationBusy.value) return;
+  const startedAt = performance.now();
+  mutationBusyLabel.value = labelKey;
+  mutationBusy.value = true;
+  clearDrag();
+  contextMenu.value = null;
+  quantityPrompt.value = null;
+  try {
+    // Let Vue commit and the browser paint the shield before starting a NUI
+    // request. Fast mutations (especially a one-item ground drop) could
+    // previously finish in the same render turn, so the status never became
+    // visible even though the operation did enter the busy state.
+    await nextTick();
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    return await action();
+  } finally {
+    // Avoid a single-frame flash that is functionally present but impossible
+    // for a player to read. Long-running mutations incur no extra delay.
+    const remaining = 250 - (performance.now() - startedAt);
+    if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
+    mutationBusy.value = false;
+  }
+}
 
 function bookByKey(key) {
   return key === 'player' ? player : other;
@@ -94,6 +121,11 @@ function dragArmedFor(bookKey) {
 
 const onMessage = (event) => {
   const data = event.data;
+  if (data.type === 'mutationBusy') {
+    mutationBusy.value = data.busy === true;
+    if (data.labelKey) mutationBusyLabel.value = String(data.labelKey);
+    return;
+  }
   if (data.type === 'hotbar') {
     hotbar.enabled = data.enabled === true;
     hotbar.visible = data.visible === true;
@@ -154,10 +186,11 @@ onUnmounted(() => {
 
 const onKeydown = (event) => {
   if (!visible.value) return;
-  if (event.code === 'Escape') closeApp();
+  if (event.code === 'Escape' && !mutationBusy.value) closeApp();
 };
 
 const closeApp = () => {
+  if (mutationBusy.value) return;
   visible.value = false;
   drag.value = null;
   hover.value = null;
@@ -198,8 +231,9 @@ function onCellMouseDown(bookKey, slotIndex, event) {
 // it isn't UpdateInventory with every id (that check is all-or-nothing, so a
 // pile bigger than your remaining room would yield nothing at all).
 async function onTakeAll() {
-  if (!other.inventoryId) return;
-  try {
+  if (!other.inventoryId || mutationBusy.value) return;
+  await withMutationBusy('ui_taking_all', async () => {
+   try {
     const { data } = await api.post('Feather:Inventory:TakeAll', {
       fromInventory: other.inventoryId,
     });
@@ -211,7 +245,8 @@ async function onTakeAll() {
     if (data?.targetItems) player.items = data.targetItems;
   } catch (e) {
     console.log(e.message);
-  }
+    }
+  });
 }
 
 async function quickTransfer(fromKey, stack) {
@@ -331,7 +366,7 @@ function onCellDblClick(bookKey, slotIndex) {
   const item = stack[0];
   if (!item.usable) return;
 
-  api.post('Feather:Inventory:UseItem', { itemId: item.id, itemName: item.name }).catch((e) => console.log(e.message));
+  performUse(item);
 }
 
 function onCellContextMenu(bookKey, slotIndex, event) {
@@ -360,7 +395,21 @@ function onContextUse() {
   contextMenu.value = null;
   if (items.length === 0) return;
   const item = items[0];
-  api.post('Feather:Inventory:UseItem', { itemId: item.id, itemName: item.name }).catch((e) => console.log(e.message));
+  performUse(item);
+}
+
+async function performUse(item) {
+  await withMutationBusy('ui_using_item', async () => {
+    try {
+      const { data } = await api.post('Feather:Inventory:UseItem', {
+        itemId: item.id,
+        itemName: item.name,
+      });
+      if (data?.error) console.log('Use rejected: ' + (data.message || 'unknown error'));
+    } catch (e) {
+      console.log(e.message);
+    }
+  });
 }
 
 // Drop/Give prompt for a quantity first when the compartment holds more
@@ -448,17 +497,19 @@ function performSplit(book, item, quantity) {
     .catch((e) => console.log(e.message));
 }
 
-function performDrop(book, items) {
-  api
-    .post('Feather:Inventory:DropItems', { items: items.map((i) => i.id) })
-    .then(({ data }) => {
+async function performDrop(book, items) {
+  await withMutationBusy('ui_dropping_items', async () => {
+    try {
+      const { data } = await api.post('Feather:Inventory:DropItems', { items: items.map((i) => i.id) });
       if (data?.error) {
         console.log('Drop rejected: ' + (data.message || 'unknown error'));
         return;
       }
       if (data?.inv?.sourceItems) book.items = data.inv.sourceItems;
-    })
-    .catch((e) => console.log(e.message));
+    } catch (e) {
+      console.log(e.message);
+    }
+  });
 }
 
 // Feather:Inventory:GiveItem only ever takes one item per call (it re-
@@ -540,9 +591,22 @@ const quantityActionLabel = computed(() => {
     @assign="assignDraggedItemToHotbar"
     @clear="clearHotbarSlot"
   />
+  <div v-if="mutationBusy && !visible" class="ledger-busy-shield" aria-live="polite">
+    <div class="ledger-busy-card">
+      <span class="ledger-busy-spinner" aria-hidden="true"></span>
+      <span>{{ t(mutationBusyLabel) }}</span>
+    </div>
+  </div>
   <div v-if="visible || devmode" class="ledger-overlay">
     <div class="ledger-vignette"></div>
-    <div class="ledger-close" @click="closeApp">&times;</div>
+    <div class="ledger-close" :class="{ disabled: mutationBusy }" @click="!mutationBusy && closeApp()">&times;</div>
+
+    <div v-if="mutationBusy" class="ledger-busy-shield" aria-live="polite">
+      <div class="ledger-busy-card">
+        <span class="ledger-busy-spinner" aria-hidden="true"></span>
+        <span>{{ t(mutationBusyLabel) }}</span>
+      </div>
+    </div>
 
     <div class="ledger-books" :class="{ paired: hasOther }">
       <LedgerBook
@@ -556,7 +620,7 @@ const quantityActionLabel = computed(() => {
         v-model:active-category-id="player.activeCategoryId"
         v-model:search-query="player.searchQuery"
         v-model:selected-index="player.selectedIndex"
-        :paired="hasOther"
+        paired
         :drag-slot="drag && drag.book === 'player' ? drag.slot : -1"
         :drag-armed="dragArmedFor('player')"
         :hover-slot="hover && hover.book === 'player' ? hover.slot : -1"
@@ -589,6 +653,7 @@ const quantityActionLabel = computed(() => {
         @cell-dbl-click="(i) => onCellDblClick('other', i)"
         @cell-context-menu="(i, e) => onCellContextMenu('other', i, e)"
         :can-take-all="true"
+        :take-all-busy="mutationBusy"
         @take-all="onTakeAll"
       />
     </div>
@@ -683,6 +748,46 @@ body {
   pointer-events: none;
 }
 
+.ledger-busy-shield {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: wait;
+  background: rgba(18, 14, 10, 0.2);
+}
+
+.ledger-busy-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 22px;
+  color: #2b2118;
+  background: #d8c8a5;
+  border: 2px solid #5c4933;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.55);
+  font-family: 'Playfair Display', serif;
+  font-size: 18px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.ledger-busy-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(43, 33, 24, 0.3);
+  border-top-color: #2b2118;
+  border-radius: 50%;
+  animation: ledger-busy-spin 0.8s linear infinite;
+}
+
+@keyframes ledger-busy-spin {
+  to { transform: rotate(360deg); }
+}
+
 .ledger-books {
   position: relative;
   display: flex;
@@ -720,6 +825,11 @@ body {
 
 .ledger-close:hover {
   color: #f0e6d2;
+}
+
+.ledger-close.disabled {
+  cursor: wait;
+  opacity: 0.45;
 }
 
 </style>
