@@ -1,4 +1,6 @@
 local isInvOpen = false
+local openOtherInventoryId = nil
+local openTarget = nil
 -- local isHBOpen = false
 
 InventoryAction = {}
@@ -14,7 +16,6 @@ InventoryAction = {}
 -- runtime value.
 local UI_STRING_KEYS = {
   'ui_personal_effects', 'ui_storage', 'ui_carrying', 'ui_stored', 'ui_all', 'ui_search',
-  'ui_assign_hotbar', 'ui_choose_hotbar_slot',
   'ui_use', 'ui_give', 'ui_drop', 'ui_split', 'ui_cancel', 'ui_confirm',
   'ui_quantity', 'ui_weight', 'ui_how_many', 'ui_use_all', 'ui_invalid_amount',
   'ui_no_entry',
@@ -81,6 +82,8 @@ InventoryAction.Open = function(otherInventoryId, target)
     end
 
     isInvOpen = true
+    openOtherInventoryId = otherInventoryId
+    openTarget = target
 
     local player_display = Feather.RPC.CallAsync('Feather:Inventory:GetCharacterInfoForDisplay')
     
@@ -130,6 +133,8 @@ InventoryAction.Close = function()
   if isInvOpen then
     SetNuiFocus(false, false)
     isInvOpen = false
+    openOtherInventoryId = nil
+    openTarget = nil
 
     Feather.RPC.CallAsync('Feather:Inventory:Server:CloseInventory', {})
     -- Give/drop/move operations may have changed quantities while the ledger
@@ -139,8 +144,22 @@ InventoryAction.Close = function()
   end
 end
 
+-- A usable-item consumer may request a ledger repaint after committing a
+-- mutation. Refresh only an inventory the player already has open; hotbar use
+-- must never turn a background reconciliation into an unsolicited ledger.
+-- Preserve the paired inventory and target so using an item while a ground or
+-- storage book is open does not collapse the UI back to the player-only view.
+InventoryAction.Refresh = function()
+  if not isInvOpen then return end
+  InventoryAction.Open(openOtherInventoryId, openTarget)
+end
+
 RegisterNetEvent('Feather:Inventory:OpenInventory', function(otherInventoryId, target)
   InventoryAction.Open(otherInventoryId, target)
+end)
+
+RegisterNetEvent('Feather:Inventory:RefreshInventory', function()
+  InventoryAction.Refresh()
 end)
 
 RegisterNetEvent('Feather:Inventory:CloseInventory', function()

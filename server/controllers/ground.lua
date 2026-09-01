@@ -18,6 +18,21 @@ function GroundControllers.GetAllGroundLocations()
         'SELECT `id`, `x`, `y`, `z` FROM `ground`;')
 end
 
+-- Startup cleanup needs exact instance ids so it can use DestroyInstances and
+-- emit one post-commit destruction fact per item instead of silently relying
+-- on the ground -> inventory -> inventory_items foreign-key cascade.
+function GroundControllers.GetGroundCleanupRows()
+    return MySQL.query.await([[
+        SELECT g.`id` AS `ground_id`, i.`id` AS `inventory_id`,
+               ii.`id` AS `instance_id`
+        FROM `ground` g
+        LEFT JOIN `inventory` i
+          ON i.`ground_id`=g.`id` AND i.`location`='ground'
+        LEFT JOIN `inventory_items` ii ON ii.`inventory_id`=i.`id`
+        ORDER BY g.`id`, i.`id`, ii.`id`;
+    ]])
+end
+
 -- Finds an existing ground pile within `radius` of (x,y,z), if any -- used
 -- by DropItemsOnGround (server/services/items.lua) to merge nearby drops
 -- into one pile instead of creating a new one for every drop.

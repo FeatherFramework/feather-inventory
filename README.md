@@ -17,6 +17,7 @@ Config.Hotbar = {
     Enabled = true,
     Visibility = 'UserDefined', -- Temporary | Always | UserDefined
     DefaultVisibility = 'Temporary',
+    DefaultOpacity = 90,        -- 50..100 until the player saves a preference
     TemporaryDuration = 4000,
     Modifier = 'SHIFT',
     Slots = 6,
@@ -30,9 +31,15 @@ is stored locally by Inventory and survives resource/game restarts. Existing
 bindings/preferences are preserved while the feature or player choice is
 disabled.
 
-Right-click a usable item in the player's book and select **Assign Hotbar** to
-assign, replace, or clear a slot. Every use re-resolves current ownership on the
-server; the client never supplies the item instance to use.
+When Settings is available, visibility uses Feather Menu's compact arrow
+selector and opacity uses a 50–100 percent slider. Slot borders and available
+item icons remain fully opaque while the parchment and labels follow the preference. Both apply immediately and
+persist in Inventory-owned client KVPs.
+
+While the ledger is open, drag a usable item from the player's book directly
+onto a hotbar slot to assign or replace it. Right-click a hotbar slot to clear
+its binding. Every use re-resolves current ownership on the server; the client
+never supplies the item instance to use.
 
 1. **Player inventory**: Provides players with an inventory
 2. **Secondary/Custom inventory**: Developers can utilize the API provided by the script to register custom inventories for various entities within the game. This feature allows for expanded gameplay possibilities, such as creating unique loot systems or interactive objects.
@@ -502,7 +509,7 @@ Inventory.Items.RegisterUsableItem('consumable_apple', function(item, src, refre
   Feather.Character.AdjustHunger(src, 10)
   local removed = Inventory.Items.RemoveItemById(item.id)
   if not removed.ok then return removed end
-  refresh()  -- re-opens/refreshes the ledger for that player
+  refresh()  -- repaints the ledger if that player already has it open
   return { ok = true }
 end)
 

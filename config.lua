@@ -22,7 +22,12 @@ Config.hotkey = "I"
 Config.Hotbar = {
     Enabled = true,
     Visibility = 'UserDefined',
+    -- Used only when Visibility is UserDefined and the player has not saved a
+    -- preference yet. This must resolve to an actual display mode.
     DefaultVisibility = 'Temporary',
+    -- Player-adjustable HUD opacity starts here until a local preference is
+    -- saved through feather-settings.
+    DefaultOpacity = 90,
     TemporaryDuration = 4000,
     Modifier = 'SHIFT',
     Slots = 6,
@@ -43,7 +48,7 @@ Config.Hotbar = {
 -- scrolls to reach the remaining 3 rows. (25 would be exactly one page and
 -- never scroll -- fine, but it leaves the scrolling path untested in normal
 -- play, and makes the default book smaller than the design now supports.)
-Config.maxItemSlots = 40          -- default inventory slots, overridable per inventory
+Config.maxItemSlots = 40 -- default inventory slots, overridable per inventory
 -- Ground/Dropped item settings
 Config.Dropped = {
     GroupingRadius = 10,
@@ -62,11 +67,18 @@ Config.Dropped = {
     -- only opens after they reach this distance; blocked paths time out.
     WalkToPickup = true,
     WalkSpeed = 1.0,
-    WalkStopDistance = 0.9,
+    -- Interaction radius around the prop. Keep this outside the strongbox's
+    -- collision envelope or the ped stops physically but never satisfies the
+    -- arrival check.
+    WalkStopDistance = 1.25,
     WalkTimeout = 6000,
     Item = 'p_dis_strongboxsm01x', -- options: p_package09 p_cs_baganders01x p_cs_bagstrauss01x p_bag01x p_dis_strongboxsm01x
+    -- Ground is temporary world state. On every feather-inventory resource
+    -- start, destroy its exact item instances through the audited transaction
+    -- API, then remove the empty pile/container rows.
+    ClearOnStart = true,
     -- Garbage-collects EMPTY ground piles every X minutes. 0 runs once at
-    -- startup; nil disables sweeping. Non-empty piles are never destroyed.
+    -- startup; nil disables the periodic empty-pile sweep.
     StreetSweep = 0
 }
 

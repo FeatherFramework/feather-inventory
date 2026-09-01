@@ -179,5 +179,6 @@ Feather.RPC.Register('Feather:Inventory:Hotbar:Use', function(params, res, src)
     res(Result.IsOk(result)
         and { error=false, value=Result.IsOk(bindings) and bindings.value or nil }
         or { error=true, code=result.error.code, message=result.error.message,
+            details=result.error.details,
             value=Result.IsOk(bindings) and bindings.value or nil })
 end)

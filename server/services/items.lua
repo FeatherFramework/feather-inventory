@@ -11,6 +11,7 @@ local UsableItemOwners = {}
 local UsableItemActions = {}
 local UsableItemAfterCommit = {}
 local ActiveItemUses = {}
+local NextActiveUseToken = 0
 
 function ItemsAPI.RegisterInternalUseGuard()
   local function activeUseGuard(instance, context)
@@ -607,7 +608,11 @@ ItemsAPI.UseItem = function(itemID, src, context)
     if ActiveItemUses[numericId] then
       return Result.Err(Result.Codes.CONFLICT, 'That item is already being used.')
     end
-    local activeUseToken = {}
+    -- This token crosses a CFX resource boundary for callback-owned mutations.
+    -- Keep it scalar: tables are serialized and lose reference identity.
+    NextActiveUseToken = NextActiveUseToken + 1
+    local activeUseToken = ('inventory-use:%s:%s:%s'):format(
+      tostring(numericId), tostring(GetGameTimer()), tostring(NextActiveUseToken))
     ActiveItemUses[numericId] = {
       source = tonumber(src),
       resource = UsableItemOwners[item.name],
@@ -615,7 +620,7 @@ ItemsAPI.UseItem = function(itemID, src, context)
       token = activeUseToken,
     }
     local refresh = function()
-      TriggerClientEvent('Feather:Inventory:OpenInventory', src, nil, "player")
+      TriggerClientEvent('Feather:Inventory:RefreshInventory', src)
     end
     local ok, callbackResult, actionCommitted
     if action then
@@ -635,16 +640,28 @@ ItemsAPI.UseItem = function(itemID, src, context)
       })
       actionCommitted = ok and Result.IsOk(callbackResult)
       if actionCommitted and UsableItemAfterCommit[item.name] then
-        ok, callbackResult = pcall(UsableItemAfterCommit[item.name], callbackResult.value, item, src, refresh)
+        ok, callbackResult = pcall(UsableItemAfterCommit[item.name], callbackResult.value, item, src, refresh, {
+          activeUseToken = activeUseToken,
+          reason = context and context.reason or 'use_item',
+          correlationId = context and context.correlationId,
+        })
       end
     else
-      ok, callbackResult = pcall(callback, item, src, refresh)
+      ok, callbackResult = pcall(callback, item, src, refresh, {
+        activeUseToken = activeUseToken,
+        reason = context and context.reason or 'use_item',
+        correlationId = context and context.correlationId,
+      })
     end
     ActiveItemUses[numericId] = nil
 
     if not ok then
       warn(('Usable item callback failed for %s instance %s: %s')
         :format(tostring(item.name), tostring(numericId), tostring(callbackResult)))
+      -- The inventory mutation cannot be rolled back after an afterCommit
+      -- failure. Repaint any open ledger from authoritative state so a
+      -- consumed instance does not remain as a client-side phantom.
+      if actionCommitted then refresh() end
       return Result.Err(Result.Codes.INTERNAL,
         actionCommitted and 'The item mutation committed, but its post-commit effect failed.'
           or 'The item could not be used.', {
@@ -716,8 +733,18 @@ ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z, context)
     return registered
   end
   local groundInventoryID = registered.value.id
-  local updateinv = InventoryControllers.MoveInventoryItems(inventoryId, groundInventoryID, items,
-    context or { reason = 'ground_drop', resource = GetInvokingResource() or 'feather-inventory' })
+  local moveContext = {}
+  for key, value in pairs(context or {}) do moveContext[key] = value end
+  moveContext.reason = moveContext.reason or 'ground_drop'
+  moveContext.resource = moveContext.resource or GetInvokingResource() or 'feather-inventory'
+  -- The server validated the drop coordinates and resolved/created this exact
+  -- ground inventory above. It cannot already be open on the first drop, so
+  -- the normal target-access check would reject every new pile before the
+  -- item could enter it. This exception applies only to target insertion;
+  -- source access, membership, guards, capacity, and row locks still run.
+  moveContext.allowTargetInsert = true
+  local updateinv = InventoryControllers.MoveInventoryItems(
+    inventoryId, groundInventoryID, items, moveContext)
 
   -- This always reported `error = false` even when MoveInventoryItems
   -- itself rejected the move (e.g. capacity) -- the ground pile row would

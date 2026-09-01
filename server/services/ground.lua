@@ -124,11 +124,71 @@ RegisterServerEvent("Feather:Inventory:GetGroundLocations", function()
     UpdateClientWithGroundLocations(src)
 end)
 
--- Street sweeping is garbage collection, not item destruction. Only empty
--- piles are eligible; deleting a ground row cascades its empty inventory.
--- Non-empty piles persist across restarts and timed sweeps until an explicit,
--- audited TTL/destruction policy is introduced.
+local function ClearGroundOnStart()
+    local pilesById, pileOrder = {}, {}
+    for _, row in ipairs(GroundControllers.GetGroundCleanupRows() or {}) do
+        local groundId = tonumber(row.ground_id)
+        if groundId and not pilesById[groundId] then
+            pilesById[groundId] = {
+                groundId = groundId,
+                inventoryId = tonumber(row.inventory_id),
+                instanceIds = {}
+            }
+            pileOrder[#pileOrder + 1] = groundId
+        end
+        local pile = groundId and pilesById[groundId]
+        local instanceId = tonumber(row.instance_id)
+        if pile and instanceId then
+            pile.instanceIds[#pile.instanceIds + 1] = instanceId
+        end
+    end
+
+    local clearedPiles, destroyedItems, failedPiles = 0, 0, 0
+    for _, groundId in ipairs(pileOrder) do
+        local pile = pilesById[groundId]
+        local mayDelete = #pile.instanceIds == 0
+        if not mayDelete and pile.inventoryId then
+            local destroyed = TransactionAPI.DestroyInstances({
+                reason = 'ground_restart_cleanup',
+                resource = GetCurrentResourceName()
+            }, {
+                inventoryId = pile.inventoryId,
+                expectedLocation = 'ground',
+                instanceIds = pile.instanceIds
+            })
+            mayDelete = Result.IsOk(destroyed)
+            if mayDelete then
+                destroyedItems = destroyedItems + #pile.instanceIds
+            else
+                failedPiles = failedPiles + 1
+                local failureMessage = destroyed and destroyed.error and destroyed.error.message
+                    or 'unknown destruction failure'
+                warn(('Ground startup cleanup preserved pile %s because item destruction failed: %s')
+                    :format(tostring(groundId), tostring(failureMessage)))
+            end
+        end
+
+        if mayDelete and GroundControllers.DeleteGroundIfEmpty(groundId) then
+            clearedPiles = clearedPiles + 1
+        elseif mayDelete then
+            failedPiles = failedPiles + 1
+            warn(('Ground startup cleanup could not delete pile %s after clearing its contents.')
+                :format(tostring(groundId)))
+        end
+    end
+
+    print(('[feather-inventory] Ground startup cleanup: %d pile(s), %d item instance(s) cleared; %d pile(s) preserved after failure.')
+        :format(clearedPiles, destroyedItems, failedPiles))
+end
+
+-- Ground property is intentionally ephemeral. Startup cleanup explicitly
+-- destroys each exact instance (and emits normal destruction facts) before
+-- deleting the empty pile. Timed street sweeping remains empty-row GC only.
 CreateThread(function()
+    if Config.Dropped.ClearOnStart == true then
+        ClearGroundOnStart()
+    end
+
     if Config.Dropped.StreetSweep ~= nil then
         if (Config.Dropped.StreetSweep == 0) then
             GroundControllers.DeleteEmptyGround()

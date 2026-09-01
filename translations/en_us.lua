@@ -71,8 +71,7 @@ Feather.Locale.register('en_us', {
     ui_hotbar_visibility = 'Hotbar Visibility',
     ui_hotbar_temporary = 'Temporary',
     ui_hotbar_always = 'Always',
-    ui_assign_hotbar = 'Assign Hotbar',
-    ui_choose_hotbar_slot = 'Choose a quick slot.',
+    ui_hotbar_opacity = 'Hotbar Opacity',
 
     ui_use = 'Use',
     ui_give = 'Give',
