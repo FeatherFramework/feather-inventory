@@ -99,6 +99,10 @@ Feather.Locale.register('en_us', {
 
     -- Condition wear stages (see Config.Condition.Stages) and the detail label.
     ui_take_all = 'Take All',
+    ui_taking_all = 'Taking items...',
+    ui_using_item = 'Using item...',
+    ui_dropping_items = 'Dropping items...',
+    ui_working = 'Working...',
     ui_condition = 'Condition',
     ui_condition_pristine = 'Pristine',
     ui_condition_worn = 'Worn',

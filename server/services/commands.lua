@@ -3,6 +3,26 @@
 -- DevMode back on for testing doesn't hand free-item commands to every
 -- player, only to principals explicitly granted `command.<name>`.
 if Config.DevMode then
+    local LifecycleSmokeRunning = false
+    local LifecycleSmokeEvents = nil
+
+    -- Use the public event names directly here. services/*.lua loads this
+    -- file before guards.lua, so dereferencing GuardsAPI during file load
+    -- prevents every DevMode command below from registering.
+    AddEventHandler('Feather:Inventory:ItemDestroyed', function(fact)
+        if LifecycleSmokeEvents and fact
+            and fact.correlationId == LifecycleSmokeEvents.correlationId then
+            LifecycleSmokeEvents.destroyed[#LifecycleSmokeEvents.destroyed + 1] = fact
+        end
+    end)
+
+    AddEventHandler('Feather:Inventory:DefinitionMigrated', function(fact)
+        if LifecycleSmokeEvents and fact
+            and fact.reason == LifecycleSmokeEvents.migrationReason then
+            LifecycleSmokeEvents.migrated[#LifecycleSmokeEvents.migrated + 1] = fact
+        end
+    end)
+
     RegisterCommand('AddItems', function(source, args)
         local result = ItemsAPI.AddItem(args[1], tonumber(args[2]), args[3] or nil, source)
 
@@ -292,6 +312,411 @@ if Config.DevMode then
         report('exact instance removal', Result.IsOk(cleanup),
             Result.IsOk(cleanup) and 'removed=2' or (cleanup.error and cleanup.error.message))
         print('[InvTxSmokeTest] done')
+    end, true)
+
+    -- Trusted disposable lifecycle/API harness. Definition fixture setup and
+    -- assertions use SQL because catalog creation is intentionally not a
+    -- public Inventory mutation. Owned-instance mutations themselves go
+    -- through the supported transactional API. The fixed fixture names make
+    -- an interrupted run safe to clean up and rerun without touching real
+    -- catalog definitions.
+    RegisterCommand('InvLifecycleSmokeTest', function(source)
+        if LifecycleSmokeRunning then
+            print('[InvLifecycleSmokeTest] already running')
+            return
+        end
+        LifecycleSmokeRunning = true
+
+        local function report(label, ok, detail)
+            print(('[InvLifecycleSmokeTest] %-45s %s%s'):format(
+                label, ok and 'PASS' or 'FAIL', detail and ('  -- ' .. detail) or ''))
+        end
+
+        local player = InventoryIdentity.GetCharacter(source)
+        local character = player and player.char
+        local inventoryId = character and InventoryControllers.GetInventoryByCharacter(character.id)
+        local seed = ItemControllers.GetItemDefinitionByName('consumable_apple')
+        if not inventoryId or not seed then
+            print('[InvLifecycleSmokeTest] connected character inventory or consumable_apple is unavailable')
+            LifecycleSmokeRunning = false
+            return
+        end
+
+        local names = {
+            source = 'inv_smoke_migrate_source',
+            target = 'inv_smoke_migrate_target',
+            incompatible = 'inv_smoke_migrate_incompatible',
+        }
+        local function cleanupDefinitions()
+            MySQL.query.await('DELETE FROM `items` WHERE `name` IN (?, ?, ?);',
+                { names.source, names.target, names.incompatible })
+        end
+        cleanupDefinitions()
+
+        local inserted = MySQL.query.await([[
+            INSERT INTO `items`
+                (`name`, `display_name`, `description`, `max_quantity`, `max_stack_size`,
+                 `weight`, `usable`, `category_id`, `type`, `instance_mode`)
+            SELECT ?, ?, 'Disposable inventory lifecycle fixture', `max_quantity`,
+                   `max_stack_size`, `weight`, 0, `category_id`, `type`, `instance_mode`
+            FROM `items` WHERE `id`=?;
+        ]], { names.source, 'Inventory Smoke Source', seed.id })
+        MySQL.query.await([[
+            INSERT INTO `items`
+                (`name`, `display_name`, `description`, `max_quantity`, `max_stack_size`,
+                 `weight`, `usable`, `category_id`, `type`, `instance_mode`)
+            SELECT ?, ?, 'Disposable inventory lifecycle fixture', `max_quantity`,
+                   `max_stack_size`, `weight`, 0, `category_id`, `type`, `instance_mode`
+            FROM `items` WHERE `id`=?;
+        ]], { names.target, 'Inventory Smoke Target', seed.id })
+        MySQL.query.await([[
+            INSERT INTO `items`
+                (`name`, `display_name`, `description`, `max_quantity`, `max_stack_size`,
+                 `weight`, `usable`, `category_id`, `type`, `instance_mode`)
+            SELECT ?, ?, 'Disposable incompatible lifecycle fixture', `max_quantity`,
+                   `max_stack_size`, `weight` + 1.00, 0, `category_id`, `type`, `instance_mode`
+            FROM `items` WHERE `id`=?;
+        ]], { names.incompatible, 'Inventory Smoke Incompatible', seed.id })
+
+        local rows = MySQL.query.await(
+            'SELECT `id`, `name` FROM `items` WHERE `name` IN (?, ?, ?);',
+            { names.source, names.target, names.incompatible }) or {}
+        local definitions = {}
+        for _, row in ipairs(rows) do definitions[row.name] = tonumber(row.id) end
+        local sourceId, targetId, incompatibleId = definitions[names.source],
+            definitions[names.target], definitions[names.incompatible]
+        if not inserted or not sourceId or not targetId or not incompatibleId then
+            report('fixture definitions created', false, 'definition insert failed')
+            cleanupDefinitions()
+            LifecycleSmokeRunning = false
+            return
+        end
+        report('fixture definitions created', true)
+
+        local createdIds = {}
+        local created = InventoryAPI.Transaction({
+            actorSource = source,
+            actorCharacterId = character.id,
+            reason = 'lifecycle_smoke_seed',
+            resource = GetCurrentResourceName(),
+        }, function(tx)
+            local added = tx:AddQuantity(inventoryId, sourceId, 3,
+                { fixture = 'lifecycle', batch = 'same-document' })
+            if not Result.IsOk(added) then return added end
+            createdIds = added.value
+            return added
+        end)
+        report('three owned fixture instances created', Result.IsOk(created) and #createdIds == 3,
+            Result.IsOk(created) and ('instances=' .. #createdIds)
+                or (created.error and created.error.message))
+
+        local before = MySQL.query.await([[
+            SELECT `id`, `inventory_id`, `slot_index`, `metadata`, `row_revision`
+            FROM `inventory_items` WHERE `item_id`=? ORDER BY `id`;
+        ]], { sourceId }) or {}
+
+        local preflight = InstancesAPI.GetDefinitionMigrationPreflight(sourceId, targetId)
+        report('compatible preflight returns advisory counts',
+            Result.IsOk(preflight)
+                and preflight.value.advisory == true
+                and preflight.value.storageSemanticsCompatible == true
+                and preflight.value.ownedInstances == #before
+                and preflight.value.affectedInventories == 1,
+            Result.IsOk(preflight) and json.encode(preflight.value)
+                or (preflight.error and preflight.error.message))
+
+        local incompatiblePreflight = InstancesAPI.GetDefinitionMigrationPreflight(sourceId, incompatibleId)
+        report('incompatible preflight identifies conflict',
+            Result.IsOk(incompatiblePreflight)
+                and incompatiblePreflight.value.storageSemanticsCompatible == false)
+        local incompatible = InstancesAPI.MigrateDefinitionInstances(
+            sourceId, incompatibleId, 'lifecycle smoke incompatible')
+        local afterRejected = MySQL.query.await(
+            'SELECT COUNT(*) AS `count` FROM `inventory_items` WHERE `item_id`=?;', { sourceId })[1]
+        report('incompatible migration rolls back unchanged',
+            not Result.IsOk(incompatible)
+                and incompatible.error.code == Result.Codes.CONFLICT
+                and tonumber(afterRejected and afterRejected.count) == #before,
+            incompatible.error and incompatible.error.code)
+
+        local migrationReason = 'lifecycle smoke compatible migration'
+        LifecycleSmokeEvents = {
+            correlationId = 'inv-lifecycle-destroy-' .. tostring(os.time()),
+            migrationReason = migrationReason,
+            destroyed = {},
+            migrated = {},
+        }
+        local migrated = InstancesAPI.MigrateDefinitionInstances(sourceId, targetId, migrationReason)
+        local after = MySQL.query.await([[
+            SELECT `id`, `inventory_id`, `slot_index`, `metadata`, `row_revision`
+            FROM `inventory_items` WHERE `item_id`=? ORDER BY `id`;
+        ]], { targetId }) or {}
+        local preserved = Result.IsOk(migrated) and #before == #after
+        for index, original in ipairs(before) do
+            local replacement = after[index]
+            preserved = preserved and replacement
+                and tonumber(replacement.id) == tonumber(original.id)
+                and tonumber(replacement.inventory_id) == tonumber(original.inventory_id)
+                and tonumber(replacement.slot_index) == tonumber(original.slot_index)
+                and tostring(replacement.metadata) == tostring(original.metadata)
+                and tonumber(replacement.row_revision) == tonumber(original.row_revision) + 1
+        end
+        local archived = MySQL.query.await(
+            'SELECT `archived_at`, `archive_reason` FROM `items` WHERE `id`=?;', { sourceId })[1]
+        report('compatible migration preserves identity and bumps revision', preserved)
+        report('compatible migration archives source', archived and archived.archived_at ~= nil
+            and archived.archive_reason == migrationReason)
+        report('DefinitionMigrated emitted once after commit',
+            #LifecycleSmokeEvents.migrated == 1
+                and LifecycleSmokeEvents.migrated[1].quantity == #before)
+
+        local wrongLocation = TransactionAPI.DestroyInstances({
+            actorSource = source,
+            actorCharacterId = character.id,
+            reason = 'lifecycle smoke wrong domain',
+            resource = GetCurrentResourceName(),
+            correlationId = LifecycleSmokeEvents.correlationId,
+        }, {
+            inventoryId = inventoryId,
+            expectedLocation = '__wrong_fixture_domain__',
+            instanceIds = createdIds,
+        })
+        local countAfterWrong = MySQL.query.await(
+            'SELECT COUNT(*) AS `count` FROM `inventory_items` WHERE `item_id`=?;', { targetId })[1]
+        report('destruction rejects wrong owner domain without writes',
+            not Result.IsOk(wrongLocation) and wrongLocation.error.code == Result.Codes.DENIED
+                and tonumber(countAfterWrong and countAfterWrong.count) == #createdIds)
+
+        local staleIds = {}
+        for _, id in ipairs(createdIds) do staleIds[#staleIds + 1] = id end
+        local maxInstance = MySQL.query.await(
+            'SELECT COALESCE(MAX(`id`), 0) AS `id` FROM `inventory_items`;')[1]
+        staleIds[#staleIds + 1] = (tonumber(maxInstance and maxInstance.id) or 0) + 1
+        local stale = TransactionAPI.DestroyInstances({
+            actorSource = source,
+            actorCharacterId = character.id,
+            reason = 'lifecycle smoke stale set',
+            resource = GetCurrentResourceName(),
+            correlationId = LifecycleSmokeEvents.correlationId,
+        }, {
+            inventoryId = inventoryId,
+            expectedLocation = 'character',
+            instanceIds = staleIds,
+        })
+        local countAfterStale = MySQL.query.await(
+            'SELECT COUNT(*) AS `count` FROM `inventory_items` WHERE `item_id`=?;', { targetId })[1]
+        report('stale destruction set rolls back every removal',
+            not Result.IsOk(stale)
+                and tonumber(countAfterStale and countAfterStale.count) == #createdIds,
+            stale.error and stale.error.code)
+
+        local destroyed = TransactionAPI.DestroyInstances({
+            actorSource = source,
+            actorCharacterId = character.id,
+            reason = 'lifecycle smoke approved destruction',
+            resource = GetCurrentResourceName(),
+            correlationId = LifecycleSmokeEvents.correlationId,
+        }, {
+            inventoryId = inventoryId,
+            expectedLocation = 'character',
+            instanceIds = createdIds,
+        })
+        report('exact destruction commits all selected instances',
+            Result.IsOk(destroyed) and destroyed.value.quantity == #createdIds)
+        local factsValid = #LifecycleSmokeEvents.destroyed == #createdIds
+        for _, fact in ipairs(LifecycleSmokeEvents.destroyed) do
+            factsValid = factsValid
+                and fact.outcome == 'committed'
+                and fact.reason == 'lifecycle smoke approved destruction'
+                and fact.resource == GetCurrentResourceName()
+                and tonumber(fact.inventoryId) == inventoryId
+        end
+        report('ItemDestroyed emitted once per instance with context', factsValid,
+            ('events=%s expected=%s'):format(#LifecycleSmokeEvents.destroyed, #createdIds))
+
+        LifecycleSmokeEvents = nil
+        cleanupDefinitions()
+        LifecycleSmokeRunning = false
+        print('[InvLifecycleSmokeTest] done')
+    end, true)
+
+    RegisterCommand('InvConcurrencySmokeTest', function(source)
+        local function report(label, ok, detail)
+            print(('[InvConcurrencySmokeTest] %-48s %s%s'):format(
+                label, ok and 'PASS' or 'FAIL', detail and ('  -- ' .. detail) or ''))
+        end
+
+        local player = InventoryIdentity.GetCharacter(source)
+        local character = player and player.char
+        local characterInventory = character
+            and InventoryControllers.GetInventoryByCharacter(character.id)
+        local stackSeed = ItemControllers.GetItemDefinitionByName('consumable_apple')
+        local uniqueSeed = MySQL.query.await(
+            "SELECT `id` FROM `items` WHERE `instance_mode`='unique' AND `archived_at` IS NULL LIMIT 1;")[1]
+        if not characterInventory or not stackSeed or not uniqueSeed then
+            print('[InvConcurrencySmokeTest] loaded Character, apple, and active unique definition are required')
+            return
+        end
+
+        local definitionName = 'inv_smoke_archive_race'
+        local targetUuid = '00000000-0000-4000-8000-000000000091'
+        MySQL.query.await('DELETE FROM `items` WHERE `name`=?;', { definitionName })
+        MySQL.query.await('DELETE FROM `inventory` WHERE `uuid`=?;', { targetUuid })
+        MySQL.query.await([[
+            INSERT INTO `items`
+                (`name`, `display_name`, `description`, `max_quantity`, `max_stack_size`,
+                 `weight`, `usable`, `category_id`, `type`, `instance_mode`)
+            SELECT ?, 'Inventory Archive Race', 'Disposable concurrency fixture',
+                   `max_quantity`, `max_stack_size`, `weight`, 0, `category_id`, `type`, `instance_mode`
+            FROM `items` WHERE `id`=?;
+        ]], { definitionName, stackSeed.id })
+        local raceDefinition = MySQL.query.await(
+            'SELECT `id` FROM `items` WHERE `name`=?;', { definitionName })[1]
+        if not raceDefinition then
+            report('archive fixture created', false)
+            return
+        end
+        raceDefinition.id = tonumber(raceDefinition.id)
+
+        local ready, done, go = 0, 0, false
+        local archiveResult, grantResult
+        CreateThread(function()
+            ready = ready + 1
+            while not go do Wait(0) end
+            archiveResult = InstancesAPI.SetDefinitionArchived(
+                raceDefinition.id, true, 'concurrency smoke archive')
+            done = done + 1
+        end)
+        CreateThread(function()
+            ready = ready + 1
+            while not go do Wait(0) end
+            grantResult = InventoryAPI.Transaction({
+                actorSource = source,
+                actorCharacterId = character.id,
+                reason = 'concurrency smoke grant',
+                resource = GetCurrentResourceName(),
+            }, function(tx)
+                return tx:AddQuantity(characterInventory, raceDefinition.id, 1,
+                    { fixture = 'archive-race' })
+            end)
+            done = done + 1
+        end)
+        while ready < 2 do Wait(0) end
+        go = true
+        local deadline = GetGameTimer() + 15000
+        while done < 2 and GetGameTimer() < deadline do Wait(0) end
+
+        local archivedRow = MySQL.query.await(
+            'SELECT `archived_at` FROM `items` WHERE `id`=?;', { raceDefinition.id })[1]
+        local ownedAfterArchive = MySQL.query.await(
+            'SELECT COUNT(*) AS `count` FROM `inventory_items` WHERE `item_id`=?;',
+            { raceDefinition.id })[1]
+        local grantCode = grantResult and not Result.IsOk(grantResult)
+            and grantResult.error.code or nil
+        local serialArchive = done == 2 and Result.IsOk(archiveResult)
+            and archivedRow and archivedRow.archived_at ~= nil
+            and (Result.IsOk(grantResult)
+                or grantCode == Result.Codes.DENIED)
+            and tonumber(ownedAfterArchive and ownedAfterArchive.count) <= 1
+        report('archive and grant produce only a valid serial result', serialArchive,
+            ('grant=%s instances=%s'):format(
+                Result.IsOk(grantResult) and 'committed' or tostring(grantCode),
+                tostring(ownedAfterArchive and ownedAfterArchive.count)))
+
+        MySQL.query.await([[
+            INSERT INTO `inventory`
+                (`uuid`, `name`, `max_weight`, `location`, `ignore_item_limit`,
+                 `is_public`, `max_slots`)
+            VALUES (?, 'Inventory Equipment Race Target', 9999, 'concurrency_fixture', 1, 0, 64);
+        ]], { targetUuid })
+        local targetInventory = MySQL.query.await(
+            'SELECT `id` FROM `inventory` WHERE `uuid`=?;', { targetUuid })[1]
+        targetInventory = targetInventory and tonumber(targetInventory.id)
+
+        local instanceId
+        local seeded = InventoryAPI.Transaction({
+            actorSource = source,
+            actorCharacterId = character.id,
+            reason = 'concurrency smoke equipment seed',
+            resource = GetCurrentResourceName(),
+        }, function(tx)
+            local added = tx:AddQuantity(characterInventory, tonumber(uniqueSeed.id), 1,
+                { fixture = 'equipment-race' })
+            if not Result.IsOk(added) then return added end
+            instanceId = added.value[1]
+            return added
+        end)
+
+        ready, done, go = 0, 0, false
+        local equipResult, moveResult
+        if Result.IsOk(seeded) and instanceId and targetInventory then
+            CreateThread(function()
+                ready = ready + 1
+                while not go do Wait(0) end
+                equipResult = EquipmentAPI.SetEquippedForCharacter(
+                    character.id, 'inventory_concurrency_smoke', instanceId)
+                done = done + 1
+            end)
+            CreateThread(function()
+                ready = ready + 1
+                while not go do Wait(0) end
+                moveResult = InventoryAPI.Transaction({
+                    actorSource = source,
+                    actorCharacterId = character.id,
+                    reason = 'concurrency smoke move',
+                    resource = GetCurrentResourceName(),
+                }, function(tx)
+                    return tx:MoveInstance(instanceId, targetInventory, 1)
+                end)
+                done = done + 1
+            end)
+            while ready < 2 do Wait(0) end
+            go = true
+            deadline = GetGameTimer() + 15000
+            while done < 2 and GetGameTimer() < deadline do Wait(0) end
+        end
+
+        local finalItem = instanceId and MySQL.query.await([[
+            SELECT ii.`inventory_id`, inv.`character_id`, inv.`location`
+            FROM `inventory_items` ii INNER JOIN `inventory` inv ON inv.`id`=ii.`inventory_id`
+            WHERE ii.`id`=?;
+        ]], { instanceId })[1]
+        local equipment = instanceId and MySQL.query.await(
+            'SELECT `character_id` FROM `character_equipment` WHERE `inventory_items_id`=?;',
+            { instanceId })[1]
+        local movedAwayCleanly = Result.IsOk(moveResult)
+            and finalItem and tonumber(finalItem.inventory_id) == targetInventory
+            and equipment == nil
+        local equipWonAndMoveWasDenied = not Result.IsOk(moveResult)
+            and Result.IsOk(equipResult)
+            and finalItem and tostring(finalItem.character_id) == tostring(character.id)
+            and equipment and tostring(equipment.character_id) == tostring(character.id)
+        local noMismatch = done == 2
+            and (movedAwayCleanly or equipWonAndMoveWasDenied)
+        report('equipment assignment and move cannot leave mismatch', noMismatch,
+            ('equip=%s move=%s equippedRow=%s'):format(
+                Result.IsOk(equipResult) and 'committed'
+                    or tostring(equipResult and equipResult.error.code),
+                Result.IsOk(moveResult) and 'committed'
+                    or tostring(moveResult and moveResult.error.code),
+                tostring(equipment ~= nil)))
+
+        if instanceId and finalItem then
+            EquipmentAPI.ClearEquippedInstance(instanceId)
+            TransactionAPI.DestroyInstances({
+                actorSource = source,
+                actorCharacterId = character.id,
+                reason = 'concurrency smoke cleanup',
+                resource = GetCurrentResourceName(),
+            }, {
+                inventoryId = tonumber(finalItem.inventory_id),
+                expectedLocation = tostring(finalItem.location),
+                instanceIds = { instanceId },
+            })
+        end
+        MySQL.query.await('DELETE FROM `items` WHERE `name`=?;', { definitionName })
+        MySQL.query.await('DELETE FROM `inventory` WHERE `uuid`=?;', { targetUuid })
+        print('[InvConcurrencySmokeTest] done')
     end, true)
 
     RegisterCommand('CreateStorageKey', function(source, args)

@@ -8,6 +8,7 @@ local VALID_VISIBILITY = { Temporary=true, Always=true }
 local HotbarBindings = { enabled=false, slots=0, bindings={} }
 local temporaryGeneration = 0
 local settingsRegistrationGeneration = 0
+local refreshGeneration = 0
 local paused = false
 
 local function NormalizePolicy(value)
@@ -121,7 +122,18 @@ end
 
 local function UseSlot(slot)
     ShowTemporary()
+    local busyStartedAt = GetGameTimer()
+    SendNUIMessage({ type='mutationBusy', busy=true, labelKey='ui_using_item' })
+    -- Give the browser a frame to paint the standalone busy shield before
+    -- entering the RPC. Without yielding here, a fast use could enqueue both
+    -- busy messages before NUI rendered either one.
+    Wait(0)
     local result = Feather.RPC.CallAsync('Feather:Inventory:Hotbar:Use', { slot=slot })
+    -- Match ledger mutations: keep short uses readable while adding no delay
+    -- to ammo or other consumers that already take longer than this.
+    local busyRemaining = 250 - (GetGameTimer() - busyStartedAt)
+    if busyRemaining > 0 then Wait(busyRemaining) end
+    SendNUIMessage({ type='mutationBusy', busy=false })
     if result and result.value then HotbarBindings = result.value end
     if not result or result.error then
         local code = result and result.code or ''
@@ -218,7 +230,11 @@ RegisterNetEvent('Feather:Character:Spawned', function()
 end)
 
 RegisterNetEvent('Feather:Inventory:HotbarRefresh', function()
-    RefreshBindings(true)
+    refreshGeneration = refreshGeneration + 1
+    local generation = refreshGeneration
+    SetTimeout(75, function()
+        if generation == refreshGeneration then RefreshBindings(true) end
+    end)
 end)
 
 AddEventHandler('Feather:Inventory:HotbarRefreshAfterInventory', function()

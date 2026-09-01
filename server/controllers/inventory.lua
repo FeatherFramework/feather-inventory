@@ -640,24 +640,34 @@ function InventoryControllers.IsItemRestricted(inventory, itemId)
 end
 
 function InventoryControllers.UpdateRestrictedItems(inventory, items)
+  local restrictedNames = {}
+  for _, itemName in pairs(items or {}) do
+    restrictedNames[tostring(itemName)] = true
+  end
+
   local result = MySQL.query.await(
     "SELECT `inventory_blacklist`.`inventory_id`, `inventory_blacklist`.`item_id`, `items`.`name` FROM `inventory_blacklist` INNER JOIN `items` ON `items`.`id`=`inventory_blacklist`.`item_id` WHERE `inventory_blacklist`.`inventory_id`=?;",
     { inventory })
 
   -- Add Restricted Items
-  for _, item in pairs(items) do
+  for _, item in pairs(items or {}) do
     local itemId = ItemControllers.GetItemByName(item)
-    MySQL.query.await('INSERT IGNORE INTO `inventory_blacklist` (`inventory_id`, `item_id`) VALUES (?,?);',
-      { inventory, itemId })
+    if itemId then
+      MySQL.query.await('INSERT IGNORE INTO `inventory_blacklist` (`inventory_id`, `item_id`) VALUES (?,?);',
+        { inventory, itemId })
+    else
+      warn(('Cannot blacklist unknown item definition %s for inventory %s.')
+        :format(tostring(item), tostring(inventory)))
+    end
   end
 
-  if result[1] then
-    -- Remove no longer restricted items
-    for _, item in pairs(result[1]) do
-      if not TableContains(items, item.name) then
-        MySQL.query.await('DELETE FROM `inventory_blacklist` WHERE `inventory_id`=? AND `item_id`=?',
-          { item.inventory_id, item.item_id })
-      end
+  -- Remove no longer restricted items. The registration input is an array,
+  -- while TableContains expects a key-indexed table. Use the explicit name
+  -- set above so an existing restriction survives idempotent re-registration.
+  for _, item in pairs(result or {}) do
+    if not restrictedNames[tostring(item.name)] then
+      MySQL.query.await('DELETE FROM `inventory_blacklist` WHERE `inventory_id`=? AND `item_id`=?',
+        { item.inventory_id, item.item_id })
     end
   end
 end

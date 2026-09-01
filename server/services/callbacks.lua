@@ -422,18 +422,35 @@ Feather.RPC.Register('Feather:Inventory:TakeAll', function(params, res, src)
 
   local sourceItems = InventoryControllers.GetInventoryItems(fromInventory)
   local moved, skipped = 0, 0
-
-  for _, item in pairs(sourceItems) do
-    local result = InventoryControllers.MoveInventoryItems(fromInventory, targetInventory, { item.id }, {
+  local context = {
       actorSource = src,
       actorCharacterId = character.id,
       reason = 'take_all',
       resource = 'feather-inventory'
-    })
-    if result and result.error then
-      skipped = skipped + 1
+  }
+
+  -- The usual case is that everything fits. Move the complete set through
+  -- one locked transaction instead of opening one transaction per owned row
+  -- (55 items previously meant 55 sequential round trips). If the complete
+  -- set cannot fit, preserve Take All's greedy contract by falling back to
+  -- individual attempts so lighter/smaller items can still move.
+  local instanceIds = {}
+  for _, item in pairs(sourceItems) do instanceIds[#instanceIds + 1] = item.id end
+  if #instanceIds > 0 then
+    local batch = InventoryControllers.MoveInventoryItems(
+      fromInventory, targetInventory, instanceIds, context)
+    if not (batch and batch.error) then
+      moved = #instanceIds
     else
-      moved = moved + 1
+      for _, item in pairs(sourceItems) do
+        local result = InventoryControllers.MoveInventoryItems(
+          fromInventory, targetInventory, { item.id }, context)
+        if result and result.error then
+          skipped = skipped + 1
+        else
+          moved = moved + 1
+        end
+      end
     end
   end
 
@@ -447,6 +464,7 @@ Feather.RPC.Register('Feather:Inventory:TakeAll', function(params, res, src)
     error = false,
     moved = moved,
     skipped = skipped,
+    expectedSourceCount = math.max(0, #sourceItems - moved),
     sourceItems = InventoryControllers.GetInventoryItems(fromInventory),
     targetItems = InventoryControllers.GetInventoryItems(targetInventory)
   })

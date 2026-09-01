@@ -6,7 +6,7 @@ lua54 'yes'
 description 'The Inventory API for the Feather Framework'
 author 'BCC Scripts'
 name 'feather-inventory'
-version '0.4.2'
+version '0.4.3'
 
 shared_scripts {
   'config.lua'

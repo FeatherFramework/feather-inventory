@@ -182,3 +182,64 @@ Feather.RPC.Register('Feather:Inventory:Hotbar:Use', function(params, res, src)
             details=result.error.details,
             value=Result.IsOk(bindings) and bindings.value or nil })
 end)
+
+-- Reconcile availability whenever committed inventory facts affect a
+-- Character inventory. This also covers mutations initiated by other server
+-- resources (grants, rewards, recovery), which a NUI-only refresh cannot see.
+-- The client debounces bursts such as a five-unit stack into one bindings RPC.
+local PendingHotbarInventoryIds = {}
+local PendingHotbarActorSources = {}
+local HotbarRefreshScheduled = false
+
+local function FlushAffectedHotbars()
+    HotbarRefreshScheduled = false
+    local inventoryIds, actorSources = PendingHotbarInventoryIds, PendingHotbarActorSources
+    PendingHotbarInventoryIds, PendingHotbarActorSources = {}, {}
+
+    local characterIds = {}
+    for inventoryId in pairs(inventoryIds) do
+        local row = MySQL.single.await(
+            'SELECT `character_id` FROM `inventory` WHERE `id`=? LIMIT 1;', { inventoryId })
+        if row and row.character_id then
+            characterIds[tostring(row.character_id):lower()] = true
+        end
+    end
+
+    local notified = {}
+    for actorSource in pairs(actorSources) do
+        if GetPlayerName(actorSource) then
+            notified[actorSource] = true
+            TriggerClientEvent('Feather:Inventory:HotbarRefresh', actorSource)
+        end
+    end
+    if next(characterIds) == nil then return end
+    for _, rawSource in ipairs(GetPlayers()) do
+        local src = tonumber(rawSource)
+        if src and not notified[src] then
+            local player = InventoryIdentity.GetCharacter(src)
+            local character = player and player.char
+            local characterId = character and InventoryIdentity.NormalizeCharacterId(character.id)
+            if characterId and characterIds[characterId] then
+                TriggerClientEvent('Feather:Inventory:HotbarRefresh', src)
+            end
+        end
+    end
+end
+
+local function RefreshAffectedHotbars(fact)
+    if type(fact) ~= 'table' or fact.outcome ~= 'committed' then return end
+    for _, value in ipairs({ fact.inventoryId, fact.fromInventoryId, fact.toInventoryId }) do
+        local numeric = tonumber(value)
+        if numeric then PendingHotbarInventoryIds[numeric] = true end
+    end
+    local actorSource = tonumber(fact.actorSource)
+    if actorSource then PendingHotbarActorSources[actorSource] = true end
+    if not HotbarRefreshScheduled then
+        HotbarRefreshScheduled = true
+        SetTimeout(50, FlushAffectedHotbars)
+    end
+end
+
+AddEventHandler('Feather:Inventory:ItemCreated', RefreshAffectedHotbars)
+AddEventHandler('Feather:Inventory:ItemMoved', RefreshAffectedHotbars)
+AddEventHandler('Feather:Inventory:ItemDestroyed', RefreshAffectedHotbars)

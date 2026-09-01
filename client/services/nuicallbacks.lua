@@ -96,6 +96,31 @@ end)
 RegisterNUICallback('Feather:Inventory:TakeAll', function(args, cb)
   local res = Feather.RPC.CallAsync('Feather:Inventory:TakeAll', args)
 
+  -- Reconcile from a fresh read after the mutation instead of rendering the
+  -- item arrays returned immediately at the transaction boundary. The move
+  -- can be durably committed while those arrays still reflect the prior
+  -- connection snapshot, producing identical UI items on both pages until
+  -- the inventory is closed and reopened.
+  if res and not res.error then
+    local expectedSourceCount = tonumber(res.expectedSourceCount)
+    local refreshed
+    for attempt = 1, 10 do
+      refreshed = Feather.RPC.CallAsync('Feather:Inventory:GetInventoryItems', {
+        otherInventoryId = args.fromInventory
+      })
+      local sourceItems = refreshed and refreshed.otherInventoryItems
+      if refreshed and refreshed.error == nil
+        and (expectedSourceCount == nil or #(sourceItems or {}) <= expectedSourceCount) then
+        break
+      end
+      if attempt < 10 then Wait(50) end
+    end
+    if refreshed and refreshed.error == nil then
+      res.sourceItems = refreshed.otherInventoryItems or {}
+      res.targetItems = refreshed.inventoryItems or {}
+    end
+  end
+
   cb(res)
 end)
 
