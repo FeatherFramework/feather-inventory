@@ -6,7 +6,6 @@ import LedgerBook from '@/components/LedgerBook.vue';
 import ContextMenu from '@/components/ContextMenu.vue';
 import ItemCountModal from '@/components/ItemCountModal.vue';
 import Hotbar from '@/components/Hotbar.vue';
-import HotbarSlotModal from '@/components/HotbarSlotModal.vue';
 import { t, setStrings, setConditionStages } from '@/i18n';
 
 const visible = ref(false);
@@ -37,7 +36,7 @@ function makeBook(footerLabel) {
 const player = makeBook('ui_carrying');
 const other = makeBook('ui_stored');
 const hasOther = computed(() => other.inventoryId !== null);
-const hotbar = reactive({ enabled: false, visible: false, slots: 6, bindings: [] });
+const hotbar = reactive({ enabled: false, visible: false, slots: 6, bindings: [], opacity: 90, modifier: 'SHIFT' });
 
 const rawCategories = ref([]);
 const categoryOptions = computed(() => [
@@ -76,6 +75,10 @@ if (import.meta.env.DEV) {
 // started in one book highlight valid drop targets in the other.
 const drag = ref(null); // { book: 'player' | 'other', slot, itemId }
 const hover = ref(null); // { book, slot }
+const hotbarDragEligible = computed(() => {
+  if (!drag.value || drag.value.book !== 'player') return false;
+  return player.items.some((item) => item.slot_index === drag.value.slot && !!item.usable);
+});
 
 const contextMenu = ref(null); // { book, slot, x, y } | null
 
@@ -96,6 +99,8 @@ const onMessage = (event) => {
     hotbar.visible = data.visible === true;
     hotbar.slots = Number(data.slots) || 6;
     hotbar.bindings = Array.isArray(data.bindings) ? data.bindings : [];
+    hotbar.opacity = Math.max(50, Math.min(100, Number(data.opacity) || 90));
+    hotbar.modifier = String(data.modifier || 'SHIFT').toUpperCase();
     return;
   }
   if (data.type !== 'toggleInventory') return;
@@ -263,6 +268,11 @@ async function onCellMouseUp(bookKey, slotIndex) {
   // Optimistic local swap/move so it feels instant; reconciled from the
   // server response right after (or rolled back on error).
   const occupying = toBook.items.filter((i) => i.slot_index === slotIndex);
+  const originalFromItems = [...fromBook.items];
+  const originalToItems = fromBook === toBook ? originalFromItems : [...toBook.items];
+  const originalSlots = new Map(
+    [...new Set([...originalFromItems, ...originalToItems])].map((item) => [item, item.slot_index]),
+  );
   for (const item of movingStack) item.slot_index = slotIndex;
   for (const item of occupying) item.slot_index = d.slot;
   if (d.book !== bookKey) {
@@ -293,8 +303,9 @@ async function onCellMouseUp(bookKey, slotIndex) {
   }
 
   function rollbackMove() {
-    for (const item of movingStack) item.slot_index = d.slot;
-    for (const item of occupying) item.slot_index = slotIndex;
+    for (const [item, originalSlot] of originalSlots) item.slot_index = originalSlot;
+    fromBook.items = [...originalFromItems];
+    if (fromBook !== toBook) toBook.items = [...originalToItems];
   }
 }
 
@@ -477,27 +488,11 @@ async function performGive(book, items) {
 }
 
 const contextCanUse = computed(() => !!contextStack().items[0]?.usable);
-const contextCanAssignHotbar = computed(() => {
-  const context = contextStack();
-  return hotbar.enabled && contextMenu.value?.book === 'player' && !!context.items[0]?.usable;
-});
-const hotbarPrompt = ref(null);
-
-function onContextAssignHotbar() {
-  const { items } = contextStack();
-  contextMenu.value = null;
-  if (items.length === 0 || !items[0].usable) return;
-  hotbarPrompt.value = { item: items[0], itemName: items[0].display_name };
-}
-
-async function assignHotbarSlot(slot) {
-  const prompt = hotbarPrompt.value;
-  hotbarPrompt.value = null;
-  if (!prompt) return;
+async function setHotbarSlot(slot, item) {
   try {
     const { data } = await api.post('Feather:Inventory:Hotbar:Set', {
       slot,
-      itemId: prompt.item.id,
+      itemId: item.id,
     });
     if (data?.error) console.log('Hotbar assignment rejected: ' + (data.message || 'unknown error'));
   } catch (error) {
@@ -505,8 +500,16 @@ async function assignHotbarSlot(slot) {
   }
 }
 
+function assignDraggedItemToHotbar(slot) {
+  const currentDrag = drag.value;
+  if (!currentDrag || currentDrag.book !== 'player') return clearDrag();
+  const item = player.items.find((candidate) => candidate.slot_index === currentDrag.slot);
+  clearDrag();
+  if (!item || !item.usable) return;
+  setHotbarSlot(slot, item);
+}
+
 async function clearHotbarSlot(slot) {
-  hotbarPrompt.value = null;
   try {
     const { data } = await api.post('Feather:Inventory:Hotbar:Set', { slot, itemId: null });
     if (data?.error) console.log('Hotbar clear rejected: ' + (data.message || 'unknown error'));
@@ -526,7 +529,17 @@ const quantityActionLabel = computed(() => {
 </script>
 
 <template>
-  <Hotbar v-if="hotbar.enabled && hotbar.visible && !visible && !devmode" :slots="hotbar.slots" :bindings="hotbar.bindings" />
+  <Hotbar
+    v-if="hotbar.enabled && ((hotbar.visible && !visible && !devmode) || visible || devmode)"
+    :slots="hotbar.slots"
+    :bindings="hotbar.bindings"
+    :assignment-mode="visible || devmode"
+    :drag-active="hotbarDragEligible"
+    :opacity="hotbar.opacity"
+    :modifier="hotbar.modifier"
+    @assign="assignDraggedItemToHotbar"
+    @clear="clearHotbarSlot"
+  />
   <div v-if="visible || devmode" class="ledger-overlay">
     <div class="ledger-vignette"></div>
     <div class="ledger-close" @click="closeApp">&times;</div>
@@ -587,10 +600,8 @@ const quantityActionLabel = computed(() => {
       :x="contextMenu.x"
       :y="contextMenu.y"
       :can-use="contextCanUse"
-      :can-assign-hotbar="contextCanAssignHotbar"
       :can-split="contextCanSplit"
       @use="onContextUse"
-      @assign-hotbar="onContextAssignHotbar"
       @give="onContextGive"
       @drop="onContextDrop"
       @split="onContextSplit"
@@ -606,15 +617,6 @@ const quantityActionLabel = computed(() => {
       @cancel="quantityPrompt = null"
     />
 
-    <HotbarSlotModal
-      v-if="hotbarPrompt"
-      :item-name="hotbarPrompt.itemName"
-      :slots="hotbar.slots"
-      :bindings="hotbar.bindings"
-      @select="assignHotbarSlot"
-      @clear="clearHotbarSlot"
-      @cancel="hotbarPrompt = null"
-    />
   </div>
 </template>
 

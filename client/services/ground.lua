@@ -119,7 +119,7 @@ local function WalkToGroundItem(playerPed, item)
     local stopDistance = Config.Dropped.WalkStopDistance
     local timeout = Config.Dropped.WalkTimeout
     TaskGoStraightToCoord(playerPed, target.x, target.y, target.z,
-        Config.Dropped.WalkSpeed, timeout, -1.0, stopDistance)
+        Config.Dropped.WalkSpeed, timeout, -1.0, 0.0)
 
     local deadline = GetGameTimer() + timeout
     while GetGameTimer() < deadline do
@@ -132,10 +132,13 @@ local function WalkToGroundItem(playerPed, item)
         end
 
         local coords = GetEntityCoords(playerPed)
-        local distance = Feather.Math.GetDistanceBetween(
-            vector3(coords.x, coords.y, coords.z),
-            vector3(target.x, target.y, target.z))
-        if distance <= stopDistance then
+        -- Arrival is an interaction-radius check, not a request for the ped's
+        -- origin to overlap the prop's origin. The strongbox collision keeps
+        -- those origins apart, and its vertical origin is not the ped's foot
+        -- height, so a full 3D distance can never reach a tight threshold even
+        -- when the walking task has visibly arrived.
+        local dx, dy = coords.x - target.x, coords.y - target.y
+        if (dx * dx + dy * dy) <= (stopDistance * stopDistance) then
             ClearPedTasks(playerPed)
             return true
         end
@@ -179,8 +182,8 @@ CreateThread(function()
                         if groundPrompt:HasCompleted() then
                             groundPrompt:EnabledPrompt(false)
                             local reached = WalkToGroundItem(playerped, item)
-                            groundPrompt:EnabledPrompt(true)
                             if not reached then
+                                groundPrompt:EnabledPrompt(true)
                                 goto continue_ground_item
                             end
 
@@ -205,6 +208,7 @@ CreateThread(function()
                             ClearPedTasks(playerped)
 
                             OpenGroundLocation(item.id)
+                            groundPrompt:EnabledPrompt(true)
                         end
 
                         if groundPrompt:HasFailed() then

@@ -82,8 +82,8 @@ local function RunIntegrityDiagnostics(options)
         SELECT ii.`id` AS `instanceId`, ii.`inventory_id` AS `inventoryId`,
                ii.`slot_index` AS `slot`, COALESCE(NULLIF(inv.`max_slots`, 0), ?) AS `capacity`
         FROM `inventory_items` ii INNER JOIN `inventory` inv ON inv.`id`=ii.`inventory_id`
-        WHERE ii.`slot_index` IS NULL OR ii.`slot_index` < 1
-           OR ii.`slot_index` > COALESCE(NULLIF(inv.`max_slots`, 0), ?)
+        WHERE ii.`slot_index` IS NULL OR ii.`slot_index` < 0
+           OR ii.`slot_index` >= COALESCE(NULLIF(inv.`max_slots`, 0), ?)
         ORDER BY ii.`inventory_id`, ii.`id`;
     ]], { Config.maxItemSlots, Config.maxItemSlots }))
 

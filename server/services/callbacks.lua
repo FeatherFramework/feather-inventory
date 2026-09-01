@@ -18,7 +18,15 @@ end)
 Feather.RPC.Register('Feather:Inventory:UseItem', function(params, res, src)
   local itemId = params['itemId']
   local used = ItemsAPI.UseItem(itemId, src)
-  res(Result.IsOk(used) and { error = false } or { error = true, code = used.error.code, message = used.error.message })
+  if not Result.IsOk(used) and Config.DevMode then
+    print(('[feather-inventory] DevMode UseItem failure: %s'):format(json.encode(used.error)))
+  end
+  res(Result.IsOk(used) and { error = false } or {
+    error = true,
+    code = used.error.code,
+    message = used.error.message,
+    details = used.error.details,
+  })
 end)
 
 -- (INV-01) sourceInventory/targetInventory/items were all trusted outright

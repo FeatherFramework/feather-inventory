@@ -735,7 +735,8 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
     end
 
     if resolvedId then
-      if OpenInventories[tostring(resolvedId)] ~= nil then
+      local existingOpen = OpenInventories[tostring(resolvedId)]
+      if existingOpen ~= nil and existingOpen.src ~= tostring(src) then
         Feather.Notify.RightNotify(src, Translate(src, 'err_already_open', 'This inventory is already opened. Try again later.'), 3000)
       else
         otherInventory, otherInventoryIgnoreLimits, otherName = resolvedId, resolvedIgnoreLimits, resolvedName

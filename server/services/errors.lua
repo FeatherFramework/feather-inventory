@@ -20,6 +20,11 @@ if type(Config.Hotbar.TemporaryDuration) ~= 'number' or Config.Hotbar.TemporaryD
   error('Config.Hotbar.TemporaryDuration must be at least 250 milliseconds.')
 end
 
+if type(Config.Hotbar.DefaultOpacity) ~= 'number'
+    or Config.Hotbar.DefaultOpacity < 50 or Config.Hotbar.DefaultOpacity > 100 then
+  error('Config.Hotbar.DefaultOpacity must be a number from 50 through 100.')
+end
+
 if type(Config.maxWeight) ~= 'number' or Config.maxWeight < 1 then
   error('Your max weight must be a number greater than 1.')
 end

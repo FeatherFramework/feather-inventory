@@ -1,8 +1,13 @@
 local PREFERENCE_KEY = 'hotbar_visibility'
 local SETTINGS_CHOICE_ID = 'feather-inventory:hotbar-visibility'
+local OPACITY_PREFERENCE_KEY = 'hotbar_opacity'
+local SETTINGS_OPACITY_ID = 'feather-inventory:hotbar-opacity'
+local SETTINGS_VISIBILITY_EVENT = 'Feather:Inventory:Settings:SetHotbarVisibility'
+local SETTINGS_OPACITY_EVENT = 'Feather:Inventory:Settings:SetHotbarOpacity'
 local VALID_VISIBILITY = { Temporary=true, Always=true }
 local HotbarBindings = { enabled=false, slots=0, bindings={} }
 local temporaryGeneration = 0
+local settingsRegistrationGeneration = 0
 local paused = false
 
 local function NormalizePolicy(value)
@@ -41,9 +46,35 @@ local function SetPreference(value)
     return true
 end
 
+local function GetOpacity()
+    local saved = tonumber(GetResourceKvpString(OPACITY_PREFERENCE_KEY))
+    local configured = tonumber(Config.Hotbar and Config.Hotbar.DefaultOpacity) or 90
+    return math.max(50, math.min(100, math.floor(saved or configured)))
+end
+
+local function SetOpacity(value)
+    if not GetPolicy().enabled then return false end
+    local numeric = tonumber(value)
+    if not numeric then return false end
+    numeric = math.max(50, math.min(100, math.floor((numeric + 2.5) / 5) * 5))
+    SetResourceKvp(OPACITY_PREFERENCE_KEY, tostring(numeric))
+    TriggerEvent('Feather:Inventory:HotbarVisibilityChanged', GetPreference())
+    return true
+end
+
 exports('GetHotbarPolicy', GetPolicy)
 exports('GetHotbarVisibility', GetPreference)
 exports('SetHotbarVisibility', SetPreference)
+exports('GetHotbarOpacity', GetOpacity)
+exports('SetHotbarOpacity', SetOpacity)
+
+AddEventHandler(SETTINGS_VISIBILITY_EVENT, function(value)
+    SetPreference(value)
+end)
+
+AddEventHandler(SETTINGS_OPACITY_EVENT, function(value)
+    SetOpacity(value)
+end)
 
 local function SendHotbar(showTemporary)
     local policy = GetPolicy()
@@ -55,6 +86,8 @@ local function SendHotbar(showTemporary)
         visible = visible,
         slots = HotbarBindings.slots,
         bindings = HotbarBindings.bindings,
+        opacity = GetOpacity(),
+        modifier = string.upper(tostring(Config.Hotbar.Modifier or 'SHIFT')),
     })
 end
 
@@ -99,35 +132,85 @@ local function UseSlot(slot)
 end
 
 local function RegisterSettingsChoice()
-    if GetResourceState('feather-settings') ~= 'started' then return false end
+    if GetResourceState('feather-settings') ~= 'started' then return 'retry' end
 
-    local ok, registered = pcall(function()
-        return exports['feather-settings']:RegisterChoice({
+    -- Visibility policy is resource configuration, so it cannot change until
+    -- Inventory restarts. Register the provider only for UserDefined instead
+    -- of passing an isVisible function across the CFX resource boundary. A
+    -- failed cross-resource callback was interpreted by Settings as false and
+    -- silently hid an otherwise valid provider.
+    if not GetPolicy().userCanChoose then
+        pcall(function()
+            exports['feather-settings']:UnregisterChoice(SETTINGS_CHOICE_ID, GetCurrentResourceName())
+        end)
+    else
+        local ok, registered, rejectionReason = pcall(function()
+            return exports['feather-settings']:RegisterChoice({
             id = SETTINGS_CHOICE_ID,
+            ownerResource = GetCurrentResourceName(),
             label = Translate('ui_hotbar_visibility', 'Hotbar Visibility'),
+            control = 'arrows',
             options = {
                 { value='Temporary', label=Translate('ui_hotbar_temporary', 'Temporary') },
                 { value='Always', label=Translate('ui_hotbar_always', 'Always') },
             },
-            isVisible = function() return GetPolicy().userCanChoose end,
-            getValue = GetPreference,
-            setValue = SetPreference,
+            initialValue = GetPreference(),
+            setEvent = SETTINGS_VISIBILITY_EVENT,
+            })
+        end)
+        if not ok or registered ~= true then
+            print(('[feather-inventory] hotbar Settings choice registration failed: %s')
+                :format(ok and tostring(rejectionReason or 'provider rejected') or tostring(registered)))
+            return 'rejected'
+        end
+    end
+
+    local opacityOk, opacityRegistered, opacityReason = pcall(function()
+        return exports['feather-settings']:RegisterChoice({
+            id = SETTINGS_OPACITY_ID,
+            ownerResource = GetCurrentResourceName(),
+            label = Translate('ui_hotbar_opacity', 'Hotbar Opacity'),
+            control = 'slider',
+            min = 50,
+            max = 100,
+            step = 5,
+            initialValue = GetOpacity(),
+            setEvent = SETTINGS_OPACITY_EVENT,
         })
     end)
-    return ok and registered == true
+    if not opacityOk or opacityRegistered ~= true then
+        print(('[feather-inventory] hotbar opacity Settings registration failed: %s')
+            :format(opacityOk and tostring(opacityReason or 'provider rejected') or tostring(opacityRegistered)))
+        return 'rejected'
+    end
+    return 'done'
 end
 
-CreateThread(function()
-    -- Settings is intentionally optional. Wait briefly for ordinary startup
-    -- ordering, then stop; onClientResourceStart below handles later restarts.
-    for _ = 1, 100 do
-        if RegisterSettingsChoice() then return end
-        Wait(100)
-    end
-end)
+local function ScheduleSettingsRegistration()
+    settingsRegistrationGeneration = settingsRegistrationGeneration + 1
+    local generation = settingsRegistrationGeneration
+    CreateThread(function()
+        -- Settings is optional and commonly starts after Inventory. Its client
+        -- start event may arrive while GetResourceState still says `starting`,
+        -- so keep retrying until it is fully started and accepts the provider.
+        while generation == settingsRegistrationGeneration do
+            local outcome = RegisterSettingsChoice()
+            if outcome == 'done' or outcome == 'rejected' then return end
+            Wait(250)
+        end
+    end)
+end
+
+ScheduleSettingsRegistration()
 
 AddEventHandler('onClientResourceStart', function(resourceName)
-    if resourceName == 'feather-settings' then RegisterSettingsChoice() end
+    if resourceName == 'feather-settings' then ScheduleSettingsRegistration() end
+end)
+
+AddEventHandler('onClientResourceStop', function(resourceName)
+    if resourceName == 'feather-settings' then
+        settingsRegistrationGeneration = settingsRegistrationGeneration + 1
+    end
 end)
 
 RegisterNetEvent('Feather:Character:Spawned', function()
@@ -184,5 +267,8 @@ end)
 AddEventHandler('onClientResourceStop', function(resourceName)
     if resourceName ~= GetCurrentResourceName()
         or GetResourceState('feather-settings') ~= 'started' then return end
-    pcall(function() exports['feather-settings']:UnregisterChoice(SETTINGS_CHOICE_ID) end)
+    pcall(function()
+        exports['feather-settings']:UnregisterChoice(SETTINGS_CHOICE_ID, GetCurrentResourceName())
+        exports['feather-settings']:UnregisterChoice(SETTINGS_OPACITY_ID, GetCurrentResourceName())
+    end)
 end)
