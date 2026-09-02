@@ -866,6 +866,68 @@ function TransactionAPI.MutateItem(context, spec)
     end)
 end
 
+---
+-- Mutate Items
+--
+-- Cross-resource safe atomic metadata update for a small set of unique item
+-- instances. IDs are locked in numeric order so callers updating the same pair
+-- in opposite logical order cannot create an avoidable deadlock.
+--
+function TransactionAPI.MutateItems(context, spec)
+    local requested = type(spec) == 'table' and spec.items or nil
+    if type(requested) ~= 'table' or #requested < 1 or #requested > 8 then
+        return Result.Err(Result.Codes.INVALID_INPUT,
+            'Between one and eight item mutations are required.')
+    end
+
+    local items = {}
+    local seen = {}
+    for _, mutation in ipairs(requested) do
+        local id = type(mutation) == 'table' and tonumber(mutation.itemInstanceId) or nil
+        if not id or type(mutation.metadata) ~= 'table' or seen[id] then
+            return Result.Err(Result.Codes.INVALID_INPUT,
+                'Each item mutation requires a unique instance id and metadata document.')
+        end
+        seen[id] = true
+        items[#items + 1] = mutation
+    end
+    table.sort(items, function(left, right)
+        return tonumber(left.itemInstanceId) < tonumber(right.itemInstanceId)
+    end)
+
+    return TransactionAPI.Transaction(context, function(tx)
+        local locked = {}
+        for _, mutation in ipairs(items) do
+            local result = tx:GetItemForUpdate(mutation.itemInstanceId)
+            if not Result.IsOk(result) then return result end
+            local item = result.value
+            if mutation.expectedRevision ~= nil
+                and tonumber(mutation.expectedRevision) ~= tonumber(item.revision) then
+                return Result.Err(Result.Codes.CONFLICT,
+                    'Instance revision has moved since it was read.', {
+                        itemInstanceId = item.id,
+                        expected = tonumber(mutation.expectedRevision),
+                        actual = tonumber(item.revision)
+                    })
+            end
+            locked[#locked + 1] = { mutation = mutation, item = item }
+        end
+
+        local committed = {}
+        for _, entry in ipairs(locked) do
+            local written = tx:SetMetadata(entry.item.id,
+                entry.mutation.metadata, entry.item.revision)
+            if not Result.IsOk(written) then return written end
+            committed[#committed + 1] = {
+                itemInstanceId = entry.item.id,
+                inventoryId = entry.item.inventoryId,
+                revision = written.value.revision
+            }
+        end
+        return { items = committed }
+    end)
+end
+
 --- Explicit destructive operation for trusted consumers and administration.
 -- Exact instance ids, expected container/domain and a human-readable reason
 -- are mandatory so destruction cannot degrade into an ambiguous quantity

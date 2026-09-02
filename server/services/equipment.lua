@@ -139,6 +139,48 @@ function EquipmentAPI.SetEquippedForCharacter(characterId, slot, instanceId)
 end
 
 ---
+-- Promote Equipped Slot
+--
+-- Atomically removes the destination assignment and moves the source
+-- assignment into it. Item ownership does not change.
+--
+function EquipmentAPI.PromoteEquippedSlot(characterId, fromSlot, toSlot)
+    local id = InventoryIdentity.NormalizeCharacterId(characterId)
+    if not id or type(fromSlot) ~= 'string' or fromSlot == ''
+        or type(toSlot) ~= 'string' or toSlot == '' or fromSlot == toSlot then
+        return Result.Err(Result.Codes.INVALID_INPUT,
+            'Character id and two distinct equipment slots are required.')
+    end
+
+    local promotedId
+    local executed, committed = pcall(MySQL.startTransaction, function(query)
+        local rows = query([[
+            SELECT `slot`, `inventory_items_id` FROM `character_equipment`
+            WHERE `character_id`=? AND `slot` IN (?, ?)
+            ORDER BY `slot` FOR UPDATE;
+        ]], { id, fromSlot, toSlot })
+        for _, row in ipairs(rows or {}) do
+            if row.slot == fromSlot then promotedId = tonumber(row.inventory_items_id) end
+        end
+        if not promotedId then return false end
+        query('DELETE FROM `character_equipment` WHERE `character_id`=? AND `slot`=?;',
+            { id, toSlot })
+        local updated = query([[UPDATE `character_equipment` SET `slot`=?
+            WHERE `character_id`=? AND `slot`=? AND `inventory_items_id`=?;]],
+            { toSlot, id, fromSlot, promotedId })
+        local affected = tonumber(updated and (updated.affectedRows or updated.affected_rows)) or 0
+        if affected ~= 1 then return false end
+        return true
+    end)
+    if not executed or committed ~= true then
+        return Result.Err(Result.Codes.CONFLICT,
+            'Equipment slot promotion rolled back.')
+    end
+    return Result.Ok({ fromSlot = fromSlot, toSlot = toSlot,
+        instanceId = promotedId })
+end
+
+---
 -- Clear Equipped Instance
 --
 -- Unequips an instance wherever it happens to be slotted, without the caller

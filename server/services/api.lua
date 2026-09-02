@@ -11,6 +11,7 @@ function StartAPI()
   -- the interface name DEPENDENCY_SUPPORT_PLAN §4.4 specifies.
   inventoryServerAPI.Transaction = TransactionAPI.Transaction
   inventoryServerAPI.MutateItem = TransactionAPI.MutateItem
+  inventoryServerAPI.MutateItems = TransactionAPI.MutateItems
   inventoryServerAPI.DestroyInstances = TransactionAPI.DestroyInstances
   inventoryServerAPI.UseItemAction = TransactionAPI.UseItemAction
   inventoryServerAPI.CreateInstance = TransactionAPI.CreateInstance
@@ -35,6 +36,7 @@ function StartAPI()
   inventoryServerAPI.GetItemForCharacter = InstancesAPI.GetItemForCharacter
   inventoryServerAPI.GetEquippedForCharacter = EquipmentAPI.GetEquippedForCharacter
   inventoryServerAPI.SetEquippedForCharacter = EquipmentAPI.SetEquippedForCharacter
+  inventoryServerAPI.PromoteEquippedSlot = EquipmentAPI.PromoteEquippedSlot
   -- Consumer-safe UUID Character inventory lookup. Keep a top-level alias
   -- because Cfx resource boundaries do not reliably preserve newly-added
   -- nested function members on an API table returned by an export.

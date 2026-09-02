@@ -642,11 +642,11 @@ function InstancesAPI.GetCapabilities()
         -- numerically, and `tonumber('2.0.0')` is nil, which would silently
         -- collapse to 0 and fail every check.
         --
-        -- Bumped to 2 for the result-envelope migration. A key-existence
+        -- Bumped to 4 for atomic equipment-slot promotion. A key-existence
         -- check cannot detect a changed return shape, so this is the only
         -- thing standing between a consumer built for contract 1 and a
         -- resource that now answers in envelopes.
-        contractVersion = 2,
+        contractVersion = 4,
         features = {
             instanceMode = true,        -- INV-W1: stack/unique on definitions
             metadataDocument = true,    -- INV-W1: versioned JSON document
@@ -662,6 +662,8 @@ function InstancesAPI.GetCapabilities()
             rowLocking = true,          -- real SELECT ... FOR UPDATE via startTransaction
             equippedState = true,       -- persisted character equipment slots
             atomicCreation = true,      -- instance + metadata in one statement
+            atomicBatchMetadata = true, -- ordered multi-instance metadata CAS
+            atomicEquipmentPromotion = true, -- replace destination + move source
             characterInventoryLookup = true, -- UUID Character -> owned container read
             adminExactRemoval = true,        -- locked ownership assertion + destroy guards
             characterItemGrant = true,       -- atomic stack grants by UUID Character
