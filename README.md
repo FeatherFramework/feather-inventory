@@ -359,7 +359,7 @@ UUID Character. Unique definitions are rejected and must use their owner:
 
 ```lua
 local granted = exports['feather-inventory']:GrantCharacterItem(
-  characterId, 'revolver_standard', 24, 'admin_ammo_grant')
+  characterId, 'ammo_revolver_regular', 24, 'admin_ammo_grant')
 ```
 
 ### Capacity
