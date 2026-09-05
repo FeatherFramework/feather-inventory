@@ -102,7 +102,7 @@ Config.maxWeight = 125
 -- A generic, per-instance 0..Max wear value stored in `item_metadata` under
 -- `Key`. Inventory owns the CONVENTION -- the key, the range, clamping, and
 -- how a value is displayed -- and deliberately owns none of the policy:
--- deciding that firing a gun costs 1 condition, or that a repair kit restores
+-- deciding that firing a gun costs 1 condition, or that gun oil restores
 -- 40, belongs to whichever resource models that behaviour. Doing it once here
 -- generically is strictly better than feather-weapons, a tools resource and a
 -- clothing resource each inventing their own field.
