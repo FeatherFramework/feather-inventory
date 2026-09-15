@@ -10,6 +10,36 @@ Feather.RPC.Register('Feather:Inventory:GetInventoryItems', function(params, res
   res(opened.value)
 end)
 
+-- Refresh an inventory pair that is already open. Unlike
+-- GetInventoryItems/InternalOpenInventory, `otherInventoryId` here is
+-- deliberately the raw database inventory id returned to the NUI. Passing
+-- that numeric id through InternalOpenInventory is ambiguous: numeric values
+-- there mean a player server id, while owned storage is normally reopened by
+-- UUID. Take All needs an unambiguous post-commit read of the same open pair.
+Feather.RPC.Register('Feather:Inventory:RefreshOpenPair', function(params, res, src)
+  local otherInventoryId = tonumber(params.otherInventoryId)
+  if not otherInventoryId then
+    return res({ error = true, code = 'invalid_inventory', message = 'Invalid inventory.' })
+  end
+
+  local player = InventoryIdentity.GetCharacter(src)
+  local character = player and player.char
+  if not character then
+    return res({ error = true, code = 'no_character', message = 'No character loaded.' })
+  end
+
+  local playerInventory = InventoryControllers.GetInventoryByCharacter(character.id)
+  if not playerInventory or not InventoryAPI.Accessible(src, otherInventoryId) then
+    return res({ error = true, code = 'no_access', message = 'Inventory access is no longer available.' })
+  end
+
+  res({
+    error = false,
+    sourceItems = InventoryControllers.GetInventoryItems(otherInventoryId),
+    targetItems = InventoryControllers.GetInventoryItems(playerInventory),
+  })
+end)
+
 Feather.RPC.Register('Feather:Inventory:Server:CloseInventory', function(params, res, src)
   InventoryAPI.InternalCloseInventory(src)
 end)

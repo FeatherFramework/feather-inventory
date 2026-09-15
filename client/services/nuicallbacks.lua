@@ -96,28 +96,37 @@ end)
 RegisterNUICallback('Feather:Inventory:TakeAll', function(args, cb)
   local res = Feather.RPC.CallAsync('Feather:Inventory:TakeAll', args)
 
-  -- Reconcile from a fresh read after the mutation instead of rendering the
-  -- item arrays returned immediately at the transaction boundary. The move
-  -- can be durably committed while those arrays still reflect the prior
-  -- connection snapshot, producing identical UI items on both pages until
-  -- the inventory is closed and reopened.
+  -- Reconcile from a fresh, access-checked read after the mutation instead of
+  -- rendering arrays returned at the transaction boundary. Do not use the
+  -- normal GetInventoryItems open path here: its numeric argument means a
+  -- player server id, while this is a numeric database inventory id.
   if res and not res.error then
     local expectedSourceCount = tonumber(res.expectedSourceCount)
     local refreshed
-    for attempt = 1, 10 do
-      refreshed = Feather.RPC.CallAsync('Feather:Inventory:GetInventoryItems', {
+    local converged = false
+    for attempt = 1, 20 do
+      refreshed = Feather.RPC.CallAsync('Feather:Inventory:RefreshOpenPair', {
         otherInventoryId = args.fromInventory
       })
-      local sourceItems = refreshed and refreshed.otherInventoryItems
+      local sourceItems = refreshed and refreshed.sourceItems
       if refreshed and refreshed.error == nil
-        and (expectedSourceCount == nil or #(sourceItems or {}) <= expectedSourceCount) then
+        and (expectedSourceCount == nil or #(sourceItems or {}) == expectedSourceCount) then
+        converged = true
         break
       end
-      if attempt < 10 then Wait(50) end
+      if attempt < 20 then Wait(100) end
     end
+
+    -- Never hand the browser the stale transaction-boundary arrays. If the
+    -- count did not converge (for example, another authorized mutation raced
+    -- this refresh), the last dedicated read is still the authoritative state.
     if refreshed and refreshed.error == nil then
-      res.sourceItems = refreshed.otherInventoryItems or {}
-      res.targetItems = refreshed.inventoryItems or {}
+      res.sourceItems = refreshed.sourceItems or {}
+      res.targetItems = refreshed.targetItems or {}
+      res.refreshConverged = converged
+    else
+      res.sourceItems = nil
+      res.targetItems = nil
     end
   end
 
