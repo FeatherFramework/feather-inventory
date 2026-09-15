@@ -3,14 +3,22 @@
 -- before a character has even spawned, for quicker testing), otherwise it
 -- waits for Feather:Character:Spawned so the key does nothing until there's
 -- an actual character/inventory to open.
+local function MenuInputCaptured()
+  if GetResourceState('feather-menu-v2') ~= 'started' then return false end
+  local ok, captured = pcall(function()
+    return exports['feather-menu-v2']:IsInputCaptured()
+  end)
+  return ok and captured == true
+end
+
 if Config.DevMode then
   Feather.Keys:RegisterListener(Config.hotkey, function()
-    InventoryAction.Open(nil, "player")
+    if not MenuInputCaptured() then InventoryAction.Open(nil, "player") end
   end)
 else
   RegisterNetEvent("Feather:Character:Spawned", function()
     Feather.Keys:RegisterListener(Config.hotkey, function()
-      InventoryAction.Open(nil, "player")
+      if not MenuInputCaptured() then InventoryAction.Open(nil, "player") end
     end)
   end)
 end
