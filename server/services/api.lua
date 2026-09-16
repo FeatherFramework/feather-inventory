@@ -1,9 +1,31 @@
+InventoryReadiness = { state = 'starting', failure = nil }
+local function InventoryReadyResult()
+  if InventoryReadiness.state == 'ready' then return Result.Ok({ state = 'ready' }) end
+  return Result.Err(InventoryReadiness.state == 'failed' and 'startup_failed' or 'not_ready',
+    'Inventory is not ready.', { state = InventoryReadiness.state, reason = InventoryReadiness.failure })
+end
+exports('GetHealth', function()
+  return Result.Ok({ state = InventoryReadiness.state, failure = InventoryReadiness.failure })
+end)
+exports('AwaitReady', function(timeoutMs)
+  timeoutMs = timeoutMs == nil and 30000 or timeoutMs
+  if type(timeoutMs) ~= 'number' or timeoutMs % 1 ~= 0 or timeoutMs < 0 or timeoutMs > 60000 then
+    return Result.Err('invalid_input', 'Readiness timeout must be an integer from 0 to 60000.')
+  end
+  local deadline = GetGameTimer() + timeoutMs
+  while InventoryReadiness.state == 'starting' and GetGameTimer() < deadline do Wait(50) end
+  return InventoryReadyResult()
+end)
+
 function StartAPI()
-  GrantOnceAPI.Start()
   exports('GrantCharacterItemOnce', function(request)
+    local ready = InventoryReadyResult()
+    if not ready.ok then return ready end
     return GrantOnceAPI.Grant(request, GetInvokingResource())
   end)
   exports('CancelCharacterItemGrant', function(request)
+    local ready = InventoryReadyResult()
+    if not ready.ok then return ready end
     return GrantOnceAPI.Cancel(request, GetInvokingResource())
   end)
   ItemsAPI.RegisterInternalUseGuard()
@@ -119,6 +141,10 @@ function StartAPI()
     end)
   end)
 
+  -- Register the complete API before the first database yield. Consumers can
+  -- discover it immediately, but must await readiness before doing work.
+  GrantOnceAPI.Start()
   RegisterCharacterStart(inventoryServerAPI)
   RegisterGroundInventory()
+  InventoryReadiness.state = 'ready'
 end

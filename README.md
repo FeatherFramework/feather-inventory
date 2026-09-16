@@ -1314,3 +1314,13 @@ The full tracked backlog — including decisions deferred or declined, with reas
 Known gaps in the API surface above, tracked in `MASTER_PLAN.md` §6.1:
 
 - `RunGuards` re-reads the instance on a separate connection instead of being handed the row the transaction already locked.
+## Server API readiness
+
+Server exports are registered before receipt-table initialization yields to the
+database. `AwaitReady(timeoutMs)` returns an Inventory Result envelope and waits
+at most 0–60000 milliseconds (default 30000). `GetHealth()` reports starting,
+ready, or failed. Readiness completes only after receipt setup and API startup
+registration finish. Initialization failures are logged and reported, not treated
+as readiness. Durable grant/cancellation exports fail closed until ready.
+Resource dependency order alone does not guarantee database initialization has
+completed; consumers should await readiness before acquiring `initiate()`.
