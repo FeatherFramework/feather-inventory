@@ -121,6 +121,14 @@ function dragArmedFor(bookKey) {
 
 const onMessage = (event) => {
   const data = event.data;
+  if (data.type === 'closeInventory') {
+    visible.value = false;
+    mutationBusy.value = false;
+    clearDrag();
+    contextMenu.value = null;
+    quantityPrompt.value = null;
+    return;
+  }
   if (data.type === 'mutationBusy') {
     mutationBusy.value = data.busy === true;
     if (data.labelKey) mutationBusyLabel.value = String(data.labelKey);
