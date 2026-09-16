@@ -135,6 +135,11 @@ end
 
 InventoryAction.Close = function()
   if isInvOpen then
+    -- Manual UI close hides the Vue ledger before invoking Lua. Programmatic
+    -- closes (usable items, server-owned workflows) enter here directly and
+    -- therefore need an explicit presentation message as well as focus/lock
+    -- cleanup.
+    SendNUIMessage({ type = 'closeInventory' })
     SetNuiFocus(false, false)
     isInvOpen = false
     openOtherInventoryId = nil
