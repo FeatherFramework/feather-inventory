@@ -1,4 +1,11 @@
 function StartAPI()
+  GrantOnceAPI.Start()
+  exports('GrantCharacterItemOnce', function(request)
+    return GrantOnceAPI.Grant(request, GetInvokingResource())
+  end)
+  exports('CancelCharacterItemGrant', function(request)
+    return GrantOnceAPI.Cancel(request, GetInvokingResource())
+  end)
   ItemsAPI.RegisterInternalUseGuard()
   local inventoryServerAPI = {}
   inventoryServerAPI.Inventory = InventoryAPI

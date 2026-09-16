@@ -6,6 +6,8 @@ Config = {}
 -- for the first production release. The commands below are also ACE-restricted
 -- so enabling it for testing does not hand them to every player.
 Config.DevMode = true
+-- Durable ordinary-item fulfillment; callers supply a stable operation ID.
+Config.TrustedIdempotentGrantCallers = { ['feather-shops'] = true }
 
 -- Gates verbose server-console logging (currently the access/ground
 -- resolution tracing added while building the robbery/ACL system) --
