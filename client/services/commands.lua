@@ -11,21 +11,34 @@ local function MenuInputCaptured()
   return ok and captured == true
 end
 
-if Config.DevMode then
-  Feather.Keys:RegisterListener(Config.hotkey, function()
-    if not MenuInputCaptured() then InventoryAction.Open(nil, "player") end
+InventoryCharacterActive = Config.DevMode == true
+local inventoryKeyListener
+
+local function EnsureInventoryKeyListener()
+  if inventoryKeyListener then return end
+  inventoryKeyListener = Feather.Keys:RegisterListener(Config.hotkey, function()
+    if InventoryCharacterActive and not MenuInputCaptured() then
+      InventoryAction.Open(nil, "player")
+    end
   end)
+end
+
+if Config.DevMode then
+  EnsureInventoryKeyListener()
 else
   RegisterNetEvent("Feather:Character:Spawned", function()
-    Feather.Keys:RegisterListener(Config.hotkey, function()
-      if not MenuInputCaptured() then InventoryAction.Open(nil, "player") end
-    end)
+    InventoryCharacterActive = true
+    EnsureInventoryKeyListener()
+  end)
+  AddEventHandler('Feather:Character:Logout', function()
+    InventoryCharacterActive = false
+    InventoryAction.Close(true)
   end)
 end
 
 
 RegisterCommand('open_inventory', function()
-  InventoryAction.Open(nil, "player")
+  if InventoryCharacterActive then InventoryAction.Open(nil, "player") end
 end, false)
 
 RegisterCommand('close_inventory', function()

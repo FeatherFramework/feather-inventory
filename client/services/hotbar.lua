@@ -229,6 +229,18 @@ RegisterNetEvent('Feather:Character:Spawned', function()
     RefreshBindings(false)
 end)
 
+AddEventHandler('Feather:Character:Logout', function()
+    temporaryGeneration = temporaryGeneration + 1
+    refreshGeneration = refreshGeneration + 1
+    HotbarBindings = { enabled=false, slots=0, bindings={} }
+    SendNUIMessage({
+        type = 'hotbar', enabled = false, visible = false,
+        slots = 0, bindings = {}, opacity = GetOpacity(),
+        modifier = string.upper(tostring(Config.Hotbar.Modifier or 'SHIFT')),
+    })
+    SendNUIMessage({ type='mutationBusy', busy=false })
+end)
+
 RegisterNetEvent('Feather:Inventory:HotbarRefresh', function()
     refreshGeneration = refreshGeneration + 1
     local generation = refreshGeneration
