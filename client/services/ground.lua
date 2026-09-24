@@ -38,6 +38,13 @@ RegisterNetEvent("Feather:Character:Spawned", function()
     TriggerServerEvent('Feather:Inventory:GetGroundLocations')
 end)
 
+AddEventHandler('Feather:Character:Logout', function()
+    for key, item in pairs(GroundItems) do
+        if item.entity then item.entity:Remove() end
+        GroundItems[key] = nil
+    end
+end)
+
 function SpawnGroundItemEntity(item)
     -- GroundItems is already replicated as authoritative data by the server;
     -- the prop is only this client's LOD representation of that data. Making

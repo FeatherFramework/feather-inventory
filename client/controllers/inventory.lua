@@ -56,6 +56,7 @@ local function BuildUIStrings()
 end
 
 function CanOpenInventory()
+  if InventoryCharacterActive ~= true and not Config.DevMode then return false end
   if IsEntityDead(PlayerPedId()) then return false end
   if IsPauseMenuActive() then return false end
   -- TODO: Add check for different states where inventory can't open like Handcuffed/HogTied/KnockedOut
@@ -133,23 +134,23 @@ InventoryAction.Open = function(otherInventoryId, target)
   end
 end
 
-InventoryAction.Close = function()
-  if isInvOpen then
-    -- Manual UI close hides the Vue ledger before invoking Lua. Programmatic
-    -- closes (usable items, server-owned workflows) enter here directly and
-    -- therefore need an explicit presentation message as well as focus/lock
-    -- cleanup.
-    SendNUIMessage({ type = 'closeInventory' })
-    SetNuiFocus(false, false)
-    isInvOpen = false
-    openOtherInventoryId = nil
-    openTarget = nil
-
+InventoryAction.Close = function(skipHotbarRefresh)
+  local wasOpen = isInvOpen
+  -- Always clear presentation and focus. Logout may arrive after another
+  -- path partially closed the ledger while its NUI state is still visible.
+  SendNUIMessage({ type = 'closeInventory' })
+  SetNuiFocus(false, false)
+  isInvOpen = false
+  openOtherInventoryId = nil
+  openTarget = nil
+  if wasOpen then
     Feather.RPC.CallAsync('Feather:Inventory:Server:CloseInventory', {})
     -- Give/drop/move operations may have changed quantities while the ledger
     -- hid the hotbar. Reconcile from the server before an Always-visible bar
     -- reappears (Temporary stays hidden until its next chord/action).
-    TriggerEvent('Feather:Inventory:HotbarRefreshAfterInventory')
+    if skipHotbarRefresh ~= true then
+      TriggerEvent('Feather:Inventory:HotbarRefreshAfterInventory')
+    end
   end
 end
 
