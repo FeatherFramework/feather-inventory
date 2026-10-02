@@ -33,30 +33,30 @@ InstancesAPI = {}
 -- SHOW COLUMNS + conditional ALTER, never touching feather-recipe's
 -- migration.sql. See MASTER_PLAN §5 for why that lineage exists.
 local function EnsureInstanceSchema()
-    local columns = MySQL.query.await("SHOW COLUMNS FROM `items` LIKE 'instance_mode';")
+    local columns = DB.query("SHOW COLUMNS FROM `items` LIKE 'instance_mode';")
     if #columns < 1 then
-        MySQL.query.await(
+        DB.exec(
             "ALTER TABLE `items` ADD COLUMN `instance_mode` ENUM('stack','unique') NOT NULL DEFAULT 'stack';")
         -- Backfill from the signal that already encodes this: a definition
         -- that can only ever hold one per compartment is, in practice,
         -- already being treated as unique. Done once inside the add branch so
         -- a later deliberate change to a definition is never stomped by a
         -- restart.
-        MySQL.query.await("UPDATE `items` SET `instance_mode`='unique' WHERE `max_stack_size` <= 1;")
+        DB.exec("UPDATE `items` SET `instance_mode`='unique' WHERE `max_stack_size` <= 1;")
     end
 
-    columns = MySQL.query.await("SHOW COLUMNS FROM `items` LIKE 'archived_at';")
+    columns = DB.query("SHOW COLUMNS FROM `items` LIKE 'archived_at';")
     if #columns < 1 then
-        MySQL.query.await("ALTER TABLE `items` ADD COLUMN `archived_at` DATETIME NULL;")
+        DB.exec("ALTER TABLE `items` ADD COLUMN `archived_at` DATETIME NULL;")
     end
-    columns = MySQL.query.await("SHOW COLUMNS FROM `items` LIKE 'archive_reason';")
+    columns = DB.query("SHOW COLUMNS FROM `items` LIKE 'archive_reason';")
     if #columns < 1 then
-        MySQL.query.await("ALTER TABLE `items` ADD COLUMN `archive_reason` VARCHAR(255) NULL;")
+        DB.exec("ALTER TABLE `items` ADD COLUMN `archive_reason` VARCHAR(255) NULL;")
     end
 
-    columns = MySQL.query.await("SHOW COLUMNS FROM `inventory_items` LIKE 'metadata';")
+    columns = DB.query("SHOW COLUMNS FROM `inventory_items` LIKE 'metadata';")
     if #columns < 1 then
-        MySQL.query.await("ALTER TABLE `inventory_items` ADD COLUMN `metadata` JSON NULL;")
+        DB.exec("ALTER TABLE `inventory_items` ADD COLUMN `metadata` JSON NULL;")
     end
 
     -- `row_revision` is THE instance revision, bumped by any change to the
@@ -67,9 +67,9 @@ local function EnsureInstanceSchema()
     -- inventory without touching metadata, and the first caller's
     -- compare-and-set would still pass -- then delete the ammo from its new
     -- owner. Movement is a state change the revision has to see.
-    columns = MySQL.query.await("SHOW COLUMNS FROM `inventory_items` LIKE 'row_revision';")
+    columns = DB.query("SHOW COLUMNS FROM `inventory_items` LIKE 'row_revision';")
     if #columns < 1 then
-        MySQL.query.await(
+        DB.exec(
             "ALTER TABLE `inventory_items` ADD COLUMN `row_revision` INT UNSIGNED NOT NULL DEFAULT 0;")
     end
 
@@ -92,14 +92,14 @@ local function EnsureInstanceSchema()
     --
     -- Widening INT -> DECIMAL is lossless (1 becomes 1.00), so this needs no
     -- data migration. Guarded on the current type so it runs once.
-    local weightType = MySQL.query.await("SHOW COLUMNS FROM `items` LIKE 'weight';")[1]
+    local weightType = DB.query("SHOW COLUMNS FROM `items` LIKE 'weight';")[1]
     if weightType and tostring(weightType.Type or ''):find('int') then
-        MySQL.query.await("ALTER TABLE `items` MODIFY COLUMN `weight` DECIMAL(6,2) NOT NULL DEFAULT 0;")
+        DB.exec("ALTER TABLE `items` MODIFY COLUMN `weight` DECIMAL(6,2) NOT NULL DEFAULT 0;")
     end
 
-    local limitType = MySQL.query.await("SHOW COLUMNS FROM `inventory` LIKE 'max_weight';")[1]
+    local limitType = DB.query("SHOW COLUMNS FROM `inventory` LIKE 'max_weight';")[1]
     if limitType and tostring(limitType.Type or ''):find('int') then
-        MySQL.query.await("ALTER TABLE `inventory` MODIFY COLUMN `max_weight` DECIMAL(8,2) NULL;")
+        DB.exec("ALTER TABLE `inventory` MODIFY COLUMN `max_weight` DECIMAL(8,2) NULL;")
     end
 end
 
@@ -118,7 +118,7 @@ end)
 -- @return true when each unit of this definition is its own instance
 --
 function InstancesAPI.IsUniqueDefinition(itemId)
-    local row = MySQL.query.await('SELECT `instance_mode` FROM `items` WHERE `id`=? LIMIT 1;', { itemId })[1]
+    local row = DB.query('SELECT `instance_mode` FROM `items` WHERE `id`=? LIMIT 1;', itemId)[1]
     return row ~= nil and row.instance_mode == 'unique'
 end
 
@@ -145,7 +145,7 @@ function InstancesAPI.SetInstanceMode(itemId, mode)
     end
 
     local failure
-    local executed, committed = pcall(MySQL.startTransaction, function(query)
+    local executed, committed = RunLegacyStyleTransaction(function(query)
         local exists = query(
             'SELECT `id`, `instance_mode` FROM `items` WHERE `id`=? FOR UPDATE;', { numericId })[1]
         if not exists then
@@ -181,7 +181,7 @@ function InstancesAPI.SetDefinitionArchived(itemId, archived, reason)
     end
     local archiveReason = archived and reason:sub(1, 255) or nil
     local failure, itemName, owned = nil, nil, 0
-    local executed, committed = pcall(MySQL.startTransaction, function(query)
+    local executed, committed = RunLegacyStyleTransaction(function(query)
         local exists = query(
             'SELECT `id`, `name` FROM `items` WHERE `id`=? FOR UPDATE;', { numericId })[1]
         if not exists then
@@ -214,11 +214,11 @@ function InstancesAPI.GetDefinitionMigrationPreflight(sourceItemId, targetItemId
     if not sourceId or not targetId or sourceId == targetId then
         return Result.Err(Result.Codes.INVALID_INPUT, 'Distinct source and target definitions are required.')
     end
-    local definitions = MySQL.query.await([[
+    local definitions = DB.query([[
         SELECT `id`, `name`, `weight`, `max_quantity`, `max_stack_size`,
                `instance_mode`, `archived_at`
         FROM `items` WHERE `id` IN (?, ?);
-    ]], { sourceId, targetId }) or {}
+    ]], sourceId, targetId)
     local byId = {}
     for _, definition in ipairs(definitions) do byId[tonumber(definition.id)] = definition end
     if not byId[sourceId] or not byId[targetId] then
@@ -229,10 +229,10 @@ function InstancesAPI.GetDefinitionMigrationPreflight(sourceItemId, targetItemId
         and tonumber(source.max_stack_size) == tonumber(target.max_stack_size)
         and tonumber(source.max_quantity) == tonumber(target.max_quantity)
         and tonumber(source.weight) == tonumber(target.weight)
-    local counts = MySQL.single.await([[
+    local counts = DB.one([[
         SELECT COUNT(*) AS `instances`, COUNT(DISTINCT `inventory_id`) AS `inventories`
         FROM `inventory_items` WHERE `item_id`=?;
-    ]], { sourceId }) or {}
+    ]], sourceId) or {}
     return Result.Ok({
         sourceDefinitionId = sourceId,
         targetDefinitionId = targetId,
@@ -259,7 +259,7 @@ function InstancesAPI.MigrateDefinitionInstances(sourceItemId, targetItemId, rea
     end
 
     local failure, migrated = nil, 0
-    local executed, committed = pcall(MySQL.startTransaction, function(query)
+    local executed, committed = RunLegacyStyleTransaction(function(query)
         local definitions = query([[
             SELECT `id`, `name`, `weight`, `max_quantity`, `max_stack_size`,
                    `instance_mode`, `archived_at`
@@ -394,8 +394,8 @@ function InstancesAPI.ReadMetadata(instanceId)
         return Result.Err(Result.Codes.INVALID_INPUT, 'Invalid instance id.')
     end
 
-    local row = MySQL.query.await(
-        'SELECT `metadata`, `row_revision` FROM `inventory_items` WHERE `id`=? LIMIT 1;', { numericId })[1]
+    local row = DB.query(
+        'SELECT `metadata`, `row_revision` FROM `inventory_items` WHERE `id`=? LIMIT 1;', numericId)[1]
     if not row then
         return Result.Err(Result.Codes.NOT_FOUND, 'Item instance does not exist.')
     end
@@ -518,7 +518,7 @@ function InstancesAPI.GetInstance(instanceId)
         return Result.Err(Result.Codes.INVALID_INPUT, 'Invalid instance id.')
     end
 
-    local row = MySQL.query.await([[
+    local row = DB.query([[
         SELECT ii.`id`, ii.`inventory_id`, ii.`slot_index`, ii.`row_revision`,
                i.`id` AS `definition_id`, i.`name`, i.`display_name`, i.`description`,
                i.`weight`, i.`usable`, i.`type`, i.`category_id`,
@@ -526,7 +526,7 @@ function InstancesAPI.GetInstance(instanceId)
         FROM `inventory_items` ii
         INNER JOIN `items` i ON i.`id` = ii.`item_id`
         WHERE ii.`id` = ? LIMIT 1;
-    ]], { numericId })[1]
+    ]], numericId)[1]
 
     if not row then
         return Result.Err(Result.Codes.NOT_FOUND, 'Item instance does not exist.')
@@ -576,11 +576,11 @@ function InstancesAPI.FindInstances(inventoryId, definitionName)
         return Result.Err(Result.Codes.INVALID_INPUT, 'Inventory id and definition name are required.')
     end
 
-    local rows = MySQL.query.await([[
+    local rows = DB.query([[
         SELECT ii.`id` FROM `inventory_items` ii
         INNER JOIN `items` i ON i.`id` = ii.`item_id`
         WHERE ii.`inventory_id` = ? AND i.`name` = ?;
-    ]], { inventoryId, definitionName })
+    ]], inventoryId, definitionName)
 
     local ids = {}
     for _, row in pairs(rows or {}) do
@@ -610,11 +610,11 @@ function InstancesAPI.GetItemForCharacter(characterId, instanceId)
         return Result.Err(Result.Codes.INVALID_INPUT, 'Character id and instance id are required.')
     end
 
-    local owned = MySQL.query.await([[
+    local owned = DB.query([[
         SELECT ii.`id` FROM `inventory_items` ii
         INNER JOIN `inventory` inv ON inv.`id` = ii.`inventory_id`
         WHERE ii.`id` = ? AND inv.`character_id` = ? LIMIT 1;
-    ]], { id, charId })[1]
+    ]], id, charId)[1]
 
     if not owned then
         return Result.Err(Result.Codes.NOT_FOUND, 'That character does not hold this item.',

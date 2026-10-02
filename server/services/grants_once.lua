@@ -28,7 +28,7 @@ local function Validate(request, resource)
             tostring(request.definitionId), tostring(request.quantity) }, '|') })
 end
 function GrantOnceAPI.Start()
-    MySQL.query.await([[CREATE TABLE IF NOT EXISTS `inventory_grant_receipts` (
+    DB.exec([[CREATE TABLE IF NOT EXISTS `inventory_grant_receipts` (
         `source_resource` VARCHAR(100) NOT NULL,
         `grant_id` VARCHAR(128) NOT NULL,
         `request_fingerprint` VARCHAR(300) NOT NULL,
@@ -151,7 +151,7 @@ RegisterCommand('InventoryFulfillmentContractSmokeTest', function(source)
         { 'incomplete request rejected', not invalid.ok and invalid.error.code == 'invalid_input' },
         { 'fractional quantity rejected', not Validate(fractional, 'feather-shops').ok },
         { 'complete request valid', Validate(base, 'feather-shops').ok },
-        { 'receipts complete', tonumber(MySQL.scalar.await(
+        { 'receipts complete', tonumber(DB.value(
             'SELECT COUNT(*) FROM `inventory_grant_receipts` WHERE `result_json` IS NULL')) == 0 }
     }
     local passed = 0

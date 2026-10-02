@@ -6,7 +6,7 @@ lua54 'yes'
 description 'The Inventory API for the Feather Framework'
 author 'BCC Scripts'
 name 'feather-inventory'
-version '0.4.11'
+version '0.5.0'
 
 shared_scripts {
   'config.lua'
@@ -17,7 +17,7 @@ shared_scripts {
 -- displays text. Not a shared_script: shared_scripts load before either
 -- imports.lua runs, so `Feather` wouldn't exist yet.
 server_scripts {
-  '@oxmysql/lib/MySQL.lua',
+  '@feather-mysql/lib/DB.lua',
   '/server/imports.lua',
   '/translations/*.lua',
   '/server/helpers/*.lua',
@@ -46,5 +46,5 @@ files {
 }
 
 dependencies {
-  'oxmysql',
+  'feather-mysql',
 }

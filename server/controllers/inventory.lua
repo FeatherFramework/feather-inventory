@@ -30,9 +30,9 @@ local function MutationContext(context, reason)
   return copy
 end
 
-local function ContextCanAccess(context, inventoryId, action)
+local function ContextCanAccess(context, inventoryId, action, query)
   if not context or not context.actorSource then return true end
-  local decision = InventoryAPI.CanAccessInventory(context.actorSource, inventoryId, action, context)
+  local decision = InventoryAPI.CanAccessInventory(context.actorSource, inventoryId, action, context, query)
   return Result.IsOk(decision)
 end
 
@@ -139,16 +139,17 @@ function InventoryControllers.GetInventoryById(inventoryId, type)
   end
 
 
-  local result = MySQL.query.await(
-    query, { inventoryId })[1]
+  local result = DB.query(
+    query, inventoryId)[1]
   if not result then
     return false, false, false, nil
   end
   return result.id, result.max_weight, result.ignore_item_limit, result.name
 end
 
-function InventoryControllers.GetInventoryLocationById(id)
-  local result = MySQL.query.await(
+function InventoryControllers.GetInventoryLocationById(id, query)
+  query = query or DefaultQuery
+  local result = query(
     'SELECT `location` FROM `inventory` WHERE `id` = ? LIMIT 1;', { id })[1]
   if not result then
     return nil
@@ -166,7 +167,7 @@ end
 -- larger container silently gets the default size at one call site and its
 -- real size at another.
 function InventoryControllers.GetInventoryCapacity(inventory)
-  local result = MySQL.query.await('SELECT `max_slots` FROM `inventory` WHERE `id`=? LIMIT 1;', { inventory })[1]
+  local result = DB.query('SELECT `max_slots` FROM `inventory` WHERE `id`=? LIMIT 1;', inventory)[1]
   local configured = result and tonumber(result.max_slots)
   return configured or tonumber(Config.maxItemSlots) or 0
 end
@@ -182,14 +183,14 @@ end
 -- weight is meaningless for a heap on the floor, while slot and per-item
 -- quantity limits still apply to it.
 function InventoryControllers.GetInventoryWeightLimit(inventory)
-  local result = MySQL.query.await('SELECT `max_weight` FROM `inventory` WHERE `id`=? LIMIT 1;', { inventory })[1]
+  local result = DB.query('SELECT `max_weight` FROM `inventory` WHERE `id`=? LIMIT 1;', inventory)[1]
   local configured = result and tonumber(result.max_weight)
   return configured or tonumber(Config.maxWeight) or 0
 end
 
 function InventoryControllers.GetCustomInventoryById(key, id)
   local field = key..'_id'
-  local result = MySQL.query.await('SELECT `id`, `uuid`, `max_weight`, `ignore_item_limit` FROM `inventory` WHERE `'..field..'` = ? LIMIT 1;', { id })[1]
+  local result = DB.query('SELECT `id`, `uuid`, `max_weight`, `ignore_item_limit` FROM `inventory` WHERE `'..field..'` = ? LIMIT 1;', id)[1]
 
   if result == nil then
     return false, false, false
@@ -198,8 +199,9 @@ function InventoryControllers.GetCustomInventoryById(key, id)
   return result.id, result.uuid, result.max_weight, result.ignore_item_limit
 end
 
-function InventoryControllers.GetInventoryByCharacter(character)
-  local result = MySQL.query.await(
+function InventoryControllers.GetInventoryByCharacter(character, query)
+  query = query or DefaultQuery
+  local result = query(
         'SELECT `id`, `max_weight`, `ignore_item_limit`, `name` FROM `inventory` WHERE `character_id` = ? LIMIT 1;',
         { character })
       [1]
@@ -210,14 +212,14 @@ function InventoryControllers.GetInventoryByCharacter(character)
 end
 
 function InventoryControllers.InventoryItemCount(inventory, itemId)
-  local result = MySQL.query.await('SELECT COUNT(id) FROM `inventory_items` WHERE `inventory_id`=? AND `item_id`=?',
-    { inventory, itemId })
+  local result = DB.query('SELECT COUNT(id) FROM `inventory_items` WHERE `inventory_id`=? AND `item_id`=?',
+    inventory, itemId)
 
   return result[1]["COUNT(id)"]
 end
 
 function InventoryControllers.GetInventoryItemById(id)
-  local result = MySQL.query.await('SELECT `inventory_items`.`id`, `inventory_items`.`item_id`, `inventory_items`.`row_revision`, `inventory_items`.`updated_at`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, `inventory_items`.`metadata` AS `metadata`, `inventory_items`.`inventory_id` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` WHERE `inventory_items`.`id`=? GROUP BY `inventory_items`.`metadata`, `inventory_items`.`id`, `inventory_items`.`item_id`, `inventory_items`.`row_revision`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size` LIMIT 1;', { id })[1]
+  local result = DB.query('SELECT `inventory_items`.`id`, `inventory_items`.`item_id`, `inventory_items`.`row_revision`, `inventory_items`.`updated_at`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, `inventory_items`.`metadata` AS `metadata`, `inventory_items`.`inventory_id` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` WHERE `inventory_items`.`id`=? GROUP BY `inventory_items`.`metadata`, `inventory_items`.`id`, `inventory_items`.`item_id`, `inventory_items`.`row_revision`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size` LIMIT 1;', id)[1]
 
   if result == nil then
     return false
@@ -238,9 +240,9 @@ end
 -- the new items' weight, never what the inventory already held. Explicit
 -- `AS weight` fixes the mismatch.
 function InventoryControllers.GetInventoryTotalWeight(inventory)
-  local result = MySQL.query.await(
+  local result = DB.query(
     'SELECT SUM(`items`.`weight`) AS `weight` FROM `items` INNER JOIN `inventory_items` ON `items`.`id`=`inventory_items`.`item_id` WHERE `inventory_items`.`inventory_id`=?',
-    { inventory })
+    inventory)
   if not result[1] or not result[1].weight then
     return 0
   end
@@ -253,7 +255,7 @@ function InventoryControllers.GetInventoryTotalWeight(inventory)
 end
 
 function InventoryControllers.GetInventoryItems(inventory)
-  local items = MySQL.query.await( 'SELECT `inventory_items`.`id`, `inventory_items`.`updated_at`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, `inventory_items`.`metadata` AS `metadata` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` WHERE `inventory_items`.`inventory_id` = ? GROUP BY `inventory_items`.`metadata`, `inventory_items`.`id`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`;', { inventory })
+  local items = DB.query( 'SELECT `inventory_items`.`id`, `inventory_items`.`updated_at`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`, `inventory_items`.`metadata` AS `metadata` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id` = `items`.`id` WHERE `inventory_items`.`inventory_id` = ? GROUP BY `inventory_items`.`metadata`, `inventory_items`.`id`, `inventory_items`.`slot_index`, `items`.`display_name`, `items`.`name`, `items`.`description`, `items`.`usable`, `items`.`weight`, `items`.`category_id`, `items`.`max_quantity`, `items`.`max_stack_size`;', inventory)
   for key, value in pairs(items) do
     if value["metadata"] and value["metadata"] ~= nil then
       items[key]["metadata"] = json.decode(value["metadata"])
@@ -267,15 +269,15 @@ function InventoryControllers.InventoryItemCounts(inventory)
   -- (INV-15) Explicit `AS count` -- the unaliased COUNT(...) expression's
   -- returned column key doesn't match the bracket-string ItemsAPI.
   -- InventoryHasItems used to index it by, so every lookup read nil.
-  return MySQL.query.await(
+  return DB.query(
     'SELECT `items`.`name`, COUNT(`items`.`name`) AS `count` FROM `inventory_items` INNER JOIN `items` ON `inventory_items`.`item_id`=`items`.`id` WHERE `inventory_items`.`inventory_id`=? GROUP BY `items`.`name`;',
-    { inventory })
+    inventory)
 end
 
 function InventoryControllers.GetInventoryTotalItemCounts(inventory)
-  return MySQL.query.await(
+  return DB.query(
     'SELECT COUNT(`id`) AS `count` FROM `inventory_items` WHERE `inventory_id`=?;',
-    { inventory })
+    inventory)
 end
 
 
@@ -287,9 +289,9 @@ end
 -- pre-grant state, so every lookup would hand back the same free slot. Such
 -- a caller takes this set once and marks its own claims as it goes.
 function InventoryControllers.GetOccupiedSlotSet(inventory)
-  local used = MySQL.query.await(
+  local used = DB.query(
     'SELECT DISTINCT `slot_index` FROM `inventory_items` WHERE `inventory_id`=? AND `slot_index` IS NOT NULL;',
-    { inventory })
+    inventory)
   local occupied = {}
   for _, row in pairs(used) do
     occupied[tonumber(row.slot_index)] = true
@@ -312,15 +314,15 @@ end
 -- Every row sharing an (inventory, slot) pair -- a whole compartment's stack,
 -- since a slot can hold more than one unit of the same item.
 function InventoryControllers.GetItemsInSlot(inventory, slot)
-  return MySQL.query.await('SELECT `id` FROM `inventory_items` WHERE `inventory_id`=? AND `slot_index`=?;',
-    { inventory, slot })
+  return DB.query('SELECT `id` FROM `inventory_items` WHERE `inventory_id`=? AND `slot_index`=?;',
+    inventory, slot)
 end
 
 function InventoryControllers.AreSlotsStackCompatible(fromInventory, fromSlot, toInventory, toSlot)
-  local rows = MySQL.query.await([[SELECT `metadata` FROM `inventory_items`
+  local rows = DB.query([[SELECT `metadata` FROM `inventory_items`
     WHERE (`inventory_id`=? AND `slot_index`=?) OR (`inventory_id`=? AND `slot_index`=? )
     ORDER BY `inventory_id`, `slot_index`, `id`;]],
-    { fromInventory, fromSlot, toInventory, toSlot })
+    fromInventory, fromSlot, toInventory, toSlot)
   return InventoryMetadata.RowsCompatible(rows or {})
 end
 
@@ -329,9 +331,9 @@ end
 -- separately applies metadata compatibility and may therefore require a new
 -- compartment even when an incompatible stack has numeric room.
 function InventoryControllers.GetItemStackCounts(inventory, itemId)
-  return MySQL.query.await(
+  return DB.query(
     'SELECT `slot_index`, COUNT(*) AS `count` FROM `inventory_items` WHERE `inventory_id`=? AND `item_id`=? AND `slot_index` IS NOT NULL GROUP BY `slot_index`;',
-    { inventory, itemId })
+    inventory, itemId)
 end
 
 -- (Swap capacity math) What one compartment actually holds, grouped by item
@@ -345,7 +347,7 @@ end
 -- nothing in the schema enforces that, and a mixed slot should be costed
 -- correctly rather than silently mis-costed off its first row.
 function InventoryControllers.GetSlotItemBreakdown(inventory, slot)
-  return MySQL.query.await([[
+  return DB.query([[
     SELECT `items`.`id` AS `item_id`, `items`.`name`, `items`.`weight`,
            `items`.`max_quantity`, `items`.`max_stack_size`, COUNT(*) AS `count`
     FROM `inventory_items`
@@ -353,7 +355,7 @@ function InventoryControllers.GetSlotItemBreakdown(inventory, slot)
     WHERE `inventory_items`.`inventory_id`=? AND `inventory_items`.`slot_index`=?
     GROUP BY `items`.`id`, `items`.`name`, `items`.`weight`, `items`.`max_quantity`,
              `items`.`max_stack_size`;
-  ]], { inventory, slot })
+  ]], inventory, slot)
 end
 
 -- (Stack merge) Moves `quantity` rows from one compartment into another,
@@ -376,9 +378,9 @@ function InventoryControllers.MoveSlotItemsPartial(fromInventory, fromSlot, toIn
   local movedIds = {}
   local movedFacts = {}
 
-  local executed, committed = pcall(MySQL.startTransaction, function(query)
-    if not ContextCanAccess(context, fromInventory, InventoryAPI.AccessModes.REMOVE)
-      or (crossInventory and not ContextCanAccess(context, toInventory, InventoryAPI.AccessModes.INSERT)) then
+  local executed, committed = RunLegacyStyleTransaction(function(query)
+    if not ContextCanAccess(context, fromInventory, InventoryAPI.AccessModes.REMOVE, query)
+      or (crossInventory and not ContextCanAccess(context, toInventory, InventoryAPI.AccessModes.INSERT, query)) then
       return false
     end
     local selectSlot = [[
@@ -455,9 +457,9 @@ end
 -- holding 20 apples in one compartment occupies 1 slot, not 20. Conflating
 -- those two is what made GrantItem reject grants into a nearly-empty book.
 function InventoryControllers.GetOccupiedSlotCount(inventory)
-  local result = MySQL.query.await(
+  local result = DB.query(
     'SELECT COUNT(DISTINCT `slot_index`) AS `count` FROM `inventory_items` WHERE `inventory_id`=? AND `slot_index` IS NOT NULL;',
-    { inventory })
+    inventory)
   if not result[1] or not result[1].count then
     return 0
   end
@@ -495,9 +497,9 @@ function InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory
   local movedFacts, occupantFacts = {}, {}
   local failureCode, failureMessage
 
-  local executed, committed = pcall(MySQL.startTransaction, function(query)
-    if not ContextCanAccess(context, fromInventory, InventoryAPI.AccessModes.REMOVE)
-      or (crossInventory and not ContextCanAccess(context, toInventory, InventoryAPI.AccessModes.INSERT)) then
+  local executed, committed = RunLegacyStyleTransaction(function(query)
+    if not ContextCanAccess(context, fromInventory, InventoryAPI.AccessModes.REMOVE, query)
+      or (crossInventory and not ContextCanAccess(context, toInventory, InventoryAPI.AccessModes.INSERT, query)) then
       return false
     end
     -- Lock policy rows first, then all item rows in inventory/id order. This
@@ -575,8 +577,8 @@ function InventoryControllers.SplitSlotItems(inventory, fromSlot, toSlot, quanti
   local moved = 0
   local movedFacts = {}
 
-  local executed, committed = pcall(MySQL.startTransaction, function(query)
-    if not ContextCanAccess(context, inventory, InventoryAPI.AccessModes.REMOVE) then return false end
+  local executed, committed = RunLegacyStyleTransaction(function(query)
+    if not ContextCanAccess(context, inventory, InventoryAPI.AccessModes.REMOVE, query) then return false end
     local source = query(
       'SELECT `id`, `item_id`, `row_revision` FROM `inventory_items` WHERE `inventory_id`=? AND `slot_index`=? ORDER BY `id` FOR UPDATE;',
       { inventory, fromSlot })
@@ -631,8 +633,8 @@ end
 -- always rejected one step earlier for an unrelated reason (see
 -- InventoryCanHoldById's comment) and never actually got this far.
 function InventoryControllers.IsItemRestricted(inventory, itemId)
-  local result = MySQL.query.await("SELECT `inventory_id` FROM `inventory_blacklist` WHERE `inventory_id`=? AND `item_id`=?",
-    { inventory, itemId })
+  local result = DB.query("SELECT `inventory_id` FROM `inventory_blacklist` WHERE `inventory_id`=? AND `item_id`=?",
+    inventory, itemId)
   if not result[1] then
     return false
   end
@@ -645,16 +647,16 @@ function InventoryControllers.UpdateRestrictedItems(inventory, items)
     restrictedNames[tostring(itemName)] = true
   end
 
-  local result = MySQL.query.await(
+  local result = DB.query(
     "SELECT `inventory_blacklist`.`inventory_id`, `inventory_blacklist`.`item_id`, `items`.`name` FROM `inventory_blacklist` INNER JOIN `items` ON `items`.`id`=`inventory_blacklist`.`item_id` WHERE `inventory_blacklist`.`inventory_id`=?;",
-    { inventory })
+    inventory)
 
   -- Add Restricted Items
   for _, item in pairs(items or {}) do
     local itemId = ItemControllers.GetItemByName(item)
     if itemId then
-      MySQL.query.await('INSERT IGNORE INTO `inventory_blacklist` (`inventory_id`, `item_id`) VALUES (?,?);',
-        { inventory, itemId })
+      DB.exec('INSERT IGNORE INTO `inventory_blacklist` (`inventory_id`, `item_id`) VALUES (?,?);',
+        inventory, itemId)
     else
       warn(('Cannot blacklist unknown item definition %s for inventory %s.')
         :format(tostring(item), tostring(inventory)))
@@ -666,8 +668,8 @@ function InventoryControllers.UpdateRestrictedItems(inventory, items)
   -- set above so an existing restriction survives idempotent re-registration.
   for _, item in pairs(result or {}) do
     if not restrictedNames[tostring(item.name)] then
-      MySQL.query.await('DELETE FROM `inventory_blacklist` WHERE `inventory_id`=? AND `item_id`=?',
-        { item.inventory_id, item.item_id })
+      DB.exec('DELETE FROM `inventory_blacklist` WHERE `inventory_id`=? AND `item_id`=?',
+        item.inventory_id, item.item_id)
     end
   end
 end
@@ -677,7 +679,7 @@ end
 -- In-transaction capacity evaluation (Weapons review #7)
 ------------------------------------------------------------------
 --
--- EvaluateInventoryAcceptance and friends use MySQL.query.await, which runs
+-- EvaluateInventoryAcceptance and friends use DB.query, which runs
 -- on a DIFFERENT connection from an open transaction. Calling one while
 -- holding row locks blocks on those locks forever -- the transaction would be
 -- waiting on itself. So an in-transaction capacity check has to be expressed
@@ -832,7 +834,7 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
   local moved = {}
   local deletedContainer
 
-  local executed, committed = pcall(MySQL.startTransaction, function(query)
+  local executed, committed = RunLegacyStyleTransaction(function(query)
     if context.deleteSource then
       local lifecycleRows = query(
         'SELECT `id`, `uuid`, `location` FROM `inventory` WHERE `id`=? FOR UPDATE;', { sourceInventory })
@@ -844,26 +846,36 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
       end
       deletedContainer = lifecycle
     end
-    if not ContextCanAccess(context, sourceInventory, InventoryAPI.AccessModes.REMOVE)
+    if not ContextCanAccess(context, sourceInventory, InventoryAPI.AccessModes.REMOVE, query)
       or (not context.allowTargetInsert
-        and not ContextCanAccess(context, targetInventory, InventoryAPI.AccessModes.INSERT)) then
+        and not ContextCanAccess(context, targetInventory, InventoryAPI.AccessModes.INSERT, query)) then
       failureCode, failureMessage = 'denied', 'Inventory access changed before the move committed.'
       return false
     end
     -- Lock the rows being moved and confirm membership under that lock, so a
     -- concurrent transfer cannot move them out from under this one between
-    -- the check and the write.
+    -- the check and the write. Batched into one IN (...) query instead of one
+    -- SELECT per item: for a 20-item move this alone removes ~19 round trips,
+    -- each of which costs real wall-clock time while the transaction holds
+    -- row locks -- that's what turned small moves into multi-second commits.
+    local lockPlaceholders = {}
+    for i = 1, #requested do lockPlaceholders[i] = '?' end
+    local lockedRows = query([[
+      SELECT ii.`id`, ii.`inventory_id`, ii.`slot_index`, ii.`item_id`,
+             ii.`metadata`, ii.`row_revision`, i.`name`, i.`display_name`,
+             i.`weight`, i.`type`, i.`max_quantity`, i.`max_stack_size`,
+             i.`instance_mode`
+      FROM `inventory_items` ii INNER JOIN `items` i ON i.`id` = ii.`item_id`
+      WHERE ii.`id` IN (]] .. table.concat(lockPlaceholders, ',') .. [[) FOR UPDATE;
+    ]], requested)
+    local rowsById = {}
+    for _, row in ipairs(lockedRows or {}) do
+      rowsById[tonumber(row.id)] = row
+    end
+
     local counts = {}
     for _, id in ipairs(requested) do
-      local rows = query([[
-        SELECT ii.`id`, ii.`inventory_id`, ii.`slot_index`, ii.`item_id`,
-               ii.`metadata`, ii.`row_revision`, i.`name`, i.`display_name`,
-               i.`weight`, i.`type`, i.`max_quantity`, i.`max_stack_size`,
-               i.`instance_mode`
-        FROM `inventory_items` ii INNER JOIN `items` i ON i.`id` = ii.`item_id`
-        WHERE ii.`id`=? FOR UPDATE;
-      ]], { id })
-      local row = rows and rows[1]
+      local row = rowsById[id]
       if not row or tostring(row.inventory_id) ~= tostring(sourceInventory) then
         failureCode, failureMessage = 'not_found', 'One or more items are not in the source inventory.'
         return false
@@ -897,34 +909,57 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
     local capacity = tonumber(capacityRows and capacityRows[1] and capacityRows[1].max_slots)
       or tonumber(Config.maxItemSlots) or 0
 
+    -- (feather-mysql migration perf) Seed the target inventory's occupied-slot
+    -- state ONCE instead of re-querying "what's in this slot" and "what slots
+    -- are free" fresh for every single item -- the same in-memory-model
+    -- approach Tx:AddQuantity already uses elsewhere in this file. occupiedSlots
+    -- tracks every taken slot (any item); slotsByItem groups rows by item_id
+    -- then slot, for the stack-join check. Both are updated after each item
+    -- below is placed, so a later item in this same loop still sees earlier
+    -- items this loop already placed -- preserving the exact guarantee the
+    -- original per-item re-query gave (the batched-insert bug GrantItem had,
+    -- avoided here by construction), just without a round trip per item.
+    local occupiedSlots = {}
+    local slotsByItem = {}
+    do
+      local seedRows = query(
+        'SELECT `slot_index`, `item_id`, `metadata` FROM `inventory_items` WHERE `inventory_id`=? AND `slot_index` IS NOT NULL;',
+        { targetInventory })
+      for _, row in ipairs(seedRows or {}) do
+        local slot = tonumber(row.slot_index)
+        if slot then
+          occupiedSlots[slot] = true
+          local itemKey = tostring(row.item_id)
+          slotsByItem[itemKey] = slotsByItem[itemKey] or {}
+          slotsByItem[itemKey][slot] = slotsByItem[itemKey][slot] or {}
+          local bucket = slotsByItem[itemKey][slot]
+          bucket[#bucket + 1] = { metadata = row.metadata }
+        end
+      end
+    end
+
     for _, id in ipairs(requested) do
-      -- Placement resolved inside the transaction so it sees rows this loop
-      -- has already written -- the batched-insert bug GrantItem had, avoided
-      -- here by construction.
-      local defRows = query([[
-        SELECT ii.`item_id`, ii.`metadata`, i.`max_stack_size`, i.`instance_mode`
-        FROM `inventory_items` ii INNER JOIN `items` i ON i.`id` = ii.`item_id`
-        WHERE ii.`id`=? LIMIT 1;
-      ]], { id })
-      local def = defRows and defRows[1]
+      -- `def` reuses the row already locked and fetched above (same
+      -- item_id/metadata/max_stack_size/instance_mode columns) instead of
+      -- re-querying the same row a second time per item.
+      local def = rowsById[id]
       local stackSize = math.max(tonumber(def and def.max_stack_size) or 1, 1)
+      local itemKey = tostring(def and def.item_id)
 
       local targetSlot
       if def and def.instance_mode ~= 'unique' then
-        local candidates = query([[
-          SELECT `slot_index`, `metadata` FROM `inventory_items`
-          WHERE `inventory_id`=? AND `item_id`=? AND `slot_index` IS NOT NULL
-          ORDER BY `slot_index`, `id`;
-        ]], { targetInventory, def.item_id })
-        local bySlot = {}
-        for _, row in ipairs(candidates or {}) do
-          local slot = tonumber(row.slot_index)
-          bySlot[slot] = bySlot[slot] or {}
-          bySlot[slot][#bySlot[slot] + 1] = row
-        end
+        local bySlot = slotsByItem[itemKey]
         local movingMetadata = InventoryMetadata.Decode(def.metadata)
-        if movingMetadata then
-          for slot, rows in pairs(bySlot) do
+        if movingMetadata and bySlot then
+          -- Deterministic ascending-slot order (the original's pairs() over a
+          -- freshly built table had no defined order among equally-valid
+          -- candidates; any compatible slot is equally correct, so this is a
+          -- stricter, not different, guarantee).
+          local candidateSlots = {}
+          for slot in pairs(bySlot) do candidateSlots[#candidateSlots + 1] = slot end
+          table.sort(candidateSlots)
+          for _, slot in ipairs(candidateSlots) do
+            local rows = bySlot[slot]
             local existingMetadata = InventoryMetadata.Decode(rows[1].metadata)
             if existingMetadata and #rows < stackSize and InventoryMetadata.RowsCompatible(rows)
               and InventoryMetadata.DocumentsEqual(existingMetadata, movingMetadata) then
@@ -936,15 +971,8 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
       end
 
       if targetSlot == nil then
-        local usedRows = query(
-          'SELECT DISTINCT `slot_index` FROM `inventory_items` WHERE `inventory_id`=? AND `slot_index` IS NOT NULL;',
-          { targetInventory })
-        local used = {}
-        for _, row in ipairs(usedRows or {}) do
-          used[tonumber(row.slot_index)] = true
-        end
         for index = 0, capacity - 1 do
-          if not used[index] then
+          if not occupiedSlots[index] then
             targetSlot = index
             break
           end
@@ -959,6 +987,14 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
       query(
         'UPDATE `inventory_items` SET `inventory_id`=?, `slot_index`=?, `row_revision`=`row_revision`+1 WHERE `id`=?;',
         { targetInventory, targetSlot, id })
+
+      -- Reflect this placement in the in-memory model so the next item in
+      -- this same loop sees it without a re-query.
+      occupiedSlots[targetSlot] = true
+      slotsByItem[itemKey] = slotsByItem[itemKey] or {}
+      slotsByItem[itemKey][targetSlot] = slotsByItem[itemKey][targetSlot] or {}
+      local placedBucket = slotsByItem[itemKey][targetSlot]
+      placedBucket[#placedBucket + 1] = { metadata = def and def.metadata }
     end
 
     if context.deleteSource then

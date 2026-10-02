@@ -1,10 +1,10 @@
 DiagnosticsAPI = DiagnosticsAPI or {}
 
 local function TableExists(name)
-    return (tonumber(MySQL.scalar.await([[
+    return (tonumber(DB.value([[
         SELECT COUNT(*) FROM information_schema.TABLES
         WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=?;
-    ]], { name })) or 0) > 0
+    ]], name)) or 0) > 0
 end
 
 local function NewReport(sampleLimit)
@@ -51,20 +51,20 @@ local function RunIntegrityDiagnostics(options)
     sampleLimit = math.max(1, math.min(sampleLimit, 500))
     local report = NewReport(sampleLimit)
 
-    AddRows(report, 'orphan_instance_inventory', 'critical', MySQL.query.await([[
+    AddRows(report, 'orphan_instance_inventory', 'critical', DB.query([[
         SELECT ii.`id` AS `instanceId`, ii.`inventory_id` AS `inventoryId`
         FROM `inventory_items` ii LEFT JOIN `inventory` inv ON inv.`id`=ii.`inventory_id`
         WHERE inv.`id` IS NULL ORDER BY ii.`id`;
     ]]))
 
-    AddRows(report, 'missing_definition', 'critical', MySQL.query.await([[
+    AddRows(report, 'missing_definition', 'critical', DB.query([[
         SELECT ii.`id` AS `instanceId`, ii.`item_id` AS `definitionId`,
                ii.`inventory_id` AS `inventoryId`
         FROM `inventory_items` ii LEFT JOIN `items` i ON i.`id`=ii.`item_id`
         WHERE i.`id` IS NULL ORDER BY ii.`id`;
     ]]))
 
-    AddRows(report, 'archived_definition_in_use', 'info', MySQL.query.await([[
+    AddRows(report, 'archived_definition_in_use', 'info', DB.query([[
         SELECT i.`id` AS `definitionId`, i.`name` AS `itemName`,
                COUNT(ii.`id`) AS `ownedInstances`
         FROM `items` i INNER JOIN `inventory_items` ii ON ii.`item_id`=i.`id`
@@ -72,22 +72,22 @@ local function RunIntegrityDiagnostics(options)
         GROUP BY i.`id`, i.`name` ORDER BY i.`id`;
     ]]))
 
-    AddRows(report, 'malformed_metadata', 'error', MySQL.query.await([[
+    AddRows(report, 'malformed_metadata', 'error', DB.query([[
         SELECT `id` AS `instanceId`, `inventory_id` AS `inventoryId`
         FROM `inventory_items`
         WHERE `metadata` IS NOT NULL AND JSON_VALID(`metadata`)=0 ORDER BY `id`;
     ]]))
 
-    AddRows(report, 'invalid_slot', 'error', MySQL.query.await([[
+    AddRows(report, 'invalid_slot', 'error', DB.query([[
         SELECT ii.`id` AS `instanceId`, ii.`inventory_id` AS `inventoryId`,
                ii.`slot_index` AS `slot`, COALESCE(NULLIF(inv.`max_slots`, 0), ?) AS `capacity`
         FROM `inventory_items` ii INNER JOIN `inventory` inv ON inv.`id`=ii.`inventory_id`
         WHERE ii.`slot_index` IS NULL OR ii.`slot_index` < 0
            OR ii.`slot_index` >= COALESCE(NULLIF(inv.`max_slots`, 0), ?)
         ORDER BY ii.`inventory_id`, ii.`id`;
-    ]], { Config.maxItemSlots, Config.maxItemSlots }))
+    ]], Config.maxItemSlots, Config.maxItemSlots))
 
-    AddRows(report, 'mixed_definition_slot', 'critical', MySQL.query.await([[
+    AddRows(report, 'mixed_definition_slot', 'critical', DB.query([[
         SELECT `inventory_id` AS `inventoryId`, `slot_index` AS `slot`,
                COUNT(*) AS `units`, COUNT(DISTINCT `item_id`) AS `definitions`
         FROM `inventory_items` WHERE `slot_index` IS NOT NULL
@@ -96,7 +96,7 @@ local function RunIntegrityDiagnostics(options)
         ORDER BY `inventory_id`, `slot_index`;
     ]]))
 
-    AddRows(report, 'unique_definition_stacked', 'critical', MySQL.query.await([[
+    AddRows(report, 'unique_definition_stacked', 'critical', DB.query([[
         SELECT ii.`inventory_id` AS `inventoryId`, ii.`slot_index` AS `slot`,
                ii.`item_id` AS `definitionId`, i.`name` AS `itemName`, COUNT(*) AS `units`
         FROM `inventory_items` ii INNER JOIN `items` i ON i.`id`=ii.`item_id`
@@ -105,7 +105,7 @@ local function RunIntegrityDiagnostics(options)
         HAVING COUNT(*) > 1 ORDER BY ii.`inventory_id`, ii.`slot_index`;
     ]]))
 
-    AddRows(report, 'stack_size_exceeded', 'error', MySQL.query.await([[
+    AddRows(report, 'stack_size_exceeded', 'error', DB.query([[
         SELECT ii.`inventory_id` AS `inventoryId`, ii.`slot_index` AS `slot`,
                ii.`item_id` AS `definitionId`, COUNT(*) AS `units`,
                i.`max_stack_size` AS `limit`
@@ -118,7 +118,7 @@ local function RunIntegrityDiagnostics(options)
 
     -- Semantic JSON equality is deliberately done through the same helper as
     -- placement. SQL textual equality would falsely flag reordered object keys.
-    local stackRows = MySQL.query.await([[
+    local stackRows = DB.query([[
         SELECT ii.`inventory_id`, ii.`slot_index`, ii.`id`, ii.`metadata`
         FROM `inventory_items` ii
         INNER JOIN (
@@ -128,7 +128,7 @@ local function RunIntegrityDiagnostics(options)
         ) stacks ON stacks.`inventory_id`=ii.`inventory_id`
             AND stacks.`slot_index`=ii.`slot_index`
         ORDER BY ii.`inventory_id`, ii.`slot_index`, ii.`id`;
-    ]]) or {}
+    ]])
     local currentKey, currentRows
     local function inspectStack()
         if currentRows and not InventoryMetadata.RowsCompatible(currentRows) then
@@ -149,7 +149,7 @@ local function RunIntegrityDiagnostics(options)
     end
     inspectStack()
 
-    AddRows(report, 'inventory_over_slot_capacity', 'error', MySQL.query.await([[
+    AddRows(report, 'inventory_over_slot_capacity', 'error', DB.query([[
         SELECT inv.`id` AS `inventoryId`, COUNT(DISTINCT ii.`slot_index`) AS `occupiedSlots`,
                COALESCE(NULLIF(inv.`max_slots`, 0), ?) AS `capacity`
         FROM `inventory` inv INNER JOIN `inventory_items` ii ON ii.`inventory_id`=inv.`id`
@@ -157,9 +157,9 @@ local function RunIntegrityDiagnostics(options)
         GROUP BY inv.`id`, inv.`max_slots`
         HAVING COUNT(DISTINCT ii.`slot_index`) > COALESCE(NULLIF(inv.`max_slots`, 0), ?)
         ORDER BY inv.`id`;
-    ]], { Config.maxItemSlots, Config.maxItemSlots }))
+    ]], Config.maxItemSlots, Config.maxItemSlots))
 
-    AddRows(report, 'inventory_overweight', 'error', MySQL.query.await([[
+    AddRows(report, 'inventory_overweight', 'error', DB.query([[
         SELECT inv.`id` AS `inventoryId`, SUM(i.`weight`) AS `weight`,
                COALESCE(inv.`max_weight`, ?) AS `limit`
         FROM `inventory` inv
@@ -169,9 +169,9 @@ local function RunIntegrityDiagnostics(options)
         HAVING COALESCE(inv.`max_weight`, ?) > 0
            AND SUM(i.`weight`) > COALESCE(inv.`max_weight`, ?)
         ORDER BY inv.`id`;
-    ]], { Config.maxWeight, Config.maxWeight, Config.maxWeight }))
+    ]], Config.maxWeight, Config.maxWeight, Config.maxWeight))
 
-    AddRows(report, 'definition_quantity_exceeded', 'error', MySQL.query.await([[
+    AddRows(report, 'definition_quantity_exceeded', 'error', DB.query([[
         SELECT ii.`inventory_id` AS `inventoryId`, ii.`item_id` AS `definitionId`,
                COUNT(*) AS `quantity`, i.`max_quantity` AS `limit`
         FROM `inventory_items` ii
@@ -184,7 +184,7 @@ local function RunIntegrityDiagnostics(options)
     ]]))
 
     if TableExists('inventory_access') then
-        AddRows(report, 'orphan_access_grant', 'error', MySQL.query.await([[
+        AddRows(report, 'orphan_access_grant', 'error', DB.query([[
             SELECT ia.`id` AS `grantId`, ia.`inventory_id` AS `inventoryId`,
                    ia.`character_id` AS `characterId`
             FROM `inventory_access` ia LEFT JOIN `inventory` inv ON inv.`id`=ia.`inventory_id`
@@ -193,14 +193,14 @@ local function RunIntegrityDiagnostics(options)
     end
 
     if TableExists('character_equipment') then
-        AddRows(report, 'dangling_equipment', 'critical', MySQL.query.await([[
+        AddRows(report, 'dangling_equipment', 'critical', DB.query([[
             SELECT ce.`character_id` AS `characterId`, ce.`slot`,
                    ce.`inventory_items_id` AS `instanceId`
             FROM `character_equipment` ce
             LEFT JOIN `inventory_items` ii ON ii.`id`=ce.`inventory_items_id`
             WHERE ii.`id` IS NULL ORDER BY ce.`character_id`, ce.`slot`;
         ]]))
-        AddRows(report, 'equipment_owner_mismatch', 'critical', MySQL.query.await([[
+        AddRows(report, 'equipment_owner_mismatch', 'critical', DB.query([[
             SELECT ce.`character_id` AS `equippedCharacterId`, ce.`slot`,
                    ce.`inventory_items_id` AS `instanceId`,
                    inv.`character_id` AS `inventoryCharacterId`, inv.`id` AS `inventoryId`
@@ -215,13 +215,13 @@ local function RunIntegrityDiagnostics(options)
     -- A lifecycle binding is considered missing only when the schema has the
     -- expected domain column and this row leaves it null. Unknown domains are
     -- not guessed at and therefore are not false-positively labelled orphaned.
-    local columns = MySQL.query.await([[
+    local columns = DB.query([[
         SELECT `COLUMN_NAME` FROM information_schema.COLUMNS
         WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='inventory';
-    ]]) or {}
+    ]])
     local knownColumns = {}
     for _, column in ipairs(columns) do knownColumns[column.COLUMN_NAME] = true end
-    for _, inventory in ipairs(MySQL.query.await('SELECT * FROM `inventory` ORDER BY `id`;') or {}) do
+    for _, inventory in ipairs(DB.query('SELECT * FROM `inventory` ORDER BY `id`;')) do
         local location = tostring(inventory.location or ''):lower()
         local ownerColumn = location == 'character' and 'character_id' or (location .. '_id')
         if location ~= '' and location ~= 'ground' and knownColumns[ownerColumn]

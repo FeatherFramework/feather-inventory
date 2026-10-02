@@ -1,5 +1,5 @@
 local function CharacterColumns()
-    local rows = MySQL.query.await([[
+    local rows = DB.query([[
         SELECT `TABLE_NAME`, `COLUMN_NAME`, `DATA_TYPE`, `CHARACTER_MAXIMUM_LENGTH`
         FROM information_schema.COLUMNS
         WHERE `TABLE_SCHEMA` = DATABASE() AND (
@@ -7,7 +7,7 @@ local function CharacterColumns()
             (`TABLE_NAME` = 'inventory_access' AND `COLUMN_NAME` IN ('character_id', 'granted_by_character_id')) OR
             (`TABLE_NAME` = 'character_equipment' AND `COLUMN_NAME` = 'character_id')
         )
-    ]]) or {}
+    ]])
     local columns = {}
     for _, row in ipairs(rows) do
         columns[row.TABLE_NAME .. '.' .. row.COLUMN_NAME] = row
@@ -32,7 +32,7 @@ local function SchemaUsesUuidColumns()
 end
 
 local function LegacyForeignKeyCount()
-    return tonumber(MySQL.scalar.await([[
+    return tonumber(DB.value([[
         SELECT COUNT(*) FROM information_schema.KEY_COLUMN_USAGE
         WHERE `TABLE_SCHEMA` = DATABASE()
           AND `TABLE_NAME` IN ('inventory', 'inventory_access', 'character_equipment')
@@ -51,13 +51,13 @@ RegisterCommand('InvCharacterUuidSmokeTest', function(source, args)
     local schemaOk, invalidColumn = SchemaUsesUuidColumns()
     local session = target and InventoryIdentity.GetSession(target)
         or Result.Err(Result.Codes.NOT_FOUND, 'No connected player is available.')
-    local uuid = MySQL.scalar.await('SELECT UUID()')
+    local uuid = DB.value('SELECT UUID()')
     local roundTrip
     if schemaOk then
         local created = InventoryAPI.RegisterInventory('character', uuid, 'UUID Smoke')
         local inventoryId = Result.IsOk(created) and InventoryControllers.GetInventoryByCharacter(uuid) or nil
         roundTrip = Result.IsOk(created) and inventoryId ~= false
-        MySQL.query.await('DELETE FROM `inventory` WHERE `character_id` = ?', { uuid })
+        DB.exec('DELETE FROM `inventory` WHERE `character_id` = ?', uuid)
     else
         roundTrip = false
     end

@@ -30,10 +30,10 @@ end
 -- RegisterInventory('character', id) call for the same id can never produce
 -- a duplicate/colliding row regardless of caller.
 function EnsureCharacterInventoryUnique()
-    local existing = MySQL.query.await(
+    local existing = DB.query(
         "SELECT INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'inventory' AND INDEX_NAME = 'UQ_InventoryCharacter';"
     )
     if #existing < 1 then
-        MySQL.query.await("ALTER TABLE `inventory` ADD UNIQUE KEY `UQ_InventoryCharacter` (`character_id`);")
+        DB.exec("ALTER TABLE `inventory` ADD UNIQUE KEY `UQ_InventoryCharacter` (`character_id`);")
     end
 end

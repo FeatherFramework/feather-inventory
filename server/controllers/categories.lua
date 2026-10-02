@@ -1,7 +1,7 @@
 CategoryControllers = {}
 
 function CategoryControllers.GetCategories()
-  local result = MySQL.query.await(
+  local result = DB.query(
     'SELECT * FROM `categories`;')
   return result
 end

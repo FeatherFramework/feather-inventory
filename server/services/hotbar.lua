@@ -21,7 +21,7 @@ end
 local schemaReady = false
 local function EnsureHotbarSchema()
     if schemaReady then return end
-    MySQL.query.await([[
+    DB.exec([[
         CREATE TABLE IF NOT EXISTS `character_hotbar_bindings` (
             `character_id` CHAR(36) NOT NULL,
             `slot` TINYINT UNSIGNED NOT NULL,
@@ -47,19 +47,19 @@ local function ResolveBinding(inventoryId, binding)
     local instanceId
     local quantity = 0
     if binding.instance_id then
-        local row = MySQL.single.await([[
+        local row = DB.one([[
             SELECT `id` FROM `inventory_items`
             WHERE `id`=? AND `inventory_id`=? LIMIT 1;
-        ]], { binding.instance_id, inventoryId })
+        ]], binding.instance_id, inventoryId)
         instanceId = row and tonumber(row.id) or nil
         quantity = instanceId and 1 or 0
     else
-        local row = MySQL.single.await([[
+        local row = DB.one([[
             SELECT MIN(ii.`id`) AS `id`, COUNT(*) AS `quantity`
             FROM `inventory_items` ii
             INNER JOIN `items` i ON i.`id`=ii.`item_id`
             WHERE ii.`inventory_id`=? AND i.`name`=?;
-        ]], { inventoryId, binding.item_name })
+        ]], inventoryId, binding.item_name)
         instanceId = row and tonumber(row.id) or nil
         quantity = tonumber(row and row.quantity) or 0
     end
@@ -83,11 +83,11 @@ function HotbarAPI.GetBindings(src)
         return Result.Err('no_character', 'No character is loaded for that player.')
     end
 
-    local rows = MySQL.query.await([[
+    local rows = DB.query([[
         SELECT `slot`, `item_name`, `instance_id`
         FROM `character_hotbar_bindings`
         WHERE `character_id`=? ORDER BY `slot`;
-    ]], { characterId }) or {}
+    ]], characterId)
     local bindings = {}
     for _, row in ipairs(rows) do
         local resolved = ResolveBinding(inventoryId, row)
@@ -109,8 +109,8 @@ function HotbarAPI.SetBinding(src, slot, itemId)
         return Result.Err('no_character', 'No character is loaded for that player.')
     end
     if itemId == nil then
-        MySQL.query.await('DELETE FROM `character_hotbar_bindings` WHERE `character_id`=? AND `slot`=?;',
-            { characterId, wantedSlot })
+        DB.exec('DELETE FROM `character_hotbar_bindings` WHERE `character_id`=? AND `slot`=?;',
+            characterId, wantedSlot)
         return HotbarAPI.GetBindings(src)
     end
 
@@ -124,12 +124,12 @@ function HotbarAPI.SetBinding(src, slot, itemId)
     end
 
     local instanceId = definition.instance_mode == 'unique' and tonumber(item.id) or nil
-    MySQL.query.await([[
+    DB.exec([[
         INSERT INTO `character_hotbar_bindings` (`character_id`, `slot`, `item_name`, `instance_id`)
         VALUES (?, ?, ?, ?)
         ON DUPLICATE KEY UPDATE `item_name`=VALUES(`item_name`),
             `instance_id`=VALUES(`instance_id`), `updated_at`=CURRENT_TIMESTAMP;
-    ]], { characterId, wantedSlot, definition.name, instanceId })
+    ]], characterId, wantedSlot, definition.name, instanceId)
     return HotbarAPI.GetBindings(src)
 end
 
@@ -145,11 +145,11 @@ function HotbarAPI.UseBinding(src, slot)
     if not characterId or not inventoryId then
         return Result.Err('no_character', 'No character is loaded for that player.')
     end
-    local binding = MySQL.single.await([[
+    local binding = DB.one([[
         SELECT `slot`, `item_name`, `instance_id`
         FROM `character_hotbar_bindings`
         WHERE `character_id`=? AND `slot`=? LIMIT 1;
-    ]], { characterId, wantedSlot })
+    ]], characterId, wantedSlot)
     if not binding then return Result.Err(Result.Codes.NOT_FOUND, 'That hotbar slot is empty.') end
 
     local resolved = ResolveBinding(inventoryId, binding)
@@ -198,8 +198,8 @@ local function FlushAffectedHotbars()
 
     local characterIds = {}
     for inventoryId in pairs(inventoryIds) do
-        local row = MySQL.single.await(
-            'SELECT `character_id` FROM `inventory` WHERE `id`=? LIMIT 1;', { inventoryId })
+        local row = DB.one(
+            'SELECT `character_id` FROM `inventory` WHERE `id`=? LIMIT 1;', inventoryId)
         if row and row.character_id then
             characterIds[tostring(row.character_id):lower()] = true
         end

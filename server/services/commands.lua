@@ -47,11 +47,12 @@ if Config.DevMode then
         end
     end, true)
 
-    -- (Weapons review) End-to-end check of the real transaction path.
-    -- startTransaction is flagged EXPERIMENTAL upstream and its Lua calling
-    -- convention (awaiting across the JS boundary) cannot be verified from
-    -- outside a running server -- so this exercises it for real rather than
-    -- leaving the assumption untested. Run it once after any oxmysql upgrade.
+    -- (Weapons review) End-to-end check of the real transaction path -- now
+    -- DB.transaction (feather-mysql), via RunInTransaction's adapter. Its Lua
+    -- calling convention (awaiting across the JS boundary) cannot be verified
+    -- from outside a running server, so this exercises it for real rather
+    -- than leaving the assumption untested. Run it once after any
+    -- feather-mysql upgrade.
     RegisterCommand('InvTxSmokeTest', function(source)
         local player = InventoryIdentity.GetCharacter(source)
         local character = player and player.char
@@ -111,7 +112,7 @@ if Config.DevMode then
         end)
         -- DevMode fixture: deliberately removes a row outside the transaction
         -- to prove a stale transaction fails safely when its target vanishes.
-        MySQL.query.await('DELETE FROM `inventory_items` WHERE `id`=?;', { ghost })
+        DB.exec('DELETE FROM `inventory_items` WHERE `id`=?;', ghost)
         local deleted = InventoryAPI.Transaction({ reason = 'smoketest_deleted' }, function(tx)
             return tx:SetMetadata(ghost, { ammo = 1 }, 0)
         end)
@@ -170,36 +171,36 @@ if Config.DevMode then
             return outcome
         end
 
-        local uniqueRow = MySQL.query.await(
+        local uniqueRow = DB.query(
             "SELECT `id`, `name` FROM `items` WHERE `instance_mode`='unique' LIMIT 1;")[1]
 
         -- 7. Weight. Temporarily lower this inventory's limit below the
         --    weight of one additional unit and bypass only the quantity cap,
         --    so weight is the first gate capable of rejecting the request.
-        local restoredWeight = MySQL.query.await(
+        local restoredWeight = DB.query(
             'SELECT `max_weight`, `ignore_item_limit` FROM `inventory` WHERE `id`=? LIMIT 1;',
-            { inventory })[1]
-        local currentWeightRow = MySQL.query.await([[
+            inventory)[1]
+        local currentWeightRow = DB.query([[
             SELECT COALESCE(SUM(i.`weight`), 0) AS `weight`
             FROM `inventory_items` ii INNER JOIN `items` i ON i.`id`=ii.`item_id`
             WHERE ii.`inventory_id`=?;
-        ]], { inventory })[1]
+        ]], inventory)[1]
         local itemWeight = tonumber(definition.weight) or 0
         if itemWeight <= 0 then
             report('tx add rejected by weight', false, 'consumable_apple has no positive weight')
         else
             local currentWeight = tonumber(currentWeightRow and currentWeightRow.weight) or 0
             local testLimit = math.max(0.01, currentWeight + (itemWeight / 2))
-            MySQL.query.await(
+            DB.exec(
                 'UPDATE `inventory` SET `max_weight`=?, `ignore_item_limit`=1 WHERE `id`=?;',
-                { testLimit, inventory })
+                testLimit, inventory)
             expectRejection('tx add rejected by weight', 'weight_limit', {
                 inventory = inventory, definitionId = definition.id, quantity = 1
             })
-            MySQL.query.await(
+            DB.exec(
                 'UPDATE `inventory` SET `max_weight`=?, `ignore_item_limit`=? WHERE `id`=?;',
-                { restoredWeight and restoredWeight.max_weight or nil,
-                  restoredWeight and restoredWeight.ignore_item_limit or 0, inventory })
+                restoredWeight and restoredWeight.max_weight or nil,
+                restoredWeight and restoredWeight.ignore_item_limit or 0, inventory)
         end
 
         -- 8. Maximum quantity. Exceeds the definition's own max_quantity
@@ -211,48 +212,48 @@ if Config.DevMode then
 
         -- 9. Blacklist. Restrict the definition for this inventory, attempt a
         --    single unit, then restore whatever was restricted before.
-        local restoredBlacklist = MySQL.query.await(
-            'SELECT `item_id` FROM `inventory_blacklist` WHERE `inventory_id`=?;', { inventory })
-        MySQL.query.await('INSERT IGNORE INTO `inventory_blacklist` (`inventory_id`, `item_id`) VALUES (?, ?);',
-            { inventory, definition.id })
+        local restoredBlacklist = DB.query(
+            'SELECT `item_id` FROM `inventory_blacklist` WHERE `inventory_id`=?;', inventory)
+        DB.exec('INSERT IGNORE INTO `inventory_blacklist` (`inventory_id`, `item_id`) VALUES (?, ?);',
+            inventory, definition.id)
         expectRejection('tx add rejected by blacklist', 'item_restricted', {
             inventory = inventory, definitionId = definition.id, quantity = 1
         })
-        MySQL.query.await('DELETE FROM `inventory_blacklist` WHERE `inventory_id`=? AND `item_id`=?;',
-            { inventory, definition.id })
+        DB.exec('DELETE FROM `inventory_blacklist` WHERE `inventory_id`=? AND `item_id`=?;',
+            inventory, definition.id)
         for _, row in pairs(restoredBlacklist or {}) do
-            MySQL.query.await('INSERT IGNORE INTO `inventory_blacklist` (`inventory_id`, `item_id`) VALUES (?, ?);',
-                { inventory, row.item_id })
+            DB.exec('INSERT IGNORE INTO `inventory_blacklist` (`inventory_id`, `item_id`) VALUES (?, ?);',
+                inventory, row.item_id)
         end
 
         -- 10. Slot capacity. Temporarily shrink the book to zero compartments
         --     so nothing can be placed, whatever its weight or quantity.
-        local restoredSlots = MySQL.query.await(
+        local restoredSlots = DB.query(
             'SELECT `max_slots`, `ignore_item_limit` FROM `inventory` WHERE `id`=? LIMIT 1;',
-            { inventory })[1]
+            inventory)[1]
         if not uniqueRow then
             report('tx add rejected by slot capacity', false, 'no unique definition seeded; cannot test')
         else
-            local restoredUniqueBlacklist = MySQL.query.await(
+            local restoredUniqueBlacklist = DB.query(
                 'SELECT `item_id` FROM `inventory_blacklist` WHERE `inventory_id`=? AND `item_id`=? LIMIT 1;',
-                { inventory, uniqueRow.id })[1]
-            MySQL.query.await(
+                inventory, uniqueRow.id)[1]
+            DB.exec(
                 'DELETE FROM `inventory_blacklist` WHERE `inventory_id`=? AND `item_id`=?;',
-                { inventory, uniqueRow.id })
-            MySQL.query.await(
+                inventory, uniqueRow.id)
+            DB.exec(
                 'UPDATE `inventory` SET `max_slots`=0, `ignore_item_limit`=1 WHERE `id`=?;',
-                { inventory })
+                inventory)
             expectRejection('tx add rejected by slot capacity', 'inventory_full', {
                 inventory = inventory, definitionId = tonumber(uniqueRow.id), quantity = 1
             })
-            MySQL.query.await(
+            DB.exec(
                 'UPDATE `inventory` SET `max_slots`=?, `ignore_item_limit`=? WHERE `id`=?;',
-                { restoredSlots and restoredSlots.max_slots or nil,
-                  restoredSlots and restoredSlots.ignore_item_limit or 0, inventory })
+                restoredSlots and restoredSlots.max_slots or nil,
+                restoredSlots and restoredSlots.ignore_item_limit or 0, inventory)
             if restoredUniqueBlacklist then
-                MySQL.query.await(
+                DB.exec(
                     'INSERT IGNORE INTO `inventory_blacklist` (`inventory_id`, `item_id`) VALUES (?, ?);',
-                    { inventory, uniqueRow.id })
+                    inventory, uniqueRow.id)
             end
         end
 
@@ -284,20 +285,20 @@ if Config.DevMode then
                     Result.IsOk(stored) and stored.value.metadata.serial == 'SMOKE-1',
                     Result.IsOk(stored) and tostring(stored.value.metadata.serial) or 'unreadable')
                 -- DevMode fixture cleanup; production deletion uses Tx:RemoveInstances.
-                MySQL.query.await('DELETE FROM `inventory_items` WHERE `id`=?;', { issued.value.instanceId })
+                DB.exec('DELETE FROM `inventory_items` WHERE `id`=?;', issued.value.instanceId)
             end
 
             -- 13. CreateInstance must roll back when a gate fails. Zero
             --     compartments, so placement cannot succeed -- and nothing may
             --     be left behind by the attempt.
             local beforeIssue = InventoryControllers.InventoryItemCount(inventory, tonumber(uniqueRow.id))
-            MySQL.query.await('UPDATE `inventory` SET `max_slots`=0 WHERE `id`=?;', { inventory })
+            DB.exec('UPDATE `inventory` SET `max_slots`=0 WHERE `id`=?;', inventory)
             local blocked = TransactionAPI.CreateInstance(
                 { reason = 'smoketest_issue_blocked' },
                 { characterId = character.id, definitionId = tonumber(uniqueRow.id),
                   metadata = { smoketest = true } })
-            MySQL.query.await('UPDATE `inventory` SET `max_slots`=? WHERE `id`=?;',
-                { restoredSlots and restoredSlots.max_slots or nil, inventory })
+            DB.exec('UPDATE `inventory` SET `max_slots`=? WHERE `id`=?;',
+                restoredSlots and restoredSlots.max_slots or nil, inventory)
             local afterIssue = InventoryControllers.InventoryItemCount(inventory, tonumber(uniqueRow.id))
             report('CreateInstance rolls back on a failed gate',
                 not Result.IsOk(blocked) and beforeIssue == afterIssue,
@@ -348,39 +349,39 @@ if Config.DevMode then
             incompatible = 'inv_smoke_migrate_incompatible',
         }
         local function cleanupDefinitions()
-            MySQL.query.await('DELETE FROM `items` WHERE `name` IN (?, ?, ?);',
-                { names.source, names.target, names.incompatible })
+            DB.exec('DELETE FROM `items` WHERE `name` IN (?, ?, ?);',
+                names.source, names.target, names.incompatible)
         end
         cleanupDefinitions()
 
-        local inserted = MySQL.query.await([[
+        local inserted = DB.exec([[
             INSERT INTO `items`
                 (`name`, `display_name`, `description`, `max_quantity`, `max_stack_size`,
                  `weight`, `usable`, `category_id`, `type`, `instance_mode`)
             SELECT ?, ?, 'Disposable inventory lifecycle fixture', `max_quantity`,
                    `max_stack_size`, `weight`, 0, `category_id`, `type`, `instance_mode`
             FROM `items` WHERE `id`=?;
-        ]], { names.source, 'Inventory Smoke Source', seed.id })
-        MySQL.query.await([[
+        ]], names.source, 'Inventory Smoke Source', seed.id)
+        DB.exec([[
             INSERT INTO `items`
                 (`name`, `display_name`, `description`, `max_quantity`, `max_stack_size`,
                  `weight`, `usable`, `category_id`, `type`, `instance_mode`)
             SELECT ?, ?, 'Disposable inventory lifecycle fixture', `max_quantity`,
                    `max_stack_size`, `weight`, 0, `category_id`, `type`, `instance_mode`
             FROM `items` WHERE `id`=?;
-        ]], { names.target, 'Inventory Smoke Target', seed.id })
-        MySQL.query.await([[
+        ]], names.target, 'Inventory Smoke Target', seed.id)
+        DB.exec([[
             INSERT INTO `items`
                 (`name`, `display_name`, `description`, `max_quantity`, `max_stack_size`,
                  `weight`, `usable`, `category_id`, `type`, `instance_mode`)
             SELECT ?, ?, 'Disposable incompatible lifecycle fixture', `max_quantity`,
                    `max_stack_size`, `weight` + 1.00, 0, `category_id`, `type`, `instance_mode`
             FROM `items` WHERE `id`=?;
-        ]], { names.incompatible, 'Inventory Smoke Incompatible', seed.id })
+        ]], names.incompatible, 'Inventory Smoke Incompatible', seed.id)
 
-        local rows = MySQL.query.await(
+        local rows = DB.query(
             'SELECT `id`, `name` FROM `items` WHERE `name` IN (?, ?, ?);',
-            { names.source, names.target, names.incompatible }) or {}
+            names.source, names.target, names.incompatible)
         local definitions = {}
         for _, row in ipairs(rows) do definitions[row.name] = tonumber(row.id) end
         local sourceId, targetId, incompatibleId = definitions[names.source],
@@ -410,10 +411,10 @@ if Config.DevMode then
             Result.IsOk(created) and ('instances=' .. #createdIds)
                 or (created.error and created.error.message))
 
-        local before = MySQL.query.await([[
+        local before = DB.query([[
             SELECT `id`, `inventory_id`, `slot_index`, `metadata`, `row_revision`
             FROM `inventory_items` WHERE `item_id`=? ORDER BY `id`;
-        ]], { sourceId }) or {}
+        ]], sourceId)
 
         local preflight = InstancesAPI.GetDefinitionMigrationPreflight(sourceId, targetId)
         report('compatible preflight returns advisory counts',
@@ -431,8 +432,8 @@ if Config.DevMode then
                 and incompatiblePreflight.value.storageSemanticsCompatible == false)
         local incompatible = InstancesAPI.MigrateDefinitionInstances(
             sourceId, incompatibleId, 'lifecycle smoke incompatible')
-        local afterRejected = MySQL.query.await(
-            'SELECT COUNT(*) AS `count` FROM `inventory_items` WHERE `item_id`=?;', { sourceId })[1]
+        local afterRejected = DB.query(
+            'SELECT COUNT(*) AS `count` FROM `inventory_items` WHERE `item_id`=?;', sourceId)[1]
         report('incompatible migration rolls back unchanged',
             not Result.IsOk(incompatible)
                 and incompatible.error.code == Result.Codes.CONFLICT
@@ -447,10 +448,10 @@ if Config.DevMode then
             migrated = {},
         }
         local migrated = InstancesAPI.MigrateDefinitionInstances(sourceId, targetId, migrationReason)
-        local after = MySQL.query.await([[
+        local after = DB.query([[
             SELECT `id`, `inventory_id`, `slot_index`, `metadata`, `row_revision`
             FROM `inventory_items` WHERE `item_id`=? ORDER BY `id`;
-        ]], { targetId }) or {}
+        ]], targetId)
         local preserved = Result.IsOk(migrated) and #before == #after
         for index, original in ipairs(before) do
             local replacement = after[index]
@@ -461,8 +462,8 @@ if Config.DevMode then
                 and tostring(replacement.metadata) == tostring(original.metadata)
                 and tonumber(replacement.row_revision) == tonumber(original.row_revision) + 1
         end
-        local archived = MySQL.query.await(
-            'SELECT `archived_at`, `archive_reason` FROM `items` WHERE `id`=?;', { sourceId })[1]
+        local archived = DB.query(
+            'SELECT `archived_at`, `archive_reason` FROM `items` WHERE `id`=?;', sourceId)[1]
         report('compatible migration preserves identity and bumps revision', preserved)
         report('compatible migration archives source', archived and archived.archived_at ~= nil
             and archived.archive_reason == migrationReason)
@@ -481,15 +482,15 @@ if Config.DevMode then
             expectedLocation = '__wrong_fixture_domain__',
             instanceIds = createdIds,
         })
-        local countAfterWrong = MySQL.query.await(
-            'SELECT COUNT(*) AS `count` FROM `inventory_items` WHERE `item_id`=?;', { targetId })[1]
+        local countAfterWrong = DB.query(
+            'SELECT COUNT(*) AS `count` FROM `inventory_items` WHERE `item_id`=?;', targetId)[1]
         report('destruction rejects wrong owner domain without writes',
             not Result.IsOk(wrongLocation) and wrongLocation.error.code == Result.Codes.DENIED
                 and tonumber(countAfterWrong and countAfterWrong.count) == #createdIds)
 
         local staleIds = {}
         for _, id in ipairs(createdIds) do staleIds[#staleIds + 1] = id end
-        local maxInstance = MySQL.query.await(
+        local maxInstance = DB.query(
             'SELECT COALESCE(MAX(`id`), 0) AS `id` FROM `inventory_items`;')[1]
         staleIds[#staleIds + 1] = (tonumber(maxInstance and maxInstance.id) or 0) + 1
         local stale = TransactionAPI.DestroyInstances({
@@ -503,8 +504,8 @@ if Config.DevMode then
             expectedLocation = 'character',
             instanceIds = staleIds,
         })
-        local countAfterStale = MySQL.query.await(
-            'SELECT COUNT(*) AS `count` FROM `inventory_items` WHERE `item_id`=?;', { targetId })[1]
+        local countAfterStale = DB.query(
+            'SELECT COUNT(*) AS `count` FROM `inventory_items` WHERE `item_id`=?;', targetId)[1]
         report('stale destruction set rolls back every removal',
             not Result.IsOk(stale)
                 and tonumber(countAfterStale and countAfterStale.count) == #createdIds,
@@ -551,7 +552,7 @@ if Config.DevMode then
         local characterInventory = character
             and InventoryControllers.GetInventoryByCharacter(character.id)
         local stackSeed = ItemControllers.GetItemDefinitionByName('consumable_apple')
-        local uniqueSeed = MySQL.query.await(
+        local uniqueSeed = DB.query(
             "SELECT `id` FROM `items` WHERE `instance_mode`='unique' AND `archived_at` IS NULL LIMIT 1;")[1]
         if not characterInventory or not stackSeed or not uniqueSeed then
             print('[InvConcurrencySmokeTest] loaded Character, apple, and active unique definition are required')
@@ -560,18 +561,18 @@ if Config.DevMode then
 
         local definitionName = 'inv_smoke_archive_race'
         local targetUuid = '00000000-0000-4000-8000-000000000091'
-        MySQL.query.await('DELETE FROM `items` WHERE `name`=?;', { definitionName })
-        MySQL.query.await('DELETE FROM `inventory` WHERE `uuid`=?;', { targetUuid })
-        MySQL.query.await([[
+        DB.exec('DELETE FROM `items` WHERE `name`=?;', definitionName)
+        DB.exec('DELETE FROM `inventory` WHERE `uuid`=?;', targetUuid)
+        DB.exec([[
             INSERT INTO `items`
                 (`name`, `display_name`, `description`, `max_quantity`, `max_stack_size`,
                  `weight`, `usable`, `category_id`, `type`, `instance_mode`)
             SELECT ?, 'Inventory Archive Race', 'Disposable concurrency fixture',
                    `max_quantity`, `max_stack_size`, `weight`, 0, `category_id`, `type`, `instance_mode`
             FROM `items` WHERE `id`=?;
-        ]], { definitionName, stackSeed.id })
-        local raceDefinition = MySQL.query.await(
-            'SELECT `id` FROM `items` WHERE `name`=?;', { definitionName })[1]
+        ]], definitionName, stackSeed.id)
+        local raceDefinition = DB.query(
+            'SELECT `id` FROM `items` WHERE `name`=?;', definitionName)[1]
         if not raceDefinition then
             report('archive fixture created', false)
             return
@@ -606,11 +607,11 @@ if Config.DevMode then
         local deadline = GetGameTimer() + 15000
         while done < 2 and GetGameTimer() < deadline do Wait(0) end
 
-        local archivedRow = MySQL.query.await(
-            'SELECT `archived_at` FROM `items` WHERE `id`=?;', { raceDefinition.id })[1]
-        local ownedAfterArchive = MySQL.query.await(
+        local archivedRow = DB.query(
+            'SELECT `archived_at` FROM `items` WHERE `id`=?;', raceDefinition.id)[1]
+        local ownedAfterArchive = DB.query(
             'SELECT COUNT(*) AS `count` FROM `inventory_items` WHERE `item_id`=?;',
-            { raceDefinition.id })[1]
+            raceDefinition.id)[1]
         local grantCode = grantResult and not Result.IsOk(grantResult)
             and grantResult.error.code or nil
         local serialArchive = done == 2 and Result.IsOk(archiveResult)
@@ -623,14 +624,14 @@ if Config.DevMode then
                 Result.IsOk(grantResult) and 'committed' or tostring(grantCode),
                 tostring(ownedAfterArchive and ownedAfterArchive.count)))
 
-        MySQL.query.await([[
+        DB.exec([[
             INSERT INTO `inventory`
                 (`uuid`, `name`, `max_weight`, `location`, `ignore_item_limit`,
                  `is_public`, `max_slots`)
             VALUES (?, 'Inventory Equipment Race Target', 9999, 'concurrency_fixture', 1, 0, 64);
-        ]], { targetUuid })
-        local targetInventory = MySQL.query.await(
-            'SELECT `id` FROM `inventory` WHERE `uuid`=?;', { targetUuid })[1]
+        ]], targetUuid)
+        local targetInventory = DB.query(
+            'SELECT `id` FROM `inventory` WHERE `uuid`=?;', targetUuid)[1]
         targetInventory = targetInventory and tonumber(targetInventory.id)
 
         local instanceId
@@ -676,14 +677,14 @@ if Config.DevMode then
             while done < 2 and GetGameTimer() < deadline do Wait(0) end
         end
 
-        local finalItem = instanceId and MySQL.query.await([[
+        local finalItem = instanceId and DB.query([[
             SELECT ii.`inventory_id`, inv.`character_id`, inv.`location`
             FROM `inventory_items` ii INNER JOIN `inventory` inv ON inv.`id`=ii.`inventory_id`
             WHERE ii.`id`=?;
-        ]], { instanceId })[1]
-        local equipment = instanceId and MySQL.query.await(
+        ]], instanceId)[1]
+        local equipment = instanceId and DB.query(
             'SELECT `character_id` FROM `character_equipment` WHERE `inventory_items_id`=?;',
-            { instanceId })[1]
+            instanceId)[1]
         local movedAwayCleanly = Result.IsOk(moveResult)
             and finalItem and tonumber(finalItem.inventory_id) == targetInventory
             and equipment == nil
@@ -714,8 +715,8 @@ if Config.DevMode then
                 instanceIds = { instanceId },
             })
         end
-        MySQL.query.await('DELETE FROM `items` WHERE `name`=?;', { definitionName })
-        MySQL.query.await('DELETE FROM `inventory` WHERE `uuid`=?;', { targetUuid })
+        DB.exec('DELETE FROM `items` WHERE `name`=?;', definitionName)
+        DB.exec('DELETE FROM `inventory` WHERE `uuid`=?;', targetUuid)
         print('[InvConcurrencySmokeTest] done')
     end, true)
 

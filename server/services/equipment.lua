@@ -19,7 +19,7 @@
 EquipmentAPI = {}
 
 local function EnsureEquipmentSchema()
-    MySQL.query.await([[
+    DB.exec([[
         CREATE TABLE IF NOT EXISTS `character_equipment` (
             `character_id` CHAR(36) NOT NULL,
             `slot` VARCHAR(50) NOT NULL,
@@ -56,14 +56,14 @@ function EquipmentAPI.GetEquippedForCharacter(characterId, slot)
     end
 
     if slot then
-        local row = MySQL.query.await(
+        local row = DB.query(
             'SELECT `inventory_items_id` FROM `character_equipment` WHERE `character_id`=? AND `slot`=? LIMIT 1;',
-            { id, slot })[1]
+            id, slot)[1]
         return Result.Ok(row and tonumber(row.inventory_items_id) or nil)
     end
 
-    local rows = MySQL.query.await(
-        'SELECT `slot`, `inventory_items_id` FROM `character_equipment` WHERE `character_id`=?;', { id })
+    local rows = DB.query(
+        'SELECT `slot`, `inventory_items_id` FROM `character_equipment` WHERE `character_id`=?;', id)
     local equipped = {}
     for _, row in pairs(rows or {}) do
         equipped[row.slot] = tonumber(row.inventory_items_id)
@@ -88,7 +88,7 @@ function EquipmentAPI.SetEquippedForCharacter(characterId, slot, instanceId)
     end
 
     if instanceId == nil then
-        local executed, committed = pcall(MySQL.startTransaction, function(query)
+        local executed, committed = RunLegacyStyleTransaction(function(query)
             query('SELECT `inventory_items_id` FROM `character_equipment` WHERE `character_id`=? AND `slot`=? FOR UPDATE;',
                 { id, slot })
             query('DELETE FROM `character_equipment` WHERE `character_id`=? AND `slot`=?;', { id, slot })
@@ -106,7 +106,7 @@ function EquipmentAPI.SetEquippedForCharacter(characterId, slot, instanceId)
     end
 
     local failure
-    local executed, committed = pcall(MySQL.startTransaction, function(query)
+    local executed, committed = RunLegacyStyleTransaction(function(query)
         local owned = query([[
             SELECT ii.`id` FROM `inventory_items` ii
             INNER JOIN `inventory` inv ON inv.`id` = ii.`inventory_id`
@@ -153,7 +153,7 @@ function EquipmentAPI.PromoteEquippedSlot(characterId, fromSlot, toSlot)
     end
 
     local promotedId
-    local executed, committed = pcall(MySQL.startTransaction, function(query)
+    local executed, committed = RunLegacyStyleTransaction(function(query)
         local rows = query([[
             SELECT `slot`, `inventory_items_id` FROM `character_equipment`
             WHERE `character_id`=? AND `slot` IN (?, ?)
@@ -192,7 +192,7 @@ function EquipmentAPI.ClearEquippedInstance(instanceId)
     if not numericInstance then
         return Result.Err(Result.Codes.INVALID_INPUT, 'Invalid instance id.')
     end
-    local executed, committed = pcall(MySQL.startTransaction, function(query)
+    local executed, committed = RunLegacyStyleTransaction(function(query)
         query('SELECT `character_id`, `slot` FROM `character_equipment` WHERE `inventory_items_id`=? FOR UPDATE;',
             { numericInstance })
         query('DELETE FROM `character_equipment` WHERE `inventory_items_id`=?;', { numericInstance })
@@ -210,8 +210,8 @@ end
 -- Cheap enough for a guard to call on every move.
 --
 function EquipmentAPI.IsInstanceEquipped(instanceId)
-    local row = MySQL.query.await(
+    local row = DB.query(
         'SELECT `character_id`, `slot` FROM `character_equipment` WHERE `inventory_items_id`=? LIMIT 1;',
-        { tonumber(instanceId) })[1]
+        tonumber(instanceId))[1]
     return Result.Ok(row ~= nil)
 end

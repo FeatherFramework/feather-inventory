@@ -87,13 +87,13 @@ end
 -- @param inventoryId Raw inventory.id of the ground pile
 -- @return True if the caller is currently within pickup range of that pile
 --
-function IsWithinGroundPickupDistance(src, inventoryId)
-    local groundId = GroundControllers.GetGroundID(inventoryId)
+function IsWithinGroundPickupDistance(src, inventoryId, query)
+    local groundId = GroundControllers.GetGroundID(inventoryId, query)
     if not groundId then
         return false
     end
 
-    local groundX, groundY, groundZ = GroundControllers.GetGroundById(groundId)
+    local groundX, groundY, groundZ = GroundControllers.GetGroundById(groundId, query)
     if not groundX then
         return false
     end
@@ -142,20 +142,20 @@ end
 ------------------------------------------------------------------
 
 local function EnsureAccessSchema()
-    local columns = MySQL.query.await("SHOW COLUMNS FROM `inventory` LIKE 'owner_character_id';")
+    local columns = DB.query("SHOW COLUMNS FROM `inventory` LIKE 'owner_character_id';")
     if #columns < 1 then
-        MySQL.query.await([[
+        DB.exec([[
             ALTER TABLE `inventory`
             ADD COLUMN `owner_character_id` CHAR(36) NULL;
         ]])
     end
 
-    columns = MySQL.query.await("SHOW COLUMNS FROM `inventory` LIKE 'is_public';")
+    columns = DB.query("SHOW COLUMNS FROM `inventory` LIKE 'is_public';")
     if #columns < 1 then
-        MySQL.query.await("ALTER TABLE `inventory` ADD COLUMN `is_public` TINYINT(1) NOT NULL DEFAULT 0;")
+        DB.exec("ALTER TABLE `inventory` ADD COLUMN `is_public` TINYINT(1) NOT NULL DEFAULT 0;")
     end
 
-    MySQL.query.await([[
+    DB.exec([[
         CREATE TABLE IF NOT EXISTS `inventory_access` (
             `id` BIGINT UNSIGNED NOT NULL PRIMARY KEY AUTO_INCREMENT,
             `inventory_id` BIGINT UNSIGNED NOT NULL,
@@ -190,8 +190,9 @@ local function IsOwnerOrAdmin(src, ownerCharacterId)
         and type(decision.value) == 'table' and decision.value.allowed == true
 end
 
-InventoryAPI.GetInventoryOwner = function(inventoryId)
-    local result = MySQL.query.await('SELECT `owner_character_id` FROM `inventory` WHERE `id`=? LIMIT 1;', { inventoryId })[1]
+InventoryAPI.GetInventoryOwner = function(inventoryId, query)
+    query = query or DefaultQuery
+    local result = query('SELECT `owner_character_id` FROM `inventory` WHERE `id`=? LIMIT 1;', { inventoryId })[1]
     return result and result.owner_character_id
 end
 
@@ -206,7 +207,7 @@ InventoryAPI.GetInventoryOwnerResult = function(inventoryId)
 end
 
 InventoryAPI.GetInventoryOwnerAndVisibility = function(inventoryId)
-    local result = MySQL.query.await('SELECT `owner_character_id`, `is_public` FROM `inventory` WHERE `id`=? LIMIT 1;', { inventoryId })[1]
+    local result = DB.query('SELECT `owner_character_id`, `is_public` FROM `inventory` WHERE `id`=? LIMIT 1;', inventoryId)[1]
     if not result then
         return nil, false
     end
@@ -218,9 +219,9 @@ InventoryAPI.HasInventoryAccessGrant = function(characterId, inventoryId)
     if not characterId or not inventoryId then
         return Result.Ok(false)
     end
-    local result = MySQL.query.await(
+    local result = DB.query(
         'SELECT `id` FROM `inventory_access` WHERE `inventory_id`=? AND `character_id`=? LIMIT 1;',
-        { inventoryId, characterId }
+        inventoryId, characterId
     )[1]
     return Result.Ok(result ~= nil)
 end
@@ -245,9 +246,9 @@ InventoryAPI.GrantInventoryAccess = function(src, inventoryId, targetCharacterId
         return Result.Err(Result.Codes.DENIED, "You do not own this inventory.")
     end
 
-    MySQL.query.await(
+    DB.exec(
         'INSERT IGNORE INTO `inventory_access` (`inventory_id`, `character_id`, `granted_by_character_id`) VALUES (?, ?, ?);',
-        { inventoryId, targetCharacterId, GetOwnCharacterId(src) }
+        inventoryId, targetCharacterId, GetOwnCharacterId(src)
     )
     return Result.Ok(true)
 end
@@ -262,9 +263,9 @@ InventoryAPI.RevokeInventoryAccess = function(src, inventoryId, targetCharacterI
         return Result.Err(Result.Codes.DENIED, "You do not own this inventory.")
     end
 
-    MySQL.query.await(
+    DB.exec(
         'DELETE FROM `inventory_access` WHERE `inventory_id`=? AND `character_id`=?;',
-        { inventoryId, targetCharacterId }
+        inventoryId, targetCharacterId
     )
     return Result.Ok(true)
 end
@@ -275,7 +276,7 @@ InventoryAPI.SetInventoryPublic = function(src, inventoryId, isPublic)
         return Result.Err(Result.Codes.DENIED, "You do not own this inventory.")
     end
 
-    MySQL.query.await('UPDATE `inventory` SET `is_public`=? WHERE `id`=?;', { isPublic and 1 or 0, inventoryId })
+    DB.exec('UPDATE `inventory` SET `is_public`=? WHERE `id`=?;', isPublic and 1 or 0, inventoryId)
     return Result.Ok(true)
 end
 
@@ -285,9 +286,9 @@ InventoryAPI.ListInventoryAccess = function(src, inventoryId)
         return Result.Err(Result.Codes.DENIED, "You do not own this inventory.")
     end
 
-    return Result.Ok(MySQL.query.await(
+    return Result.Ok(DB.query(
         'SELECT `character_id`, `granted_by_character_id`, `created_at` FROM `inventory_access` WHERE `inventory_id`=?;',
-        { inventoryId }
+        inventoryId
     ))
 end
 
@@ -393,7 +394,15 @@ InventoryAPI.AccessModes = {
 -- @param context Optional { reason, correlationId } for diagnostics
 -- @return Result envelope; Ok(true) when permitted
 --
-InventoryAPI.CanAccessInventory = function(src, inventoryId, action, context)
+-- (feather-mysql migration bugfix) `query` is optional and, when given, must be
+-- in the (sql, paramsTable) shape the transaction-bound adapters throughout
+-- this resource use (see RunLegacyStyleTransaction / Tx.query in
+-- transactions.lua). Tx:RequireAccess and Tx:AssertAccess pass their own
+-- transaction's query here so every read in this whole chain stays on the
+-- transaction's connection instead of opening a second one that can block on
+-- a lock the transaction already holds. Every other caller omits it and gets
+-- the DefaultQuery fallback (plain DB.query), unchanged from before.
+InventoryAPI.CanAccessInventory = function(src, inventoryId, action, context, query)
     action = action or InventoryAPI.AccessModes.READ
     context = context or {}
 
@@ -407,7 +416,7 @@ InventoryAPI.CanAccessInventory = function(src, inventoryId, action, context)
     -- ground pile is readable and lootable by anyone near it, and manageable
     -- by nobody.
     if action == InventoryAPI.AccessModes.MANAGE then
-        local ownerCharacterId = InventoryAPI.GetInventoryOwner(inventoryId)
+        local ownerCharacterId = InventoryAPI.GetInventoryOwner(inventoryId, query)
         if not ownerCharacterId then
             return Result.Err(Result.Codes.DENIED, 'This inventory has no owner and cannot be managed.',
                 { action = action }, context.correlationId)
@@ -424,7 +433,7 @@ InventoryAPI.CanAccessInventory = function(src, inventoryId, action, context)
     -- a robbery target on every call rather than trusting an open lock
     -- (INV-11/INV-23). Re-checked here rather than cached, so a mutation
     -- arriving late cannot ride an authorization that was true a minute ago.
-    if not InventoryAPI.Accessible(src, inventoryId) then
+    if not InventoryAPI.Accessible(src, inventoryId, query) then
         return Result.Err(Result.Codes.DENIED, 'You do not have access to that inventory.',
             { action = action }, context.correlationId)
     end
@@ -435,8 +444,8 @@ InventoryAPI.CanAccessInventory = function(src, inventoryId, action, context)
     -- -- the "revalidate inside the mutation" point. READ is exempt: seeing
     -- a pile you walked away from is harmless.
     if action ~= InventoryAPI.AccessModes.READ
-        and InventoryControllers.GetInventoryLocationById(inventoryId) == 'ground'
-        and not IsWithinGroundPickupDistance(src, inventoryId) then
+        and InventoryControllers.GetInventoryLocationById(inventoryId, query) == 'ground'
+        and not IsWithinGroundPickupDistance(src, inventoryId, query) then
         return Result.Err(Result.Codes.DENIED, 'You are too far away.',
             { action = action }, context.correlationId)
     end
