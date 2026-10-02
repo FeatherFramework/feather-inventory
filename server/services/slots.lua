@@ -6,9 +6,9 @@
 -- practice once ItemsAPI.AddItem always assigns a slot, but a row created by
 -- some older/unrelated path shouldn't crash anything that reads this).
 local function EnsureSlotSchema()
-    local columns = MySQL.query.await("SHOW COLUMNS FROM `inventory_items` LIKE 'slot_index';")
+    local columns = DB.query("SHOW COLUMNS FROM `inventory_items` LIKE 'slot_index';")
     if #columns < 1 then
-        MySQL.query.await("ALTER TABLE `inventory_items` ADD COLUMN `slot_index` SMALLINT NULL;")
+        DB.exec("ALTER TABLE `inventory_items` ADD COLUMN `slot_index` SMALLINT NULL;")
     end
 
     -- (§10.4 per-inventory capacity) How many compartments this specific
@@ -17,9 +17,9 @@ local function EnsureSlotSchema()
     -- becomes a real per-inventory property the same way max_weight and
     -- ignore_item_limit already are, rather than one global constant that
     -- every inventory in the world had to share.
-    columns = MySQL.query.await("SHOW COLUMNS FROM `inventory` LIKE 'max_slots';")
+    columns = DB.query("SHOW COLUMNS FROM `inventory` LIKE 'max_slots';")
     if #columns < 1 then
-        MySQL.query.await("ALTER TABLE `inventory` ADD COLUMN `max_slots` SMALLINT UNSIGNED NULL;")
+        DB.exec("ALTER TABLE `inventory` ADD COLUMN `max_slots` SMALLINT UNSIGNED NULL;")
     end
 end
 

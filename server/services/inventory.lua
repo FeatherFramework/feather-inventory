@@ -49,7 +49,7 @@ InventoryAPI.RegisterForeignKey = function(tableName, foreignKeyType, primaryKey
 
   local foreignKey = string.lower(tableName) .. '_id'
   local constraint = 'FK_Inventory' .. FirstToUpper(string.lower(tableName))
-  local column = MySQL.query.await("SHOW COLUMNS FROM `inventory` LIKE ?;", { foreignKey })
+  local column = DB.query("SHOW COLUMNS FROM `inventory` LIKE ?;", foreignKey)
   if #(column) < 1 then
     local query = 'ALTER TABLE `inventory` ADD COLUMN IF NOT EXISTS (`' ..
         foreignKey ..
@@ -62,7 +62,7 @@ InventoryAPI.RegisterForeignKey = function(tableName, foreignKeyType, primaryKey
         '`) REFERENCES `' .. tableName .. '` (`' .. primaryKeyName .. '`) ON DELETE CASCADE ON UPDATE CASCADE;'
 
     print(query)
-    MySQL.query.await(query)
+    DB.exec(query)
   end
 
   -- (Tier 1 audit sweep) Was `table.insert(RegisteredForeignKeys, 'tableName')`
@@ -125,7 +125,7 @@ InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItem
   end
 
   local foreignKey = string.lower(tableName) .. '_id'
-  local column = MySQL.query.await("SHOW COLUMNS FROM `inventory` LIKE ?;", { foreignKey })
+  local column = DB.query("SHOW COLUMNS FROM `inventory` LIKE ?;", foreignKey)
   if #(column) < 1 then
     warn('A foreign key for this script has not been registered. Please refer to the documentation to register a foreign key.')
     return Result.Err(Result.Codes.DEPENDENCY_MISSING, 'No foreign key is registered for that table. Call RegisterForeignKey first.', { tableName = tableName })
@@ -133,7 +133,7 @@ InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItem
 
   -- Check if inventory already exists
   local query = 'SELECT `id`, `uuid`, `max_weight`, `ignore_item_limit` FROM `inventory` WHERE `' .. foreignKey .. '`=?'
-  local inventory = MySQL.query.await(query, { id })
+  local inventory = DB.query(query, id)
 
   -- Inventory exists. Check Max Weight and Ignore Item Limits. Return Inventory UUID
   if inventory ~= nil and inventory[1] then
@@ -145,12 +145,12 @@ InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItem
     -- matches the ownerCharacterId/isPublic/maxSlots rule below: omitting an
     -- argument must not silently reset a stored setting.
     if maxWeight ~= nil then
-      MySQL.query.await('UPDATE `inventory` SET `max_weight`=? WHERE `id`=?;',
-        { tonumber(maxWeight), inventory[1].id })
+      DB.exec('UPDATE `inventory` SET `max_weight`=? WHERE `id`=?;',
+        tonumber(maxWeight), inventory[1].id)
     end
     if ignoreItemLimits ~= nil then
-      MySQL.query.await('UPDATE `inventory` SET `ignore_item_limit`=? WHERE `id`=?;',
-        { ignoreItemLimits and 1 or 0, inventory[1].id })
+      DB.exec('UPDATE `inventory` SET `ignore_item_limit`=? WHERE `id`=?;',
+        ignoreItemLimits and 1 or 0, inventory[1].id)
     end
 
     if restrictedItems then
@@ -158,16 +158,16 @@ InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItem
     end
 
     if ownerCharacterId ~= nil then
-      MySQL.query.await('UPDATE `inventory` SET `owner_character_id`=? WHERE `id`=?;', { ownerCharacterId, inventory[1].id })
+      DB.exec('UPDATE `inventory` SET `owner_character_id`=? WHERE `id`=?;', ownerCharacterId, inventory[1].id)
     end
     if isPublic ~= nil then
-      MySQL.query.await('UPDATE `inventory` SET `is_public`=? WHERE `id`=?;', { isPublic and 1 or 0, inventory[1].id })
+      DB.exec('UPDATE `inventory` SET `is_public`=? WHERE `id`=?;', isPublic and 1 or 0, inventory[1].id)
     end
     -- Only written when explicitly passed, same as the two flags above --
     -- omitting it on a re-register must not silently reset a container that
     -- was already given a custom size back to the Config default.
     if maxSlots ~= nil then
-      MySQL.query.await('UPDATE `inventory` SET `max_slots`=? WHERE `id`=?;', { tonumber(maxSlots), inventory[1].id })
+      DB.exec('UPDATE `inventory` SET `max_slots`=? WHERE `id`=?;', tonumber(maxSlots), inventory[1].id)
     end
 
     return Result.Ok({ uuid = inventory[1].uuid, id = inventory[1].id })
@@ -177,13 +177,13 @@ InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItem
   -- Generate the identifier explicitly instead of relying on MariaDB's
   -- newer native UUID datatype or a UUID() expression default. SELECT UUID()
   -- is available on the older MariaDB versions supported by Feather.
-  local inventoryUuid = MySQL.scalar.await('SELECT UUID()')
+  local inventoryUuid = DB.value('SELECT UUID()')
   if type(inventoryUuid) ~= 'string' or inventoryUuid == '' then
     return Result.Err(Result.Codes.INTERNAL, 'Inventory identifier could not be generated.')
   end
 
   query = 'INSERT INTO `inventory` (`uuid`, ' .. foreignKey .. ', location, name, max_weight, ignore_item_limit, owner_character_id, is_public, max_slots) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *;'
-  inventory = MySQL.query.await(query, { inventoryUuid:lower(), id, tableName, displayName or 'storage', maxWeight or nil, ignoreItemLimits or false, ownerCharacterId or nil, isPublic and 1 or 0, maxSlots and tonumber(maxSlots) or nil })
+  inventory = DB.query(query, inventoryUuid:lower(), id, tableName, displayName or 'storage', maxWeight or nil, ignoreItemLimits or false, ownerCharacterId or nil, isPublic and 1 or 0, maxSlots and tonumber(maxSlots) or nil)
 
   if not inventory or not inventory[1] then
     return Result.Err(Result.Codes.INTERNAL, 'Inventory could not be created.')
@@ -205,16 +205,16 @@ function InventoryAPI.GetContainerLifecycle(inventoryId)
   if not numericId then
     return Result.Err(Result.Codes.INVALID_INPUT, 'A raw inventory id is required.')
   end
-  local row = MySQL.single.await([[SELECT i.`id`, i.`uuid`, i.`location`, i.`name`,
+  local row = DB.one([[SELECT i.`id`, i.`uuid`, i.`location`, i.`name`,
       i.`owner_character_id`, i.`is_public`, COUNT(ii.`id`) AS `item_count`
     FROM `inventory` i
     LEFT JOIN `inventory_items` ii ON ii.`inventory_id`=i.`id`
     WHERE i.`id`=?
     GROUP BY i.`id`, i.`uuid`, i.`location`, i.`name`, i.`owner_character_id`, i.`is_public`
-    LIMIT 1;]], { numericId })
+    LIMIT 1;]], numericId)
   if not row then return Result.Err(Result.Codes.NOT_FOUND, 'Inventory does not exist.') end
-  local grants = MySQL.scalar.await(
-    'SELECT COUNT(*) FROM `inventory_access` WHERE `inventory_id`=?;', { numericId }) or 0
+  local grants = DB.value(
+    'SELECT COUNT(*) FROM `inventory_access` WHERE `inventory_id`=?;', numericId) or 0
   return Result.Ok({
     inventoryId = numericId,
     uuid = row.uuid,
@@ -242,7 +242,7 @@ function InventoryAPI.DeleteContainerIfEmpty(inventoryId, expectedLocation, reas
 
   local deletedUuid
   local failure
-  local executed, committed = pcall(MySQL.startTransaction, function(query)
+  local executed, committed = RunLegacyStyleTransaction(function(query)
     local rows = query(
       'SELECT `id`, `uuid`, `location` FROM `inventory` WHERE `id`=? FOR UPDATE;', { numericId })
     local container = rows and rows[1]
@@ -798,7 +798,7 @@ end
 -- @param inventoryId Raw inventory.id being requested
 -- @return True if src may read/write this inventory right now
 --
-InventoryAPI.IsInventoryAccessibleBySrc = function(src, inventoryId)
+InventoryAPI.IsInventoryAccessibleBySrc = function(src, inventoryId, query)
   -- Predicate returning an envelope (contract 2): `ok` says whether the
   -- question could be answered, `value` is the answer. Callers MUST fail
   -- closed on `ok == false` -- a failure envelope is truthy, so testing the
@@ -812,7 +812,7 @@ InventoryAPI.IsInventoryAccessibleBySrc = function(src, inventoryId)
   local player = InventoryIdentity.GetCharacter(src)
   local character = player and player.char
   if character then
-    local ownInventoryId = InventoryControllers.GetInventoryByCharacter(character.id)
+    local ownInventoryId = InventoryControllers.GetInventoryByCharacter(character.id, query)
     if ownInventoryId and tostring(ownInventoryId) == tostring(inventoryId) then
       return allow()
     end
@@ -847,8 +847,8 @@ end
 -- Internal boolean adapter for access-sensitive RPCs. The public predicate
 -- returns a Contract 2 envelope; this unwraps it fail-closed so a failure
 -- envelope can never become authorization merely because tables are truthy.
-InventoryAPI.Accessible = function(src, inventoryId)
-  local decision = InventoryAPI.IsInventoryAccessibleBySrc(src, inventoryId)
+InventoryAPI.Accessible = function(src, inventoryId, query)
+  local decision = InventoryAPI.IsInventoryAccessibleBySrc(src, inventoryId, query)
   return Result.IsOk(decision) and decision.value == true
 end
 

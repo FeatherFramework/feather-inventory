@@ -33,6 +33,15 @@
 -- calling convention is therefore isolated in exactly one function
 -- (RunInTransaction) so an upstream change is a one-function fix rather than
 -- a rewrite, and /InvTxSmokeTest (DevMode) exercises it end to end.
+--
+-- UPDATE (oxmysql -> feather-mysql migration): that isolation paid off exactly
+-- as intended. RunInTransaction now calls DB.transaction instead of
+-- MySQL.startTransaction, through a small `query(sql, paramsTable)` adapter
+-- that bridges to feather-mysql's tx.raw -- every Tx:* method below, and every
+-- external caller holding a `query` function handed out by this file (e.g.
+-- SlotMoveAcceptanceInTransaction), is unchanged. feather-mysql's DB.transaction
+-- is a stable, documented part of its API, not an experimental one, so the
+-- one-function-fix seam above is now a historical note rather than a live risk.
 
 TransactionAPI = {}
 
@@ -103,7 +112,62 @@ end
 
 ------------------------------------------------------------------
 -- The one place that knows oxmysql's transaction calling convention
+--
+-- (feather-mysql migration note) Despite the heading above, equipment.lua,
+-- instances.lua and controllers/inventory.lua turned out to each have their
+-- own independent pcall(MySQL.startTransaction, function(query) ... end) --
+-- same shape, not routed through TransactionAPI.Transaction. CountPlaceholders
+-- below is deliberately a GLOBAL (not local), so each of those files' own
+-- adapter can call it without duplicating it -- all server/* files share one
+-- Lua environment and load before any of this code actually runs.
 ------------------------------------------------------------------
+
+-- Counts `?` placeholders in a SQL string, independent of the params table's
+-- own length: a Lua table constructor loses a trailing nil (confirmed empirically
+-- on this build -- #{1,2,3,nil} is 3, not 4), which would silently drop a NULL
+-- parameter in last position (Tx:AddQuantity's optional metadata, among others).
+-- Counting placeholders in the SQL text instead is immune to that, as long as no
+-- SQL string here embeds a literal `?` outside a placeholder (true today).
+function CountPlaceholders(sql)
+    local count = 0
+    for _ in sql:gmatch('%?') do count = count + 1 end
+    return count
+end
+
+-- Shared by every direct pcall(MySQL.startTransaction, function(query) ... end) site
+-- OUTSIDE this file's own TransactionAPI.Transaction/RunInTransaction (equipment.lua,
+-- instances.lua, controllers/inventory.lua, services/inventory.lua each reimplemented the
+-- same pattern independently rather than calling TransactionAPI.Transaction). Returns
+-- (executed, committed) exactly like pcall(MySQL.startTransaction, ...) did, so every call
+-- site's own `if not executed or committed ~= true then ... end` check needs no change --
+-- only the two-line pcall(...)/function(query) header at each site does.
+function RunLegacyStyleTransaction(body)
+    return pcall(DB.transaction, function(tx)
+        local function query(sql, params)
+            return tx.raw(sql, table.unpack(params or {}, 1, CountPlaceholders(sql)))
+        end
+        return body(query)
+    end)
+end
+
+-- (feather-mysql migration bugfix) The access-check chain (ContextCanAccess /
+-- CanAccessInventory / Accessible / IsInventoryAccessibleBySrc /
+-- GetInventoryByCharacter / GetInventoryLocationById / GetInventoryOwner) is
+-- called from both ordinary code AND from inside transactions (every Tx:*
+-- mutation asserts access via Tx:RequireAccess/AssertAccess). Each of those
+-- functions now takes an optional trailing `query` in the same (sql,
+-- paramsTable) shape RunLegacyStyleTransaction's adapter uses, so a
+-- transaction can pass its own bound query through the whole chain instead of
+-- the chain falling back to this DefaultQuery, which always goes through
+-- DB.query on a SEPARATE connection. Calling DB.query from inside an open
+-- transaction is exactly what feather-mysql's own runtime warning flags
+-- (WARNING: DB.<method> was called inside a DB.transaction callback) - it is
+-- not just a style issue: it can block on a row lock the same transaction
+-- already holds, which is what turned a routine access check into
+-- multi-second, 88-query "slow" transaction commits in production.
+function DefaultQuery(sql, params)
+    return DB.query(sql, table.unpack(params or {}))
+end
 
 ---
 -- Run In Transaction
@@ -114,6 +178,7 @@ end
 --
 -- @return committed (boolean), bodyResult (any), bodyError (string|nil)
 --
+
 local function RunInTransaction(body)
     local bodyResult, bodyError
 
@@ -121,7 +186,16 @@ local function RunInTransaction(body)
     -- first is how a transaction that returned false WITHOUT raising gets
     -- treated as success -- post-commit events emitted for a rollback. Both
     -- are captured, and `executed` is checked before `committed` is trusted.
-    local executed, committed = pcall(MySQL.startTransaction, function(query)
+    local executed, committed = pcall(DB.transaction, function(tx)
+        -- Bridges feather-mysql's tx.<method>(sql, ...) varargs convention to
+        -- the oxmysql-style query(sql, paramsTable) convention every Tx:* method
+        -- (and a few pass-through helpers elsewhere, e.g. SlotMoveAcceptanceInTransaction)
+        -- already call. tx.raw is the right target, not tx.query: oxmysql's bound
+        -- query returns rows for a SELECT (or INSERT ... RETURNING) and the write
+        -- header ({affectedRows, ...}) otherwise, which is exactly tx.raw's contract.
+        local function query(sql, params)
+            return tx.raw(sql, table.unpack(params or {}, 1, CountPlaceholders(sql)))
+        end
         local ok, result = pcall(body, query)
         if not ok then
             bodyError = tostring(result)
@@ -138,8 +212,8 @@ local function RunInTransaction(body)
     end)
 
     if not executed then
-        -- startTransaction itself failed (connection lost, upstream change in
-        -- the experimental API). Nothing committed.
+        -- DB.transaction itself failed (connection lost, deadlock retries
+        -- exhausted, etc). Nothing committed.
         return false, nil, tostring(committed)
     end
 
@@ -176,7 +250,7 @@ function Tx:RequireAccess(inventoryId, action)
         return nil
     end
 
-    local decision = InventoryAPI.CanAccessInventory(src, inventoryId, action, self.context)
+    local decision = InventoryAPI.CanAccessInventory(src, inventoryId, action, self.context, self.query)
     if not Result.IsOk(decision) then
         return decision
     end
@@ -710,7 +784,7 @@ end
 -- having been opened earlier is not authority at commit time.
 --
 function Tx:AssertAccess(src, inventoryId, action)
-    local decision = InventoryAPI.CanAccessInventory(src, inventoryId, action, self.context)
+    local decision = InventoryAPI.CanAccessInventory(src, inventoryId, action, self.context, self.query)
     if not Result.IsOk(decision) then
         return decision
     end
