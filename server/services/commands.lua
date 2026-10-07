@@ -760,4 +760,72 @@ if Config.DevMode then
             findings = report.findings,
         }))
     end, true)
+
+
+end
+
+
+-- Explicit debug-only runtime checks; no ACE or DevMode requirement.
+if Config.Debug then
+    -- Temporary records only: refuse a definition already carried by the player.
+    -- Uses the real grant, quantity removal and exact-instance removal APIs.
+    local BulkSmokeRunning = false
+    RegisterCommand('InvBulkMutationSmokeTest', function(source, args)
+        local function report(message)
+            print(message)
+            if source > 0 then Feather.Notify.RightNotify(source, message, 5000) end
+        end
+        if BulkSmokeRunning then report('[InvBulkMutationSmokeTest] a test is already running'); return end
+        local player = InventoryIdentity.GetCharacter(source)
+        local character = player and player.char
+        local inventory = character and InventoryControllers.GetInventoryByCharacter(character.id)
+        local name = args[1] or 'consumable_apple'
+        local quantity = tonumber(args[2]) or 20
+        if not inventory or quantity % 1 ~= 0 or quantity < 2 or quantity > 1000 then
+            report('[InvBulkMutationSmokeTest] requires a loaded player and quantity 2-1000')
+            return
+        end
+        local definition = ItemControllers.GetItemDefinitionByName(name)
+        if not definition or definition.instance_mode == 'unique' then
+            report('[InvBulkMutationSmokeTest] choose an ordinary stackable item definition')
+            return
+        end
+        if InventoryControllers.InventoryItemCount(inventory, definition.id) ~= 0 then
+            report('[InvBulkMutationSmokeTest] move all of this item out first; existing items are never used as test stock')
+            return
+        end
+        if BulkSmokeRunning then report('[InvBulkMutationSmokeTest] a test is already running'); return end
+        BulkSmokeRunning = true
+        report('[InvBulkMutationSmokeTest] running grant and removal checks...')
+        local completed, failure = pcall(function()
+            local function run(label, body)
+                local started = GetGameTimer()
+                local result = TransactionAPI.Transaction({reason = 'bulk_smoketest', actorSource = source,
+                    actorCharacterId = character.id, resource = 'feather-inventory'}, body)
+                report(('[InvBulkMutationSmokeTest] %s %s durationMs=%s%s'):format(label,
+                    Result.IsOk(result) and 'PASS' or 'FAIL', InventoryMutationMetrics.Elapsed(started),
+                    result.error and (' reason=' .. result.error.message) or ''))
+                return result
+            end
+            local granted = run('grant', function(tx) return tx:AddQuantity(inventory, definition.id, quantity) end)
+            if not Result.IsOk(granted) then return end
+            local generated = granted.value
+            local wanted = math.floor(quantity / 2)
+            local removed = run('remove_quantity', function(tx) return tx:RemoveQuantity(inventory, definition.id, wanted) end)
+            local gone = {}
+            if Result.IsOk(removed) then for _, id in ipairs(removed.value) do gone[id] = true end end
+            local remaining = {}
+            for _, id in ipairs(generated) do if not gone[id] then remaining[#remaining + 1] = id end end
+            local cleanup = run('remove_exact', function(tx) return tx:RemoveInstances(inventory, definition.id, remaining) end)
+            if not Result.IsOk(cleanup) then
+                report('[InvBulkMutationSmokeTest] cleanup failed; test records remain, inspect before rerunning')
+                return
+            end
+            local count = InventoryControllers.InventoryItemCount(inventory, definition.id)
+            report(('[InvBulkMutationSmokeTest] restored_empty_definition %s remaining=%s'):format(
+                count == 0 and 'PASS' or 'FAIL', count))
+        end)
+        BulkSmokeRunning = false
+        if not completed then report('[InvBulkMutationSmokeTest] error: ' .. tostring(failure) .. '; inspect test stock before rerunning') end
+    end, false)
 end

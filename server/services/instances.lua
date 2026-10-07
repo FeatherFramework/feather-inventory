@@ -104,6 +104,7 @@ local function EnsureInstanceSchema()
 end
 
 CreateThread(function()
+    InventoryAwaitDatabase()
     EnsureInstanceSchema()
 end)
 

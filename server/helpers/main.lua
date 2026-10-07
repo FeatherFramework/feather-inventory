@@ -114,3 +114,11 @@ function TranslateResult(src, result, fallbackKey)
 
   return Translate(src, fallbackKey, message or '')
 end
+
+-- Startup connection readiness applies to API initialization and background
+-- schema/cleanup threads. No database writes are retried after execution.
+function InventoryAwaitDatabase()
+    if not DB.awaitReady(60000) then
+        error('[database_unavailable] Database did not become ready within 60000 ms; Inventory startup database work was not started.', 0)
+    end
+end

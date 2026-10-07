@@ -37,6 +37,7 @@ local function EnsureHotbarSchema()
 end
 
 CreateThread(function()
+    InventoryAwaitDatabase()
     EnsureHotbarSchema()
 end)
 

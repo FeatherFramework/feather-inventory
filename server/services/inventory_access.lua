@@ -88,19 +88,15 @@ end
 -- @return True if the caller is currently within pickup range of that pile
 --
 function IsWithinGroundPickupDistance(src, inventoryId, query)
-    local groundId = GroundControllers.GetGroundID(inventoryId, query)
-    if not groundId then
-        return false
-    end
-
-    local groundX, groundY, groundZ = GroundControllers.GetGroundById(groundId, query)
-    if not groundX then
-        return false
-    end
+    local rows = (query or DefaultQuery)([[SELECT g.`x`, g.`y`, g.`z`
+        FROM `inventory` i INNER JOIN `ground` g ON g.`id`=i.`ground_id`
+        WHERE i.`id`=? AND i.`location`='ground' LIMIT 1;]], { inventoryId })
+    local ground = rows and rows[1]
+    if not ground then return false end
 
     local x, y, z = GetCharacterPosition(src)
     -- Same buffer GetGroundUID uses, for the position-sync staleness window.
-    return IsWithinDistance(x, y, z, tonumber(groundX), tonumber(groundY), tonumber(groundZ),
+    return IsWithinDistance(x, y, z, tonumber(ground.x), tonumber(ground.y), tonumber(ground.z),
         Config.Dropped.PromptViewDistance + 1.0)
 end
 
@@ -169,6 +165,7 @@ local function EnsureAccessSchema()
 end
 
 CreateThread(function()
+    InventoryAwaitDatabase()
     EnsureAccessSchema()
 end)
 

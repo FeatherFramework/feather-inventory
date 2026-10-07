@@ -39,6 +39,7 @@ local function EnsureEquipmentSchema()
 end
 
 CreateThread(function()
+    InventoryAwaitDatabase()
     EnsureEquipmentSchema()
 end)
 

@@ -16,6 +16,11 @@ Result = { IsOk = function(result) return result.ok end }
 InventoryAPI = { AccessModes = { REMOVE = 'remove', INSERT = 'insert' },
   CanAccessInventory = function() return { ok = not accessDenied } end }
 GuardsAPI = {
+  PrepareDestroySnapshots = function() return true end,
+  CanDestroyInstanceSnapshot = function(item) return item.id ~= denied end,
+  EmitItemCreated = function(id) events[#events + 1] = { id = id } end,
+  EmitItemDestroyed = function(id) events[#events + 1] = { id = id } end,
+  EmitTransactionCommitted = function() end,
   PrepareMoveSnapshots = function() return true end,
   CanMoveInstanceSnapshot = function(item) return item.id ~= denied end,
   EmitItemMoved = function(id, source, destination, context, fact)
@@ -28,12 +33,35 @@ local function copy(value)
 end
 local function selectRows(predicate)
   local result = {}
-  for _, row in ipairs(rows) do if predicate(row) then result[#result + 1] = copy(row) end end
+  for _, row in ipairs(rows) do
+    if predicate(row) then
+      local entry = copy(row)
+      for _, field in ipairs({'max_quantity', 'max_stack_size', 'instance_mode'}) do
+        entry[field] = definitions[row.item_id][field]
+      end
+      result[#result + 1] = entry
+    end
+  end
   table.sort(result, function(a, b) return a.id < b.id end)
   return result
 end
 local function query(sql, params)
-  if sql:match('^UPDATE') then
+  if sql:match('^INSERT INTO `inventory_items`') then
+    writes = writes + 1
+    if writes == throwWrite then error('injected insert failure') end
+    local inserted = {}
+    local units = 0; for _ in sql:gmatch('%?') do units = units + 1 end
+    for offset = 0, units - 4, 4 do
+      local maximum = 0; for _, row in ipairs(rows) do maximum = math.max(maximum, row.id) end
+      local def = definitions[params[offset + 2]]
+      local row = { id = maximum + 1, inventory_id = params[offset + 1], item_id = params[offset + 2],
+        slot_index = params[offset + 3], metadata = params[offset + 4], row_revision = 0,
+        name = def.name, weight = def.weight, instance_mode = def.instance_mode }
+      rows[#rows + 1] = row; inserted[#inserted + 1] = { id = row.id }
+    end
+    if writes == failWrite then table.remove(inserted) end
+    return inserted
+  elseif sql:match('^UPDATE') then
     writes = writes + 1
     if writes == throwWrite then error('injected SQL failure') end
     assert(sql:find('`row_revision`=`row_revision`+1', 1, true))
@@ -49,11 +77,24 @@ local function query(sql, params)
       end
     end
     return { affectedRows = writes == failWrite and affected - 1 or affected }
+  elseif sql:find('DELETE FROM `inventory_items`', 1, true) then
+    writes = writes + 1
+    local selected, remaining, affected = {}, {}, 0
+    local scopedDefinition = sql:find('AND `item_id`=?', 1, true)
+    for index = scopedDefinition and 3 or 2, #params do selected[params[index]] = true end
+    for _, row in ipairs(rows) do
+      if row.inventory_id == params[1] and (not scopedDefinition or row.item_id == params[2]) and selected[row.id] then affected = affected + 1
+      else remaining[#remaining + 1] = row end
+    end
+    rows = remaining
+    return { affectedRows = writes == failWrite and affected - 1 or affected }
   elseif sql:find('DELETE FROM `inventory`', 1, true) then
     if policies[params[1]] and policies[params[1]].location == params[2] then
       policies[params[1]] = nil; return { affectedRows = 1 }
     end
     return { affectedRows = 0 }
+  elseif sql:find('WHERE ii.`inventory_id` IN', 1, true) and not sql:find('FOR UPDATE', 1, true) then
+    return selectRows(function(row) return row.inventory_id == params[1] or row.inventory_id == params[2] end)
   elseif sql:find('FROM `inventory`', 1, true) then
     assert(sql:find('FOR UPDATE', 1, true) or sql:find('SELECT `max_slots`', 1, true), 'Policy must be locked')
     local result, seen = {}, {}
@@ -62,7 +103,17 @@ local function query(sql, params)
     end
     return result
   elseif sql:find('FROM `inventory_blacklist`', 1, true) then
+    if #params == 1 then
+      local result = {}
+      for key, restricted in pairs(restrictions) do
+        local inventory, item = key:match('^(%d+):(%d+)$')
+        if restricted and tonumber(inventory) == params[1] then result[#result + 1] = {item_id = tonumber(item)} end
+      end
+      return result
+    end
     return restrictions[tostring(params[1]) .. ':' .. tostring(params[2])] and { { inventory_id = params[1] } } or {}
+  elseif sql:find('FROM `items` WHERE `id`', 1, true) then
+    return definitions[params[1]] and { copy(definitions[params[1]]) } or {}
   elseif sql:find('FROM `items` WHERE `name`', 1, true) then
     for _, def in pairs(definitions) do if def.name == params[1] then return { copy(def) } end end
     return {}
@@ -92,6 +143,18 @@ local function query(sql, params)
       return selectRows(function(row) return row.inventory_id == params[1] and row.slot_index ~= nil end)
     end
     assert(sql:find('FOR UPDATE', 1, true), 'Item snapshot must be locked')
+    if sql:find('WHERE ii.`inventory_id`=? AND ii.`item_id`=?', 1, true) then
+      local selected
+      if sql:find('AND ii.`id` IN', 1, true) then
+        selected = {}; for index = 3, #params do selected[params[index]] = true end
+      end
+      local result = selectRows(function(row)
+        return row.inventory_id == params[1] and row.item_id == params[2] and (not selected or selected[row.id])
+      end)
+      local limit = tonumber(sql:match('LIMIT (%d+)'))
+      if limit then while #result > limit do table.remove(result) end end
+      return result
+    end
     if sql:find('WHERE ii.`id` IN', 1, true) then
       local selected = {}; for _, id in ipairs(params) do selected[id] = true end
       return selectRows(function(row) return selected[row.id] end)
@@ -117,6 +180,7 @@ DB = { transaction = function(body)
 end, query = function(sql, ...) return query(sql, { ... }) end }
 dofile(root .. '/server/helpers/mutation_metrics.lua')
 dofile(root .. '/server/helpers/metadata_compatibility.lua')
+dofile(root .. '/server/helpers/move_planner.lua')
 dofile(root .. '/server/services/transactions.lua')
 dofile(root .. '/server/controllers/inventory.lua')
 InventoryControllers.GetInventoryItems = function(inventory)
@@ -133,6 +197,7 @@ UpdateClientWithGroundLocations = function() broadcasts = broadcasts + 1 end
 Config.Dropped = { GroupingRadius = 1 }
 
 local function reset()
+  Config.UpdateBatchSize, Config.MutationTiming = 100, false
   convars, rows, definitions, restrictions, events = {}, {}, {}, {}, {}
   writes, failWrite, throwWrite, denied, accessDenied = 0, nil, nil, nil, false
   preflightReads, groundCreated, broadcasts, containerEvents = 0, 0, 0, 0
@@ -173,7 +238,7 @@ test('200 rows become two writes; IDs, metadata, revisions and events preserved'
   for index, row in ipairs(rows) do assert(row.id == index and row.metadata == 'document' and row.row_revision == 5) end
 end)
 test('batch-size 1 provides the sequential-write comparison', function()
-  convars.feather_inventory_update_batch_size = 1; add(200, 1, 0, 1, 1)
+  Config.UpdateBatchSize = 1; add(200, 1, 0, 1, 1)
   assert(InventoryControllers.MoveSlotItems(1, 0, 2, 0)); assert(writes == 200)
 end)
 test('swaps use captured IDs and increment both sides once', function()
@@ -199,10 +264,10 @@ test('duplicate locked IDs cannot be written twice', function()
   local before = copy(rows)
   assert(not InventoryControllers.MoveSlotItems(1, 0, 2, 0) and writes == 0); unchanged(before)
 end)
-test('out-of-range convar sizes are bounded', function()
-  convars.feather_inventory_update_batch_size = 999; add(201, 1, 0, 1, 1)
+test('out-of-range configured batch sizes are bounded', function()
+  Config.UpdateBatchSize = 999; add(201, 1, 0, 1, 1)
   assert(InventoryControllers.MoveSlotItems(1, 0, 2, 0) and writes == 2)
-  convars.feather_inventory_update_batch_size = 0
+  Config.UpdateBatchSize = 0
   assert(InventoryControllers.MoveSlotItems(2, 0, 1, 0) and writes == 203)
 end)
 for _, destination in ipairs({1, 2}) do
@@ -238,9 +303,9 @@ test('occupied final slot can swap without creating a new slot', function()
   assert(InventoryControllers.MoveSlotItems(1, 0, 2, 0)); assert(count(1, 0) == 1 and count(2, 0) == 2)
 end)
 test('quantity limit and blacklist still reject before writes', function()
-  add(2, 1, 0, 1, 1); for _, row in ipairs(rows) do row.max_quantity = 1 end
+  add(2, 1, 0, 1, 1); definitions[1].max_quantity = 1
   assert(not InventoryControllers.MoveSlotItems(1, 0, 2, 0)); assert(writes == 0)
-  for _, row in ipairs(rows) do row.max_quantity = 10000 end
+  definitions[1].max_quantity = 10000
   restrictions['2:1'] = true
   assert(not InventoryControllers.MoveSlotItems(1, 0, 2, 0)); assert(writes == 0)
 end)
@@ -296,7 +361,7 @@ end)
 test('opt-in metrics count writes and disabled timings preserve envelopes', function()
   assert(InventoryMutationMetrics.Begin('test') == nil)
   local response = {}; assert(InventoryMutationMetrics.Finish(nil, response) == response and next(response) == nil)
-  convars.feather_inventory_mutation_timing = 1
+  Config.MutationTiming = true
   local metrics = InventoryMutationMetrics.Begin('test', 'nui-1')
   add(200, 1, 0, 1, 1)
   assert(InventoryControllers.MoveSlotItems(1, 0, 2, 0, { _timing = metrics }))
@@ -313,7 +378,7 @@ test('adapter preserves NULL trailing parameters with timings on and off', funct
     end })
   end
   for _, enabled in ipairs({0, 1}) do
-    convars.feather_inventory_mutation_timing = enabled
+    Config.MutationTiming = enabled == 1
     local ok, committed = RunLegacyStyleTransaction(function(bound)
       bound('SELECT ?, ?', {1, nil}); return true
     end, InventoryMutationMetrics.Begin('adapter'))
@@ -333,7 +398,7 @@ test('automatic placement batches a 200-record stack into two writes', function(
   for _, row in ipairs(rows) do assert(row.row_revision == 5 and row.metadata == '{}') end
 end)
 test('automatic placement obeys the live batch-size comparison', function()
-  convars.feather_inventory_update_batch_size = 1; add(200, 1, 0, 1, 1)
+  Config.UpdateBatchSize = 1; add(200, 1, 0, 1, 1)
   assert(not InventoryControllers.MoveInventoryItems(1, 2, ids(1)).error and writes == 200)
 end)
 test('automatic placement finishes planning before writing any group', function()
@@ -395,7 +460,7 @@ test('automatic placement enforces blacklist and final-slot capacity', function(
   assert(InventoryControllers.MoveInventoryItems(1, 2, ids(1)).code == 'inventory_full' and writes == 0)
 end)
 test('automatic placement reports controller SQL counts when timing is enabled', function()
-  convars.feather_inventory_mutation_timing = 1; add(200, 1, 0, 1, 1)
+  Config.MutationTiming = true; add(200, 1, 0, 1, 1)
   local result = InventoryControllers.MoveInventoryItems(1, 2, ids(1), { reason = 'ground_drop' })
   assert(result.mutationTiming.operation == 'move_items' and result.mutationTiming.reason == 'ground_drop')
   assert(result.mutationTiming.updateStatements == 2 and result.mutationTiming.committed)
@@ -434,7 +499,7 @@ test('ground drop retains slot limits despite unlimited ground weight', function
   assert(not Result.IsOk(result) and result.error.code == 'inventory_full' and broadcasts == 0); unchanged(before)
 end)
 test('ground RPC returns full-operation timing with the browser trace ID', function()
-  convars.feather_inventory_mutation_timing = 1
+  Config.MutationTiming = true
   local registered = {}
   Feather = { RPC = { Register = function(name, handler) registered[name] = handler end },
     Notify = { RightNotify = function() end } }
@@ -467,8 +532,70 @@ local function takeAllHandler(access)
   dofile(root .. '/server/services/callbacks.lua')
   return registered['Feather:Inventory:TakeAll']
 end
+test('planner uses four state reads plus grouped writes regardless of definitions', function()
+  Config.MutationTiming = true
+  add(10, 2, 0, 1, 1); add(10, 2, 1, 2, 1); add(10, 2, 2, 3, 1)
+  local result = InventoryControllers.MoveInventoryItems(2, 1, ids(2))
+  assert(not result.error and result.movedCount == 30 and result.skippedCount == 0)
+  -- This model stubs access/equipment queries; actual providers add those reads.
+  assert(result.mutationTiming.sqlStatements == 7 and result.mutationTiming.updateStatements == 3)
+end)
+test('greedy planner skips heavy items then admits lighter candidates in one transaction', function()
+  add(1, 2, 0, 1, 6); add(2, 2, 1, 2, 2); policies[1].max_weight = 4
+  local transactions, original = 0, DB.transaction
+  DB.transaction = function(body) transactions = transactions + 1; return original(body) end
+  local result = InventoryControllers.MoveInventoryItems(2, 1, ids(2), { takeWhatFits = true })
+  DB.transaction = original
+  assert(not result.error and result.movedCount == 2 and result.skippedCount == 1 and transactions == 1)
+  assert(rows[1].inventory_id == 2 and #events == 2 and count(1, 0) == 2)
+end)
+test('greedy reservations enforce quantity and slots after each accepted candidate', function()
+  add(3, 2, 0, 1, 1); add(1, 2, 1, 2, 1)
+  definitions[1].max_quantity, definitions[1].max_stack_size = 2, 2
+  policies[1].max_slots = 1
+  local result = InventoryControllers.MoveInventoryItems(2, 1, ids(2), { takeWhatFits = true })
+  assert(not result.error and result.movedCount == 2 and result.skippedCount == 2)
+  assert(count(1, 0) == 2 and #events == 2)
+end)
+test('greedy planner keeps vetoed and blacklisted rows in the source', function()
+  add(2, 2, 0, 1, 1); add(1, 2, 1, 2, 1)
+  denied = 1; restrictions['1:2'] = true
+  local result = InventoryControllers.MoveInventoryItems(2, 1, ids(2), { takeWhatFits = true })
+  assert(not result.error and result.movedCount == 1 and result.skippedCount == 2)
+  assert(rows[1].inventory_id == 2 and rows[3].inventory_id == 2 and #events == 1)
+end)
+test('unplaced target rows count toward locked weight and quantity', function()
+  add(1, 1, nil, 1, 5); add(1, 2, 0, 1, 5); policies[1].max_weight = 9
+  local before = copy(rows)
+  assert(InventoryControllers.MoveInventoryItems(2, 1, ids(2)).code == 'weight_limit'); unchanged(before)
+  policies[1].max_weight = 10; definitions[1].max_quantity = 1
+  assert(InventoryControllers.MoveInventoryItems(2, 1, ids(2)).code == 'item_limit'); unchanged(before)
+end)
+test('greedy compatible placement fills final stack room without an extra slot', function()
+  add(1, 1, 0, 1, 1); add(3, 2, 0, 1, 1)
+  definitions[1].max_stack_size = 3; policies[1].max_slots = 1
+  local result = InventoryControllers.MoveInventoryItems(2, 1, ids(2), { takeWhatFits = true })
+  assert(not result.error and result.movedCount == 2 and result.skippedCount == 1 and count(1, 0) == 3)
+end)
+test('greedy write failure rolls back all accepted groups and emits no events', function()
+  add(1, 2, 0, 1, 1); add(1, 2, 1, 2, 1); local before = copy(rows); failWrite = 2
+  local result = InventoryControllers.MoveInventoryItems(2, 1, ids(2), { takeWhatFits = true })
+  assert(result.error and result.code == 'conflict'); unchanged(before)
+end)
+test('greedy no-fit result conserves all rows and emits no movement events', function()
+  add(3, 2, 0, 1, 2); policies[1].max_weight = 1; local before = copy(rows)
+  local result = InventoryControllers.MoveInventoryItems(2, 1, ids(2), { takeWhatFits = true })
+  assert(not result.error and result.movedCount == 0 and result.skippedCount == 3 and writes == 0)
+  unchanged(before)
+end)
+test('planner sees capacity filled before its transaction starts', function()
+  add(1, 2, 0, 1, 1); policies[1].max_slots = 1
+  beforeTransaction = function() add(1, 1, 0, 2, 1) end
+  local result = InventoryControllers.MoveInventoryItems(2, 1, ids(2))
+  assert(result.error and result.code == 'inventory_full' and writes == 0 and #events == 0)
+end)
 test('Take All returns one fresh post-commit pair and complete RPC timing', function()
-  convars.feather_inventory_mutation_timing = 1
+  Config.MutationTiming = true
   add(30, 2, 0, 1, 1)
   local handler = takeAllHandler()
   local reads, original = 0, InventoryControllers.GetInventoryItems
@@ -480,7 +607,7 @@ test('Take All returns one fresh post-commit pair and complete RPC timing', func
   handler({ fromInventory = 2, traceId = 'nui-take-all' }, function(value) response = value end, 1)
   InventoryControllers.GetInventoryItems = original
   assert(not response.error and response.moved == 30 and response.skipped == 0)
-  assert(#response.sourceItems == 0 and #response.targetItems == 30 and reads == 3)
+  assert(#response.sourceItems == 0 and #response.targetItems == 30 and reads == 1)
   assert(response.mutationTiming.operation == 'take_all' and response.mutationTiming.traceId == 'nui-take-all')
   assert(response.mutationTiming.updateStatements == 1 and response.mutationTiming.sourceReadMs)
 end)
@@ -498,6 +625,69 @@ test('Take All does not expose final arrays after access is revoked', function()
   handler({ fromInventory = 2 }, function(value) response = value end, 1)
   assert(response.error and response.code == 'no_access' and response.sourceItems == nil)
 end)
+test('locked drag auto-merges only target stack room and preserves remainder', function()
+  add(6, 1, 0, 1, 1); add(4, 2, 0, 1, 1); definitions[1].max_stack_size = 5
+  local moved, _, _, selected = InventoryControllers.MoveSlotItems(1, 0, 2, 0, { autoMerge = true, expectedItemId = 1 })
+  assert(moved and #selected == 1 and count(1, 0) == 5 and count(2, 0) == 5 and #events == 1)
+end)
+test('locked drag swaps full or metadata-incompatible stacks instead of merging', function()
+  add(2, 1, 0, 1, 1, 'source'); add(2, 2, 0, 1, 1, 'target')
+  assert(InventoryControllers.MoveSlotItems(1, 0, 2, 0, { autoMerge = true }))
+  assert(rows[1].inventory_id == 2 and rows[3].inventory_id == 1 and #events == 4)
+end)
+test('locked drag rejects stale dragged instance rather than moving its replacement stack', function()
+  add(2, 1, 0, 1, 1); local before = copy(rows)
+  local moved, code = InventoryControllers.MoveSlotItems(1, 0, 2, 0, { autoMerge = true, expectedItemId = 99 })
+  assert(not moved and code == 'conflict'); unchanged(before)
+end)
+test('drag RPC uses locked planner without preliminary breakdown or acceptance reads', function()
+  takeAllHandler()
+  local registered = {}
+  Feather.RPC.Register = function(name, handler) registered[name] = handler end
+  dofile(root .. '/server/services/callbacks.lua')
+  local old = InventoryControllers.GetInventoryItemById
+  InventoryControllers.GetInventoryItemById = function(id)
+    for _, row in ipairs(rows) do if row.id == id then return copy(row) end end
+  end
+  local originalCapacity, originalBreakdown = InventoryControllers.GetInventoryCapacity, InventoryControllers.GetSlotItemBreakdown
+  InventoryControllers.GetInventoryCapacity = function() error('Preliminary capacity read') end
+  InventoryControllers.GetSlotItemBreakdown = function() error('Preliminary breakdown read') end
+  add(6, 1, 0, 1, 1); add(4, 2, 0, 1, 1); definitions[1].max_stack_size = 5
+  local response
+  registered['Feather:Inventory:MoveItem']({ itemId = 1, toInventory = 2, toSlot = 0 }, function(value) response = value end, 1)
+  InventoryControllers.GetInventoryItemById = old
+  InventoryControllers.GetInventoryCapacity, InventoryControllers.GetSlotItemBreakdown = originalCapacity, originalBreakdown
+  assert(response and not response.error and #response.sourceItems == 5 and #response.targetItems == 5)
+end)
+test('bulk destruction clears 731 locked records in four delete statements', function()
+  add(731, 1, 0, 1, 1); policies[1].location = 'ground'
+  local result = TransactionAPI.DestroyInstances({ reason = 'ground_restart_cleanup' },
+    { inventoryId = 1, expectedLocation = 'ground', instanceIds = ids(1) })
+  assert(Result.IsOk(result) and #result.value.destroyedInstanceIds == 731 and writes == 4 and #rows == 0 and #events == 731)
+end)
+test('bulk destruction guard veto preserves the entire pile', function()
+  add(250, 1, 0, 1, 1); policies[1].location = 'ground'; denied = 249; local before = copy(rows)
+  local result = TransactionAPI.DestroyInstances({}, { inventoryId = 1, expectedLocation = 'ground', instanceIds = ids(1) })
+  assert(not Result.IsOk(result) and writes == 0); unchanged(before)
+end)
+test('bulk destruction later delete mismatch rolls back all earlier chunks', function()
+  add(250, 1, 0, 1, 1); policies[1].location = 'ground'; failWrite = 2; local before = copy(rows)
+  local result = TransactionAPI.DestroyInstances({}, { inventoryId = 1, expectedLocation = 'ground', instanceIds = ids(1) })
+  assert(not Result.IsOk(result)); unchanged(before)
+end)
+test('authoritative pair uses one read and partitions both inventories without leaking IDs', function()
+  add(2, 1, 0, 1, 1); add(1, 2, 0, 2, 1)
+  local queries, original = 0, DB.query
+  DB.query = function(sql, ...) queries = queries + 1; return original(sql, ...) end
+  local pair = InventoryControllers.GetInventoryItemsPair(1, 2)
+  assert(queries == 1 and #pair.sourceItems == 2 and #pair.targetItems == 1)
+  assert(pair.sourceItems[1].inventory_id == nil and type(pair.sourceItems[1].metadata) == 'table')
+  pair = InventoryControllers.GetInventoryItemsPair(1, 1)
+  assert(queries == 2 and #pair.sourceItems == 2 and #pair.targetItems == 2)
+  pair = InventoryControllers.GetInventoryItemsPair(1, 3)
+  assert(queries == 3 and #pair.targetItems == 0)
+  DB.query = original
+end)
 test('Take All NUI makes exactly one RPC and preserves full timing response', function()
   local callbacks, calls, waits = {}, 0, 0
   RegisterNUICallback = function(name, callback) callbacks[name] = callback end
@@ -511,5 +701,128 @@ test('Take All NUI makes exactly one RPC and preserves full timing response', fu
   local response
   callbacks['Feather:Inventory:TakeAll']({ fromInventory = 2 }, function(value) response = value end)
   assert(calls == 1 and waits == 0 and response.mutationTiming.clientRpcMs)
+end)
+test('bulk grant batches inserts and preserves NULL metadata and returned identities', function()
+  add(1, 1, 0, 1, 1)
+  local result = TransactionAPI.Transaction({}, function(tx) return tx:AddQuantity(1, 1, 250) end)
+  assert(Result.IsOk(result), result.error and result.error.message)
+  assert(#result.value == 250 and writes == 3 and #rows == 251)
+  local seen = {}; for _, id in ipairs(result.value) do assert(not seen[id]); seen[id] = true end
+  assert(rows[#rows].metadata == nil)
+end)
+test('bulk grant short RETURNING batch rolls back all earlier inserts', function()
+  add(1, 1, 0, 1, 1); failWrite = 2; local before = copy(rows)
+  local result = TransactionAPI.Transaction({}, function(tx) return tx:AddQuantity(1, 1, 250) end)
+  assert(not Result.IsOk(result)); unchanged(before)
+end)
+test('bulk grant capacity rejection writes nothing', function()
+  add(1, 1, 0, 1, 1); policies[1].max_weight = 2
+  local result = TransactionAPI.Transaction({}, function(tx) return tx:AddQuantity(1, 1, 2) end)
+  assert(not Result.IsOk(result) and writes == 0)
+end)
+test('bulk quantity removal uses bounded deletes and preserves unrelated records', function()
+  add(250, 1, 0, 1, 1); add(2, 1, 1, 2, 1)
+  local result = TransactionAPI.Transaction({}, function(tx) return tx:RemoveQuantity(1, 1, 230) end)
+  assert(Result.IsOk(result) and #result.value == 230 and writes == 3 and #rows == 22)
+end)
+test('bulk removal later mismatch rolls back and emits no events', function()
+  add(250, 1, 0, 1, 1); failWrite = 2; local before = copy(rows)
+  local result = TransactionAPI.Transaction({}, function(tx) return tx:RemoveInstances(1, 1, ids(1)) end)
+  assert(not Result.IsOk(result)); unchanged(before)
+end)
+test('bulk removal veto is checked before any delete', function()
+  add(250, 1, 0, 1, 1); denied = 230; local before = copy(rows)
+  local result = TransactionAPI.Transaction({}, function(tx) return tx:RemoveQuantity(1, 1, 250) end)
+  assert(not Result.IsOk(result) and writes == 0); unchanged(before)
+end)
+test('bulk exact removal rejects duplicates and foreign definitions', function()
+  add(2, 1, 0, 1, 1); add(1, 1, 1, 2, 1)
+  local result = TransactionAPI.Transaction({}, function(tx) return tx:RemoveInstances(1, 1, {1, 1}) end)
+  assert(not Result.IsOk(result) and writes == 0)
+  result = TransactionAPI.Transaction({}, function(tx) return tx:RemoveInstances(1, 1, {1, 3}) end)
+  assert(not Result.IsOk(result) and writes == 0)
+end)
+test('Give uses one transaction and transfers only recipient capacity', function()
+  Config.MutationTiming = true
+  local registered = {}
+  Feather = { RPC = { Register = function(name, handler) registered[name] = handler end },
+    Notify = { RightNotify = function() end } }
+  InventoryIdentity = { GetCharacter = function(src) return {char = {id = src}} end }
+  InventoryControllers.GetInventoryByCharacter = function(id) return id end
+  IsWithinGiveDistance = function() return true end
+  dofile(root .. '/server/services/callbacks.lua')
+  add(20, 1, 0, 1, 1); policies[2].max_weight = 7
+  local response
+  registered['Feather:Inventory:GiveItem']({target = 2, items = ids(1), traceId = 'give-test'},
+    function(value) response = value end, 1)
+  assert(not response.error and response.movedCount == 7 and response.skippedCount == 13)
+  assert(writes == 1 and count(2, 0) == 7 and #response.sourceItems == 13)
+  assert(response.mutationTiming.operation == 'give_items' and response.mutationTiming.updateStatements == 1)
+end)
+test('Give recipient moving away before write rejects everything', function()
+  add(20, 1, 0, 1, 1); local before = copy(rows)
+  InventoryIdentity = { GetCharacter = function() return {char = {id = 2}} end }
+  IsWithinGiveDistance = function() return false end
+  local response = InventoryControllers.MoveInventoryItems(1, 2, ids(1), {
+    reason = 'give', actorSource = 1, targetSource = 2, targetCharacterId = 2, allowTargetInsert = true,
+  })
+  assert(response.error and writes == 0); unchanged(before)
+end)
+test('Give NUI submits all IDs in one RPC without exposing recipient contents', function()
+  local callbacks, calls = {}, 0
+  RegisterNUICallback = function(name, callback) callbacks[name] = callback end
+  GetPedInFront = function() return 10 end
+  GetPlayerFromPed = function() return 2 end
+  Feather.RPC.CallAsync = function(name, args)
+    assert(name == 'Feather:Inventory:GiveItem' and args.target == 2 and #args.items == 3)
+    calls = calls + 1
+    return {error = false, sourceItems = {}, targetItems = {{id = 99}}, movedCount = 3, skippedCount = 0}
+  end
+  dofile(root .. '/client/services/nuicallbacks.lua')
+  local response
+  callbacks['Feather:Inventory:GiveItem']({items = {1, 2, 3}}, function(value) response = value end)
+  assert(calls == 1 and response.movedCount == 3 and response.targetItems == nil)
+end)
+test('bulk smoke command restores test stock and refuses existing stock', function()
+  local commands = {}
+  Config.DevMode, Config.Debug = false, true
+  RegisterCommand = function(name, handler, restricted)
+    assert(name == 'InvBulkMutationSmokeTest' and restricted == false)
+    commands[name] = handler
+  end
+  InventoryIdentity = {GetCharacter = function() return {char = {id = 1}} end}
+  InventoryControllers.GetInventoryByCharacter = function() return 1 end
+  local oldCount = InventoryControllers.InventoryItemCount
+  InventoryControllers.InventoryItemCount = function(inventory, definition)
+    return #selectRows(function(row) return row.inventory_id == inventory and row.item_id == definition end)
+  end
+  add(1, 2, 0, 1, 1)
+  ItemControllers = {GetItemDefinitionByName = function() return definitions[1] end}
+  dofile(root .. '/server/services/commands.lua')
+  commands.InvBulkMutationSmokeTest(1, {'item1', '250'})
+  assert(#rows == 1 and writes == 7, tostring(#rows) .. ':' .. tostring(writes))
+  add(1, 1, 0, 1, 1)
+  commands.InvBulkMutationSmokeTest(1, {'item1', '20'})
+  assert(#rows == 2 and writes == 7)
+  InventoryControllers.InventoryItemCount = oldCount
+  Config.DevMode, Config.Debug = nil, false
+  local registeredAgain = false
+  RegisterCommand = function() registeredAgain = true end
+  dofile(root .. '/server/services/commands.lua')
+  assert(not registeredAgain)
+end)
+test('bulk grant fills compatible stack room and keeps unique units in separate slots', function()
+  add(2, 1, 0, 1, 1); definitions[1].max_stack_size = 3
+  local result = TransactionAPI.Transaction({}, function(tx) return tx:AddQuantity(1, 1, 5, {value = '{}'}) end)
+  assert(Result.IsOk(result) and count(1, 0) == 3 and count(1, 1) == 3 and count(1, 2) == 1)
+  definitions[1].instance_mode = 'unique'; definitions[1].max_stack_size = 99
+  result = TransactionAPI.Transaction({}, function(tx) return tx:AddQuantity(1, 1, 3, {serial = 'test'}) end)
+  assert(Result.IsOk(result) and count(1, 3) == 1 and count(1, 4) == 1 and count(1, 5) == 1)
+end)
+test('bulk grant uses every compatible partial stack when no empty slots remain', function()
+  add(2, 1, 0, 1, 1); add(2, 1, 1, 1, 1)
+  policies[1].max_slots = 2; definitions[1].max_stack_size = 3
+  local result = TransactionAPI.Transaction({}, function(tx) return tx:AddQuantity(1, 1, 2, {value = '{}'}) end)
+  assert(Result.IsOk(result) and count(1, 0) == 3 and count(1, 1) == 3 and writes == 1)
 end)
 print(('PASS %d inventory update / transaction tests'):format(total))

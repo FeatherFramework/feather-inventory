@@ -41,8 +41,8 @@ local ActiveEquipmentSnapshots = {}
 
 -- Movement controllers already hold the item locks. Use a current locking
 -- read for equipment too, never a transaction's older consistent-read view.
-function GuardsAPI.PrepareMoveSnapshots(query, rows)
-    if next(MoveGuards) == nil or #rows == 0 then return true end
+local function PrepareEquipmentSnapshots(registry, query, rows)
+    if next(registry) == nil or #rows == 0 then return true end
     local ids, seen, equipped = {}, {}, {}
     for _, row in ipairs(rows) do
         local id = tonumber(row.id)
@@ -68,6 +68,13 @@ function GuardsAPI.PrepareMoveSnapshots(query, rows)
         row._equipmentEquipped = equipped[tonumber(row.id)] == true
     end
     return true
+end
+
+function GuardsAPI.PrepareMoveSnapshots(query, rows)
+    return PrepareEquipmentSnapshots(MoveGuards, query, rows)
+end
+function GuardsAPI.PrepareDestroySnapshots(query, rows)
+    return PrepareEquipmentSnapshots(DestroyGuards, query, rows)
 end
 
 -- Existing cross-resource guards may call Equipment.IsInstanceEquipped.
@@ -187,20 +194,20 @@ end
 -- Transaction paths already hold a normalized snapshot from their locking
 -- SELECT. Reusing it prevents a second connection from querying a row locked
 -- by the transaction itself while preserving the exact guard contract.
-function GuardsAPI.CanMoveInstanceSnapshot(instance, context)
-    if next(MoveGuards) == nil then return true end
+local function EvaluateSnapshot(registry, instance, context)
+    if next(registry) == nil then return true end
     if type(instance) ~= 'table' or not tonumber(instance.id) then
         return false, 'Item instance could not be read for guard evaluation.'
     end
     local snapshot = instance.equipmentSnapshot
     if type(snapshot) ~= 'table' or type(snapshot.equipped) ~= 'boolean' then
-        return RunResolvedGuards(MoveGuards, instance, context)
+        return RunResolvedGuards(registry, instance, context)
     end
     local id, token = tonumber(instance.id), {}
     local active = ActiveEquipmentSnapshots[id] or {}
     ActiveEquipmentSnapshots[id] = active
     active[token] = { equipped = snapshot.equipped }
-    local values = table.pack(pcall(RunResolvedGuards, MoveGuards, instance, context))
+    local values = table.pack(pcall(RunResolvedGuards, registry, instance, context))
     active[token] = nil
     if next(active) == nil then ActiveEquipmentSnapshots[id] = nil end
     if not values[1] then
@@ -210,16 +217,16 @@ function GuardsAPI.CanMoveInstanceSnapshot(instance, context)
     return table.unpack(values, 2, values.n)
 end
 
+function GuardsAPI.CanMoveInstanceSnapshot(instance, context)
+    return EvaluateSnapshot(MoveGuards, instance, context)
+end
+
 function GuardsAPI.CanDestroyInstance(instanceId, context)
     return RunGuards(DestroyGuards, instanceId, context)
 end
 
 function GuardsAPI.CanDestroyInstanceSnapshot(instance, context)
-    if next(DestroyGuards) == nil then return true end
-    if type(instance) ~= 'table' or not tonumber(instance.id) then
-        return false, 'Item instance could not be read for guard evaluation.'
-    end
-    return RunResolvedGuards(DestroyGuards, instance, context)
+    return EvaluateSnapshot(DestroyGuards, instance, context)
 end
 
 ------------------------------------------------------------------

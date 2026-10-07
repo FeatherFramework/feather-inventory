@@ -346,101 +346,85 @@ end
 -- before deletion so a concurrent transaction cannot consume the same
 -- ammunition -- the duplicate-ammo case the review calls out.
 --
+local RemovalSnapshotSql = [[SELECT ii.`id`, ii.`inventory_id`, ii.`slot_index`, ii.`item_id`,
+    ii.`metadata`, ii.`row_revision`, i.`name`, i.`display_name`, i.`weight`, i.`type`,
+    i.`max_quantity`, i.`max_stack_size`, i.`instance_mode`
+    FROM `inventory_items` ii INNER JOIN `items` i ON i.`id`=ii.`item_id` ]]
+
+local function DeleteLockedInstances(tx, inventoryId, definitionId, rows)
+    if not GuardsAPI.PrepareDestroySnapshots(tx.query, rows) then
+        return Result.Err(Result.Codes.DENIED, 'Equipment state could not be verified.')
+    end
+    for _, row in ipairs(rows) do
+        local allowed, reason = GuardsAPI.CanDestroyInstanceSnapshot(
+            InventoryControllers.NormalizeLockedItemSnapshot(row), tx.context)
+        if not allowed then return Result.Err(Result.Codes.DENIED, reason or 'Removal blocked by a guard.') end
+    end
+    local size = math.floor(math.max(1, math.min(200, tonumber(Config.UpdateBatchSize) or 100)))
+    local removed = {}
+    for first = 1, #rows, size do
+        local params, placeholders = { inventoryId, definitionId }, {}
+        local last = math.min(first + size - 1, #rows)
+        for index = first, last do
+            params[#params + 1] = tonumber(rows[index].id); placeholders[#placeholders + 1] = '?'
+        end
+        local deleted = tx.query('DELETE FROM `inventory_items` WHERE `inventory_id`=? AND `item_id`=? AND `id` IN (' ..
+            table.concat(placeholders, ',') .. ');', params)
+        local affected = tonumber(deleted and (deleted.affectedRows or deleted.affected_rows)) or 0
+        if affected ~= last - first + 1 then return Result.Err(Result.Codes.CONFLICT, 'Selected items changed during removal.') end
+        for index = first, last do removed[#removed + 1] = tonumber(rows[index].id) end
+    end
+    tx.destroyed = tx.destroyed or {}
+    for _, id in ipairs(removed) do
+        tx.destroyed[#tx.destroyed + 1] = { instanceId = id, definitionId = definitionId, inventoryId = inventoryId }
+    end
+    return Result.Ok(removed)
+end
+
 function Tx:RemoveQuantity(inventoryId, definitionId, quantity)
     local wanted = math.floor(tonumber(quantity) or 0)
-    if wanted < 1 then
-        return Result.Err(Result.Codes.INVALID_INPUT, 'Quantity must be at least 1.')
-    end
-
+    if wanted < 1 then return Result.Err(Result.Codes.INVALID_INPUT, 'Quantity must be at least 1.') end
     local denied = self:RequireAccess(inventoryId, InventoryAPI.AccessModes.REMOVE)
     if denied then return denied end
-
-    local rows = self.query(
-        'SELECT `id` FROM `inventory_items` WHERE `inventory_id`=? AND `item_id`=? ORDER BY `id` LIMIT ' ..
-        wanted .. ' FOR UPDATE;', { inventoryId, definitionId })
-
+    local rows = self.query(RemovalSnapshotSql ..
+        'WHERE ii.`inventory_id`=? AND ii.`item_id`=? ORDER BY ii.`id` LIMIT ' .. wanted .. ' FOR UPDATE;',
+        { inventoryId, definitionId })
     if not rows or #rows < wanted then
         return Result.Err(Result.Codes.LIMIT_EXCEEDED, 'Not enough of that item to remove.',
             { available = rows and #rows or 0, requested = wanted })
     end
-
-    local removed = {}
-    for _, row in ipairs(rows) do
-        local id = tonumber(row.id)
-        local locked = self:GetItemForUpdate(id)
-        if not Result.IsOk(locked) then return locked end
-        local allowed, reason = GuardsAPI.CanDestroyInstanceSnapshot(locked.value, self.context)
-        if not allowed then
-            return Result.Err(Result.Codes.DENIED, reason or 'Removal blocked by a guard.', { instanceId = id })
-        end
-        self.query('DELETE FROM `inventory_items` WHERE `id`=?;', { id })
-        removed[#removed + 1] = id
-    end
-
-    self.destroyed = self.destroyed or {}
-    for _, id in ipairs(removed) do
-        self.destroyed[#self.destroyed + 1] =
-            { instanceId = id, definitionId = definitionId, inventoryId = inventoryId }
-    end
-
-    return Result.Ok(removed)
+    return DeleteLockedInstances(self, inventoryId, definitionId, rows)
 end
 
----
--- Remove Named Instances
---
--- Atomically removes caller-selected rows after verifying their inventory and
--- definition. This lets cross-resource callers commit the exact instances
--- used in their preflight calculation instead of repeating a name lookup.
---
 function Tx:RemoveInstances(inventoryId, definitionId, instanceIds)
     if type(instanceIds) ~= 'table' or #instanceIds < 1 then
         return Result.Err(Result.Codes.INVALID_INPUT, 'At least one item instance is required.')
     end
-
+    local ids, seen = {}, {}
+    for _, value in ipairs(instanceIds) do
+        local id = tonumber(value)
+        if not id or id % 1 ~= 0 or id < 1 or seen[id] then
+            return Result.Err(Result.Codes.INVALID_INPUT, 'Instance ids must be valid and unique.')
+        end
+        seen[id] = true; ids[#ids + 1] = id
+    end
+    table.sort(ids)
     local denied = self:RequireAccess(inventoryId, InventoryAPI.AccessModes.REMOVE)
     if denied then return denied end
-
-    local removed = {}
-    for _, instanceId in ipairs(instanceIds) do
-        local id = tonumber(instanceId)
-        if not id then return Result.Err(Result.Codes.INVALID_INPUT, 'Invalid item instance id.') end
-        local locked = self:GetItemForUpdate(id)
-        if not Result.IsOk(locked) then return locked end
-        if locked.value.inventoryId ~= tonumber(inventoryId)
-            or locked.value.definition.id ~= tonumber(definitionId) then
-            return Result.Err(Result.Codes.CONFLICT, 'Selected item instance is no longer available.', {
-                instanceId = id, inventoryId = inventoryId, definitionId = definitionId })
+    local locked = {}
+    for first = 1, #ids, 200 do
+        local params, placeholders = { inventoryId, definitionId }, {}
+        local last = math.min(first + 199, #ids)
+        for index = first, last do params[#params + 1] = ids[index]; placeholders[#placeholders + 1] = '?' end
+        local rows = self.query(RemovalSnapshotSql ..
+            'WHERE ii.`inventory_id`=? AND ii.`item_id`=? AND ii.`id` IN (' .. table.concat(placeholders, ',') ..
+            ') ORDER BY ii.`id` FOR UPDATE;', params)
+        if not rows or #rows ~= last - first + 1 then
+            return Result.Err(Result.Codes.CONFLICT, 'Selected item instance is no longer available.')
         end
-        local allowed, reason = GuardsAPI.CanDestroyInstanceSnapshot(locked.value, self.context)
-        if not allowed then
-            return Result.Err(Result.Codes.DENIED, reason or 'Removal blocked by a guard.', { instanceId = id })
-        end
-
-        -- DELETE is the locking operation. Scoping it by instance, inventory,
-        -- and definition makes the affected-row count the ownership assertion;
-        -- a concurrent move/delete produces zero and rolls back this transaction.
-        local deleted = self.query(
-            'DELETE FROM `inventory_items` WHERE `id`=? AND `inventory_id`=? AND `item_id`=?;',
-            { id, inventoryId, definitionId })
-        local affected = tonumber(deleted and (deleted.affectedRows or deleted.affected_rows)) or 0
-        if affected ~= 1 then
-            return Result.Err(Result.Codes.CONFLICT, 'Selected item instance is no longer available.', {
-                instanceId = id,
-                inventoryId = inventoryId,
-                definitionId = definitionId,
-                affectedRows = affected
-            })
-        end
-        removed[#removed + 1] = id
+        for _, row in ipairs(rows) do locked[#locked + 1] = row end
     end
-
-    self.destroyed = self.destroyed or {}
-    for _, id in ipairs(removed) do
-        self.destroyed[#self.destroyed + 1] =
-            { instanceId = id, definitionId = definitionId, inventoryId = inventoryId }
-    end
-    return Result.Ok(removed)
+    return DeleteLockedInstances(self, inventoryId, definitionId, locked)
 end
 
 ---
@@ -478,6 +462,7 @@ function Tx:AddQuantity(inventoryId, definitionId, quantity, metadata)
 
     local stackSize = math.max(tonumber(def.max_stack_size) or 1, 1)
     local unique = def.instance_mode == 'unique'
+    if unique then stackSize = 1 end
 
     -- Weight, per-item quantity cap, blacklist and slot capacity, evaluated
     -- against locked rows inside this transaction.
@@ -522,7 +507,7 @@ function Tx:AddQuantity(inventoryId, definitionId, quantity, metadata)
         ORDER BY `slot_index`, `id` FOR UPDATE;
     ]], { inventoryId })
 
-    local occupied, joinSlot, joinCount = {}, nil, 0
+    local occupied, joinCandidates = {}, {}
     local slots = {}
     for _, row in ipairs(occupiedRows or {}) do
         local slot = tonumber(row.slot_index)
@@ -532,11 +517,11 @@ function Tx:AddQuantity(inventoryId, definitionId, quantity, metadata)
     end
     local desiredMetadata = metadata or {}
     for slot, rows in pairs(slots) do
-        if not unique and joinSlot == nil and tostring(rows[1].item_id) == tostring(definitionId)
+        if not unique and tostring(rows[1].item_id) == tostring(definitionId)
             and #rows < stackSize and InventoryMetadata.RowsCompatible(rows)
             and InventoryMetadata.DocumentsEqual(
                 InventoryMetadata.Decode(rows[1].metadata) or {}, desiredMetadata) then
-            joinSlot, joinCount = slot, #rows
+            joinCandidates[#joinCandidates + 1] = {slot = slot, count = #rows}
         end
     end
 
@@ -544,35 +529,61 @@ function Tx:AddQuantity(inventoryId, definitionId, quantity, metadata)
     local capacity = tonumber(capacityRows and capacityRows[1] and capacityRows[1].max_slots)
         or tonumber(Config.maxItemSlots) or 0
 
-    local currentSlot, currentCount = joinSlot, joinCount
-    local created = {}
+    table.sort(joinCandidates, function(a, b) return a.slot < b.slot end)
+    local currentSlot, currentCount, joinIndex = nil, 0, 1
+    local created, placements = {}, {}
 
     for _ = 1, wanted do
         if currentSlot == nil or currentCount >= stackSize then
             currentSlot = nil
-            for index = 0, capacity - 1 do
-                if not occupied[index] then
-                    occupied[index] = true
-                    currentSlot = index
+            while joinIndex <= #joinCandidates do
+                local candidate = joinCandidates[joinIndex]
+                joinIndex = joinIndex + 1
+                if candidate.slot >= 0 and candidate.slot < capacity then
+                    currentSlot, currentCount = candidate.slot, candidate.count
                     break
                 end
             end
             if currentSlot == nil then
-                return Result.Err(Result.Codes.LIMIT_EXCEEDED, 'Inventory has no available slots.')
+                for index = 0, capacity - 1 do
+                    if not occupied[index] then
+                        occupied[index] = true
+                        currentSlot = index
+                        break
+                    end
+                end
+                if currentSlot == nil then
+                    return Result.Err(Result.Codes.LIMIT_EXCEEDED, 'Inventory has no available slots.')
+                end
+                currentCount = 0
             end
-            currentCount = 0
         end
 
-        local inserted = self.query(
-            'INSERT INTO `inventory_items` (`inventory_id`, `item_id`, `slot_index`, `metadata`) VALUES (?, ?, ?, ?) RETURNING `id`;',
-            { inventoryId, definitionId, currentSlot, encoded })
-        local newId = inserted and inserted[1] and tonumber(inserted[1].id)
-        if not newId then
-            return Result.Err(Result.Codes.INTERNAL, 'Item instance could not be created.')
-        end
-
-        created[#created + 1] = newId
+        placements[#placements + 1] = currentSlot
         currentCount = currentCount + 1
+    end
+
+    local size = math.floor(math.max(1, math.min(200, tonumber(Config.UpdateBatchSize) or 100)))
+    for first = 1, #placements, size do
+        local values, params = {}, {}
+        local last = math.min(first + size - 1, #placements)
+        for index = first, last do
+            local offset = (index - first) * 4
+            values[#values + 1] = '(?, ?, ?, ?)'
+            params[offset + 1], params[offset + 2] = inventoryId, definitionId
+            params[offset + 3], params[offset + 4] = placements[index], encoded
+        end
+        local inserted = self.query(
+            'INSERT INTO `inventory_items` (`inventory_id`, `item_id`, `slot_index`, `metadata`) VALUES ' ..
+            table.concat(values, ',') .. ' RETURNING `id`;', params)
+        if not inserted or #inserted ~= last - first + 1 then
+            return Result.Err(Result.Codes.INTERNAL, 'Item instances could not be created.')
+        end
+        for _, row in ipairs(inserted) do
+            local id = tonumber(row.id)
+            if not id then return Result.Err(Result.Codes.INTERNAL, 'Item instance id was not returned.') end
+            created[#created + 1] = id
+        end
     end
 
     self.created = self.created or {}
@@ -1050,24 +1061,49 @@ function TransactionAPI.DestroyInstances(context, spec)
                 expected = spec.expectedLocation, actual = container.location })
         end
 
-        local byDefinition = {}
-        for _, value in ipairs(instanceIds) do
-            local locked = tx:GetItemForUpdate(value)
-            if not Result.IsOk(locked) then return locked end
-            if locked.value.inventoryId ~= inventoryId then
-                return Result.Err(Result.Codes.CONFLICT, 'Selected item is no longer in the expected inventory.', {
-                    instanceId = tonumber(value), inventoryId = inventoryId })
+        local denied = tx:RequireAccess(inventoryId, InventoryAPI.AccessModes.REMOVE)
+        if denied then return denied end
+        local lockedRows, byId = {}, {}
+        tx.destroyed = tx.destroyed or {}
+        for first = 1, #instanceIds, 200 do
+            local params, placeholders = {}, {}
+            for index = first, math.min(first + 199, #instanceIds) do
+                params[#params + 1] = instanceIds[index]; placeholders[#placeholders + 1] = '?'
             end
-            local definitionId = locked.value.definition.id
-            byDefinition[definitionId] = byDefinition[definitionId] or {}
-            byDefinition[definitionId][#byDefinition[definitionId] + 1] = locked.value.id
+            local rows = tx.query([[SELECT ii.`id`, ii.`inventory_id`, ii.`slot_index`, ii.`item_id`,
+                ii.`metadata`, ii.`row_revision`, i.`name`, i.`display_name`, i.`weight`, i.`type`,
+                i.`max_quantity`, i.`max_stack_size`, i.`instance_mode`
+                FROM `inventory_items` ii INNER JOIN `items` i ON i.`id`=ii.`item_id`
+                WHERE ii.`id` IN (]] .. table.concat(placeholders, ',') .. [[) ORDER BY ii.`id` FOR UPDATE;]], params)
+            for _, row in ipairs(rows or {}) do lockedRows[#lockedRows + 1] = row; byId[tonumber(row.id)] = row end
         end
-
+        for _, id in ipairs(instanceIds) do
+            if not byId[id] or tonumber(byId[id].inventory_id) ~= inventoryId then
+                return Result.Err(Result.Codes.CONFLICT, 'Selected item is no longer in the expected inventory.')
+            end
+        end
+        if not GuardsAPI.PrepareDestroySnapshots(tx.query, lockedRows) then
+            return Result.Err(Result.Codes.DENIED, 'Equipment state could not be verified.')
+        end
+        for _, id in ipairs(instanceIds) do
+            local allowed, reason = GuardsAPI.CanDestroyInstanceSnapshot(
+                InventoryControllers.NormalizeLockedItemSnapshot(byId[id]), context)
+            if not allowed then return Result.Err(Result.Codes.DENIED, reason or 'Removal blocked by a guard.') end
+        end
         local destroyed = {}
-        for definitionId, ids in pairs(byDefinition) do
-            local removed = tx:RemoveInstances(inventoryId, definitionId, ids)
-            if not Result.IsOk(removed) then return removed end
-            for _, id in ipairs(removed.value) do destroyed[#destroyed + 1] = id end
+        for first = 1, #instanceIds, 200 do
+            local params, placeholders = { inventoryId }, {}
+            local last = math.min(first + 199, #instanceIds)
+            for index = first, last do params[#params + 1] = instanceIds[index]; placeholders[#placeholders + 1] = '?' end
+            local deleted = tx.query('DELETE FROM `inventory_items` WHERE `inventory_id`=? AND `id` IN (' ..
+                table.concat(placeholders, ',') .. ');', params)
+            local affected = tonumber(deleted and (deleted.affectedRows or deleted.affected_rows)) or 0
+            if affected ~= last - first + 1 then return Result.Err(Result.Codes.CONFLICT, 'Selected items changed during destruction.') end
+            for index = first, last do
+                local id = instanceIds[index]
+                destroyed[#destroyed + 1] = id
+                tx.destroyed[#tx.destroyed + 1] = { instanceId = id, definitionId = tonumber(byId[id].item_id), inventoryId = inventoryId }
+            end
         end
         return Result.Ok({ inventoryId = inventoryId, destroyedInstanceIds = destroyed,
             quantity = #destroyed })

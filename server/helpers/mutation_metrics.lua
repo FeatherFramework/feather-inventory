@@ -7,7 +7,7 @@ function InventoryMutationMetrics.Elapsed(started)
 end
 
 function InventoryMutationMetrics.Begin(operation, traceId)
-  if GetConvarInt('feather_inventory_mutation_timing', Config.MutationTiming and 1 or 0) ~= 1 then
+  if Config.MutationTiming ~= true then
     return nil
   end
   sequence = sequence + 1
