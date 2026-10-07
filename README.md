@@ -36,7 +36,28 @@ Download a packaged release from [GitHub Releases](https://github.com/FeatherFra
 5. Review `feather-inventory/config.lua` before starting the server.
 6. Start the server and check the server console for Lua or SQL errors.
 
-Do not point `ui_page` at `ui/dist`. Packaged releases are flattened into `ui/`, which is the path used by `fxmanifest.lua`.
+The manifest loads `ui/index.html`. Releases contain the compiled interface directly in `ui/`.
+
+### Building and testing from source
+
+UI source, item images and build configuration live in `web/`. The generated `ui/` directory is ignored by Git and contains only the latest local production build. A source checkout requires a build before running Inventory.
+
+Use Node.js 22 and pnpm 9.15.0:
+
+```sh
+cd web
+pnpm install --frozen-lockfile
+pnpm check
+cd ..
+python scripts/package_release.py
+python scripts/verify_release.py .artifacts/feather-inventory.zip
+```
+
+After each UI change, run `pnpm build` from `web/`. It replaces `ui/` with the current compiled files. For in-game testing, replace the deployed resource's entire `ui/` directory with this local `ui/`; merging can leave old bundles behind. Keep `fxmanifest.lua` pointing at `ui/index.html` and refresh/restart `feather-inventory` before testing.
+
+The release workflow runs on pushes to `main`, builds and verifies the UI, and publishes `feather-inventory.zip` plus its SHA-256 checksum. The archive contains runtime Lua, configuration, translations, database SQL, documentation/license and built `ui/` files directly at its root; it excludes `web/`, dependencies and development tooling. Versions in `web/package.json` and `fxmanifest.lua` must match. Existing version-tag naming is retained.
+
+For the current drag/drop optimization test, enable `setr feather_inventory_mutation_timing 1` in the server console. Compare `set feather_inventory_update_batch_size 1` with `100` on identical stack moves. The source checkout's `docs/MUTATION-TIMING.md` explains the log fields and required slot/weight acceptance checks. Timing defaults off; the default batch size is 100.
 
 ### Database setup and upgrades
 

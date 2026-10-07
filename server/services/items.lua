@@ -699,13 +699,27 @@ ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z, context)
   -- steal items onto the ground. Every item is now checked against
   -- inventoryId up front (inventoryId itself is already server-derived
   -- from src by the caller, not client-supplied).
-  for _, entry in ipairs(items) do
-    local id = type(entry) == 'table' and entry.id or entry
-    local item = InventoryControllers.GetInventoryItemById(id)
-    if not item or tostring(item.inventory_id) ~= tostring(inventoryId) then
-      warn('Rejected DropItemsOnGround: item ' .. tostring(id) .. ' does not belong to inventory ' .. tostring(inventoryId))
-      return Result.Err(Result.Codes.DENIED, "One or more items are not in your inventory.")
+  local ids = InventoryControllers.NormalizeMoveItemIds(items)
+  if not ids then
+    return Result.Err(Result.Codes.INVALID_INPUT, 'Unique valid item references are required.')
+  end
+  local metrics = context and context._timing
+  local belongs = InventoryMutationMetrics.Measure(metrics, 'dropPreflightMs', function()
+    for first = 1, #ids, 200 do
+      local last = math.min(first + 199, #ids)
+      local placeholders = {}
+      for _ = first, last do placeholders[#placeholders + 1] = '?' end
+      local found = DB.query(
+        'SELECT `id` FROM `inventory_items` WHERE `inventory_id`=? AND `id` IN (' ..
+          table.concat(placeholders, ',') .. ');', inventoryId, table.unpack(ids, first, last))
+      if metrics then metrics.dropPreflightStatements = (metrics.dropPreflightStatements or 0) + 1 end
+      if not found or #found ~= last - first + 1 then return false end
     end
+    return true
+  end)
+  if not belongs then
+    warn('Rejected DropItemsOnGround: requested items do not belong to the source inventory')
+    return Result.Err(Result.Codes.DENIED, "One or more items are not in your inventory.")
   end
 
   -- (INV-16) Was `Config.groundGroupingRadius`, which doesn't exist -- the
@@ -713,6 +727,7 @@ ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z, context)
   -- services/errors.lua's startup validation of it). Reading the wrong key
   -- passed nil as the radius, silently disabling grouping: every drop made
   -- its own ground pile instead of joining a nearby one.
+  local setupStarted = metrics and GetGameTimer()
   local groundID = GroundControllers.GetClosestGroundByCoords(x, y, z, Config.Dropped.GroupingRadius)
   
   -- No nearby ground, lets create a new one
@@ -729,6 +744,7 @@ ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z, context)
   -- is meaningless -- but slot capacity and per-item quantity limits still
   -- apply, which is why only the weight argument is zeroed here.
   local registered = InventoryAPI.RegisterInventory('ground', groundID, 'Ground', nil, 0, nil, nil, true)
+  if setupStarted then metrics.dropSetupMs = InventoryMutationMetrics.Elapsed(setupStarted) end
   if not Result.IsOk(registered) then
     return registered
   end
@@ -744,7 +760,7 @@ ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z, context)
   -- source access, membership, guards, capacity, and row locks still run.
   moveContext.allowTargetInsert = true
   local updateinv = InventoryControllers.MoveInventoryItems(
-    inventoryId, groundInventoryID, items, moveContext)
+    inventoryId, groundInventoryID, ids, moveContext)
 
   -- This always reported `error = false` even when MoveInventoryItems
   -- itself rejected the move (e.g. capacity) -- the ground pile row would
@@ -757,7 +773,7 @@ ItemsAPI.DropItemsOnGround = function(inventoryId, items, x, y, z, context)
       updateinv.message or "Items could not be dropped.", { inventory = updateinv })
   end
 
-  UpdateClientWithGroundLocations(-1)
+  InventoryMutationMetrics.Measure(metrics, 'groundBroadcastMs', UpdateClientWithGroundLocations, -1)
 
   return Result.Ok({ inventory = updateinv })
 end

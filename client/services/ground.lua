@@ -96,7 +96,7 @@ function OpenGroundLocation(id)
     end
 end
 
-function DropItemsOnGround(items)
+function DropItemsOnGround(items, traceId)
     -- Get player coords but a bit in front of the player
     local playerPed = PlayerPedId()
     local coords = GetEntityCoords(playerPed, true, true)
@@ -106,12 +106,17 @@ function DropItemsOnGround(items)
     local y = coords.y + forward.y * 1.6
     local z = coords.z + forward.z * 1.6
 
+    local started = GetGameTimer()
     local result = Feather.RPC.CallAsync("Feather:Inventory:DropItemsOnGround", {
+        traceId = traceId,
         items = items,
         x = x,
         y = y,
         z = z
     })
+    if result and type(result.mutationTiming) == 'table' then
+        result.mutationTiming.clientRpcMs = (GetGameTimer() - started) % 4294967296
+    end
     return result
 end
 

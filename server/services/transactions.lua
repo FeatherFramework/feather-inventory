@@ -141,13 +141,24 @@ end
 -- (executed, committed) exactly like pcall(MySQL.startTransaction, ...) did, so every call
 -- site's own `if not executed or committed ~= true then ... end` check needs no change --
 -- only the two-line pcall(...)/function(query) header at each site does.
-function RunLegacyStyleTransaction(body)
-    return pcall(DB.transaction, function(tx)
+function RunLegacyStyleTransaction(body, metrics)
+    local started = metrics and GetGameTimer()
+    local executed, committed = pcall(DB.transaction, function(tx)
         local function query(sql, params)
-            return tx.raw(sql, table.unpack(params or {}, 1, CountPlaceholders(sql)))
+            if metrics then
+                metrics.sqlStatements = metrics.sqlStatements + 1
+                if sql:match('^%s*UPDATE%s') then metrics.updateStatements = metrics.updateStatements + 1 end
+            end
+            return InventoryMutationMetrics.Measure(metrics, 'sqlMs', tx.raw,
+                sql, table.unpack(params or {}, 1, CountPlaceholders(sql)))
         end
         return body(query)
     end)
+    if metrics then
+        metrics.transactionMs = metrics.transactionMs + InventoryMutationMetrics.Elapsed(started)
+        metrics.committed = executed and committed == true
+    end
+    return executed, committed
 end
 
 -- (feather-mysql migration bugfix) The access-check chain (ContextCanAccess /

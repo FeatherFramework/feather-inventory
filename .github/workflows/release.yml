@@ -1,49 +1,77 @@
-name: "release"
+name: release
 
 on:
   push:
-    branches:
-      - "main"
+    branches: [main]
 
 jobs:
-  release:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Verify Lua slot updates and rollback
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.4
+          lua5.4 tests/lua/slot_updates_spec.lua .
+            lua5.4 tests/lua/guard_equipment_spec.lua .
+      - name: Install and verify UI
+        working-directory: web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm check
+      - name: Stage and verify install archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/package_release.py
+          cp .artifacts/feather-inventory.zip .artifacts/feather-inventory.zip.sha256 .
+          python3 scripts/verify_release.py feather-inventory.zip
+          sha256sum -c feather-inventory.zip.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: feather-inventory-install
+          path: |
+            feather-inventory.zip
+            feather-inventory.zip.sha256
+
+  publish:
+    needs: package
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
         with:
-          version: 9
-      - name: Set Node.js 22.x
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22.x
-          cache: pnpm
-          cache-dependency-path: ui/pnpm-lock.yaml
-      - name: Install Node Modules
-        run: pnpm install --frozen-lockfile
-        working-directory: ./ui
-      - name: Build Application
-        run: pnpm run build
-        working-directory: ./ui
-      - uses: vimtor/action-zip@v1
-        with:
-          files: fxmanifest.lua LICENSE.md README.md ui/dist client server translations config.lua
-          recursive: false
-          dest: feather-inventory.zip
-      - name: get-npm-version
+          name: feather-inventory-install
+      - name: Read package version
         id: package-version
         uses: martinbeentjes/npm-get-version-action@main
         with:
-          path: ui
-      - uses: "marvinpinto/action-automatic-releases@latest"
+          path: web
+      - name: Verify release version and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./web/package.json').version")
+          grep -Fq "version '$version'" fxmanifest.lua
+          sha256sum -c feather-inventory.zip.sha256
+      - name: Publish automatic release
+        uses: marvinpinto/action-automatic-releases@latest
         with:
-          repo_token: "${{ secrets.GITHUB_TOKEN }}"
-          automatic_release_tag: "${{ steps.package-version.outputs.current-version}}"
-          prerelease: false
-          title: "Release ${{ steps.package-version.outputs.current-version}}"
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          automatic_release_tag: ${{ steps.package-version.outputs.current-version }}
+          prerelease: ${{ contains(steps.package-version.outputs.current-version, '-') }}
+          title: Feather Inventory ${{ steps.package-version.outputs.current-version }}
           files: |
             feather-inventory.zip
+            feather-inventory.zip.sha256

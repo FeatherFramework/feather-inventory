@@ -15,6 +15,12 @@ Config.TrustedIdempotentGrantCallers = { ['feather-shops'] = true }
 -- commands. Leave false in production; flip on to trace access decisions.
 Config.Debug = false
 
+-- Item-record updates stay in one transaction. Use the server convar
+-- feather_inventory_update_batch_size=1 for a timing baseline, then 100.
+Config.UpdateBatchSize = 100
+-- Opt-in timings: setr feather_inventory_mutation_timing 1 (no item metadata).
+Config.MutationTiming = false
+
 -- Opens player inventory
 Config.hotkey = "I"
 
