@@ -102,6 +102,7 @@ Feather.Locale.register('en_us', {
     ui_taking_all = 'Taking items...',
     ui_using_item = 'Using item...',
     ui_dropping_items = 'Dropping items...',
+    ui_giving_items = 'Giving items...',
     ui_working = 'Working...',
     ui_condition = 'Condition',
     ui_condition_pristine = 'Pristine',

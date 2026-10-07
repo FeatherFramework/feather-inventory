@@ -23,6 +23,7 @@ local UI_STRING_KEYS = {
   'ui_taking_all',
   'ui_using_item',
   'ui_dropping_items',
+  'ui_giving_items',
   'ui_working',
   'ui_condition', 'ui_condition_pristine', 'ui_condition_worn',
   'ui_condition_damaged', 'ui_condition_ruined',

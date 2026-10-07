@@ -694,7 +694,7 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
     return Result.Err("no_character", "No character is loaded for that player.")
   end
 
-  local inventoryItems, otherInventoryItems = InventoryControllers.GetInventoryItems(inventory), nil
+  local inventoryItems, otherInventoryItems = nil, nil
 
   -- (INV-11/INV-23) This used to resolve otherInventoryId and hand it back
   -- unconditionally -- the mere act of calling this RPC populated
@@ -757,7 +757,6 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
         Feather.Notify.RightNotify(src, Translate(src, 'err_already_open', 'This inventory is already opened. Try again later.'), 3000)
       else
         otherInventory, otherInventoryIgnoreLimits, otherName = resolvedId, resolvedIgnoreLimits, resolvedName
-        otherInventoryItems = InventoryControllers.GetInventoryItems(otherInventory)
         OpenInventories[tostring(otherInventory)] = {
           src = tostring(src),
           id = otherInventory,
@@ -765,6 +764,13 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
         }
       end
     end
+  end
+
+  if otherInventory then
+    local pair = InventoryControllers.GetInventoryItemsPair(inventory, otherInventory)
+    inventoryItems, otherInventoryItems = pair.sourceItems, pair.targetItems
+  else
+    inventoryItems = InventoryControllers.GetInventoryItems(inventory)
   end
 
   return Result.Ok({
@@ -809,6 +815,14 @@ InventoryAPI.IsInventoryAccessibleBySrc = function(src, inventoryId, query)
     return deny()
   end
 
+  -- UUID storage/ground access already requires this live open-session entry.
+  -- Check it before looking up the character's own inventory in SQL. Numeric
+  -- UUIDs are robbery targets and retain the live identity/status checks below.
+  local opened = OpenInventories[tostring(inventoryId)]
+  if opened and opened.src == tostring(src) and not tonumber(opened.uuid) then
+    return allow()
+  end
+
   local player = InventoryIdentity.GetCharacter(src)
   local character = player and player.char
   if character then
@@ -818,7 +832,6 @@ InventoryAPI.IsInventoryAccessibleBySrc = function(src, inventoryId, query)
     end
   end
 
-  local opened = OpenInventories[tostring(inventoryId)]
   if not opened or opened.src ~= tostring(src) then
     return deny()
   end

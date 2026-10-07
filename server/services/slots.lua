@@ -24,5 +24,6 @@ local function EnsureSlotSchema()
 end
 
 CreateThread(function()
+    InventoryAwaitDatabase()
     EnsureSlotSchema()
 end)

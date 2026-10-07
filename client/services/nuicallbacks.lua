@@ -73,7 +73,9 @@ RegisterNUICallback('Feather:Inventory:GiveItem', function(args, cb)
 
   local data = {
     target = target,
-    item = args.item
+    item = args.item,
+    items = args.items,
+    traceId = args.traceId
   }
 
   -- (INV-06) Used to call 'Inventory:GiveItem', which the server never
@@ -86,11 +88,12 @@ RegisterNUICallback('Feather:Inventory:GiveItem', function(args, cb)
   -- far, can't hold it) surfaced nothing at all. Normalized to the same
   -- { error, message } shape DropItems already uses, so the UI has
   -- something to show.
-  local result = Feather.RPC.CallAsync('Feather:Inventory:GiveItem', data)
+  local result = CallTimedMutation('Feather:Inventory:GiveItem', data)
   if not result or result.error then
     cb({ error = true, message = (result and result.message) or 'Unable to give item.' })
   else
-    cb({ error = false, sourceItems = result.sourceItems })
+    cb({ error = false, sourceItems = result.sourceItems, movedCount = result.movedCount,
+      skippedCount = result.skippedCount, mutationTiming = result.mutationTiming })
   end
 end)
 

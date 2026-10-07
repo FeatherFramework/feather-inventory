@@ -143,6 +143,7 @@ function StartAPI()
 
   -- Register the complete API before the first database yield. Consumers can
   -- discover it immediately, but must await readiness before doing work.
+  InventoryAwaitDatabase()
   GrantOnceAPI.Start()
   RegisterCharacterStart(inventoryServerAPI)
   RegisterGroundInventory()

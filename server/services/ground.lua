@@ -192,6 +192,7 @@ end
 -- destroys each exact instance (and emits normal destruction facts) before
 -- deleting the empty pile. Timed street sweeping remains empty-row GC only.
 CreateThread(function()
+    InventoryAwaitDatabase()
     if Config.Dropped.ClearOnStart == true then
         ClearGroundOnStart()
     end

@@ -22,7 +22,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y lua5.4
           lua5.4 tests/lua/slot_updates_spec.lua .
-            lua5.4 tests/lua/guard_equipment_spec.lua .
+          lua5.4 tests/lua/guard_equipment_spec.lua .
+          lua5.4 tests/lua/access_reads_spec.lua .
+          lua5.4 tests/lua/startup_readiness_spec.lua .
       - name: Install and verify UI
         working-directory: web
         run: |

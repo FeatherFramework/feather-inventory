@@ -7,10 +7,7 @@ end
 
 local function ReadTimedPair(sourceInventory, targetInventory, metrics)
   return InventoryMutationMetrics.Measure(metrics, 'responseReadMs', function()
-    return {
-      sourceItems = InventoryControllers.GetInventoryItems(sourceInventory),
-      targetItems = InventoryControllers.GetInventoryItems(targetInventory),
-    }
+    return InventoryControllers.GetInventoryItemsPair(sourceInventory, targetInventory)
   end)
 end
 
@@ -49,11 +46,9 @@ Feather.RPC.Register('Feather:Inventory:RefreshOpenPair', function(params, res, 
     return res({ error = true, code = 'no_access', message = 'Inventory access is no longer available.' })
   end
 
-  res({
-    error = false,
-    sourceItems = InventoryControllers.GetInventoryItems(otherInventoryId),
-    targetItems = InventoryControllers.GetInventoryItems(playerInventory),
-  })
+  local pair = InventoryControllers.GetInventoryItemsPair(otherInventoryId, playerInventory)
+  pair.error = false
+  res(pair)
 end)
 
 Feather.RPC.Register('Feather:Inventory:Server:CloseInventory', function(params, res, src)
@@ -132,7 +127,12 @@ end)
 -- verifies that id actually belongs to sourceInventory before moving it.
 Feather.RPC.Register('Feather:Inventory:GiveItem', function(params, res, src)
   local target = params['target']
-  local item = params['item']
+  local items = params.items or { params.item }
+  if type(items) ~= 'table' or #items < 1 or #items > 10000 then
+    return res({ error = true, message = 'Invalid item selection.' })
+  end
+  local metrics, finish = TimedMutationResponse('give_items', params, res)
+  res = finish
 
   local player = InventoryIdentity.GetCharacter(src)
   local character = player and player.char
@@ -169,7 +169,11 @@ Feather.RPC.Register('Feather:Inventory:GiveItem', function(params, res, src)
     return res({ error = true, message = 'Inventory not available.' })
   end
 
-  local giveResult = InventoryControllers.MoveInventoryItems(sourceInventoryId, destinationInventoryId, { item }, {
+  local giveResult = InventoryControllers.MoveInventoryItems(sourceInventoryId, destinationInventoryId, items, {
+    _timing = metrics,
+    takeWhatFits = true,
+    targetSource = tonumber(target),
+    targetCharacterId = targetCharacter.id,
     actorSource = src,
     actorCharacterId = character.id,
     reason = 'give',
@@ -228,127 +232,23 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
   -- 25-slot book must still reject it. Checked after the access checks
   -- rather than alongside the cheap shape validation above, so an
   -- unauthorized caller can't probe an arbitrary inventory's size.
-  local capacity = InventoryControllers.GetInventoryCapacity(toInventory)
-  if toSlot >= capacity then
-    return res({ error = true, message = 'Invalid move.' })
-  end
-
-  if fromSlot == nil then
-    return res({ error = true, message = 'Item is not placed anywhere yet.' })
-  end
-
+  if fromSlot == nil then return res({ error = true, message = 'Item is not placed anywhere yet.' }) end
   if tostring(fromInventory) == tostring(toInventory) and tonumber(fromSlot) == toSlot then
-    -- No-op drag back onto itself.
     return res(ReadTimedPair(fromInventory, toInventory, metrics))
   end
-
-  -- (Stack merge) Dropping a stack onto another stack of the SAME item tops
-  -- it up rather than swapping the two compartments. Without this there was
-  -- no way to recombine stacks at all -- split was one-way, and any drag
-  -- onto a matching stack just traded their positions.
-  --
-  -- Only a single-definition compartment on each side can merge; a mixed
-  -- slot (not producible through normal play, but not forbidden by the
-  -- schema either) falls through to the swap path rather than guessing.
-  local movingBreakdown = InventoryControllers.GetSlotItemBreakdown(fromInventory, fromSlot)
-  local occupantBreakdown = InventoryControllers.GetSlotItemBreakdown(toInventory, toSlot)
-  local mergeCount = 0
-
-  if #movingBreakdown == 1 and #occupantBreakdown == 1
-      and tostring(movingBreakdown[1].item_id) == tostring(occupantBreakdown[1].item_id)
-      and InventoryControllers.AreSlotsStackCompatible(fromInventory, fromSlot, toInventory, toSlot) then
-    local stackSize = math.max(tonumber(occupantBreakdown[1].max_stack_size) or 1, 1)
-    local room = stackSize - (tonumber(occupantBreakdown[1].count) or 0)
-    if room > 0 then
-      mergeCount = math.min(tonumber(movingBreakdown[1].count) or 0, room)
-    end
-  end
-
-  -- (§6/§10.1 MoveItem weight/capacity bypass -- now closed for both cases)
-  -- Every other movement path (UpdateInventory, GiveItem, DropItemsOnGround)
-  -- enforces weight/quantity/restricted-item limits via MoveInventoryItems ->
-  -- InventoryCanHoldById (INV-14); this drag-and-drop path never did.
-  --
-  -- The first pass could only close the empty-destination half, because it
-  -- reused InventoryCanHoldById -- an addition-only check, which double-counts
-  -- the stack simultaneously leaving fromInventory to make room for a swap.
-  -- EvaluateSlotMove replaces it with real net-delta math evaluated on both
-  -- inventories ((current - leaving) + arriving), which closes the swap case
-  -- and subsumes the empty-slot one as the degenerate "nothing is leaving"
-  -- form of the same calculation.
-  --
-  -- A merge needs different math from a swap: EvaluateSlotMove assumes the
-  -- occupant vacates to make room, but in a merge it stays put. Validating a
-  -- merge with swap math would credit the destination for weight that never
-  -- leaves it. Within one inventory nothing changes hands at all, so only a
-  -- cross-inventory merge needs checking, as a pure addition of the units
-  -- actually moving.
-  local canMove
-  if mergeCount > 0 then
-    if tostring(fromInventory) ~= tostring(toInventory) then
-      local _, toMaxWeight, toIgnoreLimit = InventoryControllers.GetInventoryById(toInventory, 'id')
-      canMove = InventoryAPI.EvaluateInventoryAcceptance(toInventory, toMaxWeight, toIgnoreLimit,
-        { { item = movingBreakdown[1].name, quantity = mergeCount } })
-    else
-      canMove = Result.Ok({ accepted = true, message = '' })
-    end
-  else
-    canMove = InventoryAPI.EvaluateSlotMove(fromInventory, fromSlot, toInventory, toSlot)
-  end
-
-  if not Result.IsOk(canMove) or canMove.value.accepted == false then
-    local failure = Result.IsOk(canMove) and canMove.value or canMove.error
-    local rejectMessage = (failure and failure.message) or 'Target inventory cannot hold this item.'
-    warn('Rejected MoveItem: src ' .. src .. ' -- ' .. tostring(rejectMessage) ..
-      ' (from inventory ' .. tostring(fromInventory) .. ' slot ' .. tostring(fromSlot) ..
-      ' to inventory ' .. tostring(toInventory) .. ' slot ' .. tostring(toSlot) .. ')')
-    Feather.Notify.RightNotify(src, TranslateResult(src, canMove, 'err_move_failed'), 3000)
-    return res({ error = true, message = rejectMessage })
-  end
-
-  if mergeCount > 0 then
-    -- Only the units that fit move; any remainder stays where it was, so
-    -- dragging 15 onto a stack with room for 5 tops it up and leaves 10
-    -- behind rather than silently overfilling past max_stack_size.
-    --
-    -- The merge path announces its own movement. Every other route emits
-    -- ItemMoved from inside the controller that performs it, but
-    -- MoveSlotItemsPartial had no emit at all -- for as long as the legacy
-    -- ItemAdded/ItemRemoved pair existed here, that gap was invisible,
-    -- because those two were firing in its place. Removing them surfaced it.
-    local player = InventoryIdentity.GetCharacter(src)
-    local character = player and player.char
-    local merged = InventoryControllers.MoveSlotItemsPartial(
-      fromInventory, fromSlot, toInventory, toSlot, mergeCount, {
-        _timing = metrics,
-        correlationId = metrics and metrics.id,
-        actorSource = src,
-        actorCharacterId = character and character.id,
-        reason = 'slot_merge',
-        resource = 'feather-inventory'
-      })
-    if merged < 1 then
-      Feather.Notify.RightNotify(src, Translate(src, 'err_move_failed', 'The inventory changed; try again.'), 3000)
-      return res({ error = true, code = 'conflict', message = 'The inventory changed; try again.' })
-    end
-  else
-    -- MoveSlotItems emits ItemMoved itself, post-commit, and only when the
-    -- item actually changed inventory.
-    local player = InventoryIdentity.GetCharacter(src)
-    local character = player and player.char
-    local moved, code, message = InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory, toSlot, {
-      _timing = metrics,
-      correlationId = metrics and metrics.id,
-      actorSource = src,
-      actorCharacterId = character and character.id,
-      reason = 'slot_move',
-      resource = 'feather-inventory'
-    })
-    if not moved then
-      local failure = { error = true, code = code or 'conflict', message = message or 'The inventory changed; try again.' }
-      Feather.Notify.RightNotify(src, TranslateResult(src, failure, 'err_move_failed'), 3000)
-      return res(failure)
-    end
+  -- Merge/swap selection, bounds and net capacity are derived once under locks.
+  local player = InventoryIdentity.GetCharacter(src)
+  local character = player and player.char
+  local moved, code, message = InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory, toSlot, {
+    _timing = metrics, correlationId = metrics and metrics.id,
+    actorSource = src, actorCharacterId = character and character.id,
+    reason = 'slot_move', resource = 'feather-inventory',
+    autoMerge = true, expectedItemId = itemId,
+  })
+  if not moved then
+    local failure = { error = true, code = code or 'conflict', message = message or 'The inventory changed; try again.' }
+    Feather.Notify.RightNotify(src, TranslateResult(src, failure, 'err_move_failed'), 3000)
+    return res(failure)
   end
 
   res(ReadTimedPair(fromInventory, toInventory, metrics))
@@ -481,33 +381,16 @@ Feather.RPC.Register('Feather:Inventory:TakeAll', function(params, res, src)
       _timing = metrics,
       correlationId = params.traceId,
       deferResponseReads = true,
+      takeWhatFits = true,
   }
 
-  -- The usual case is that everything fits. Move the complete set through
-  -- one locked transaction instead of opening one transaction per owned row
-  -- (55 items previously meant 55 sequential round trips). If the complete
-  -- set cannot fit, preserve Take All's greedy contract by falling back to
-  -- individual attempts so lighter/smaller items can still move.
+  -- Greedy selection and capacity reservations share one locked transaction.
   local instanceIds = {}
-  for _, item in pairs(sourceItems) do instanceIds[#instanceIds + 1] = item.id end
+  for _, item in ipairs(sourceItems) do instanceIds[#instanceIds + 1] = item.id end
   if #instanceIds > 0 then
-    local batch = InventoryControllers.MoveInventoryItems(
-      fromInventory, targetInventory, instanceIds, context)
-    if not (batch and batch.error) then
-      moved = #instanceIds
-    else
-      if metrics then metrics.fallbackAttempts = 0 end
-      for _, item in pairs(sourceItems) do
-        if metrics then metrics.fallbackAttempts = metrics.fallbackAttempts + 1 end
-        local result = InventoryControllers.MoveInventoryItems(
-          fromInventory, targetInventory, { item.id }, context)
-        if result and result.error then
-          skipped = skipped + 1
-        else
-          moved = moved + 1
-        end
-      end
-    end
+    local result = InventoryControllers.MoveInventoryItems(fromInventory, targetInventory, instanceIds, context)
+    if result and result.error then return res(result) end
+    moved, skipped = result.movedCount, result.skippedCount
   end
 
   if moved == 0 and skipped > 0 then

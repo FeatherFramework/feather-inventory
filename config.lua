@@ -10,15 +10,16 @@ Config.DevMode = true
 Config.TrustedIdempotentGrantCallers = { ['feather-shops'] = true }
 
 -- Gates verbose server-console logging (currently the access/ground
--- resolution tracing added while building the robbery/ACL system) --
+-- resolution tracing added while building the robbery/ACL system, plus
+-- InvBulkMutationSmokeTest without an ACE requirement) --
 -- separate from DevMode, which gates security-sensitive item-spawn
 -- commands. Leave false in production; flip on to trace access decisions.
 Config.Debug = false
 
--- Item-record updates stay in one transaction. Use the server convar
--- feather_inventory_update_batch_size=1 for a timing baseline, then 100.
+-- Item-record updates stay in one transaction; records per UPDATE (1-200).
 Config.UpdateBatchSize = 100
--- Opt-in timings: setr feather_inventory_mutation_timing 1 (no item metadata).
+-- Debug flag for server/client/browser mutation timings (no item metadata).
+-- Enable only while diagnosing performance; restart inventory after changing.
 Config.MutationTiming = false
 
 -- Opens player inventory

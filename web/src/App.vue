@@ -550,30 +550,21 @@ async function performDrop(book, items) {
   });
 }
 
-// Feather:Inventory:GiveItem only ever takes one item per call (it re-
-// resolves "whoever's standing in front of you" fresh each time on the Lua
-// side) -- giving several units of a stack is just that same call repeated
-// in order, not a new server-side batch path.
-//
-// The response used to be checked for nothing but a network-level
-// rejection -- a clean { error, message } response (no player in front of
-// you, target too far, etc.) was silently ignored, so a failed give looked
-// like nothing happened at all. Now surfaced the same way performDrop
-// reports its rejections.
+// Resolve the recipient once and submit the selected instances together.
 async function performGive(book, items) {
-  for (const item of items) {
+  const trace = beginMutationTrace();
+  await withMutationBusy('ui_giving_items', async () => {
     try {
-      const { data } = await api.post('Feather:Inventory:GiveItem', { item });
-      if (data?.error) {
-        console.log('Give rejected: ' + (data.message || 'unknown error'));
-        break;
-      }
+      const { data } = await api.post('Feather:Inventory:GiveItem', {
+        items: items.map(item => item.id), traceId: trace.traceId,
+      });
+      if (data?.error) console.log('Give rejected: ' + (data.message || 'unknown error'));
       if (book && data?.sourceItems) book.items = data.sourceItems;
+      finishMutationTrace(trace, data);
     } catch (e) {
       console.log(e.message);
-      break;
     }
-  }
+  });
 }
 
 const contextCanUse = computed(() => !!contextStack().items[0]?.usable);

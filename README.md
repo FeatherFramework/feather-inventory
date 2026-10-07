@@ -57,7 +57,7 @@ After each UI change, run `pnpm build` from `web/`. It replaces `ui/` with the c
 
 The release workflow runs on pushes to `main`, builds and verifies the UI, and publishes `feather-inventory.zip` plus its SHA-256 checksum. The archive contains runtime Lua, configuration, translations, database SQL, documentation/license and built `ui/` files directly at its root; it excludes `web/`, dependencies and development tooling. Versions in `web/package.json` and `fxmanifest.lua` must match. Existing version-tag naming is retained.
 
-For the current drag/drop optimization test, enable `setr feather_inventory_mutation_timing 1` in the server console. Compare `set feather_inventory_update_batch_size 1` with `100` on identical stack moves. The source checkout's `docs/MUTATION-TIMING.md` explains the log fields and required slot/weight acceptance checks. Timing defaults off; the default batch size is 100.
+Inventory updates default to `Config.UpdateBatchSize = 100`; no convars are required. Set `Config.MutationTiming = true` in `config.lua` and restart Inventory to enable diagnostic timings. Leave it false for normal operation.
 
 ### Database setup and upgrades
 
@@ -71,7 +71,7 @@ For an existing development database, rebuilding from the current recipe is reco
 2. Apply `database/character_uuid_cutover.sql` for the Character UUID conversion.
 3. Apply `database/inventory_uuid_char36.sql` only when converting an existing native `inventory.uuid` column without the full Character cutover.
 4. Perform a full server restart.
-5. Run `InvCharacterUuidSmokeTest <player-server-id>` in the server console. All six checks must pass.
+5. Verify the upgrade using the [framework test checklist](https://github.com/DavFount/feather-framework-docs/blob/main/feather-inventory/FEATHER-INVENTORY-TEST-CHECKLIST.md).
 
 Never run migration or lifecycle tests against a database containing property you cannot afford to lose.
 
@@ -1062,31 +1062,7 @@ local scan = Inventory.Diagnostics.RunIntegrityDiagnostics({ sampleLimit = 50 })
 
 Returned as a copy, so a caller cannot reset the counters by mutating what it was handed. With real row locking, contending callers queue rather than retry — so `conflicts` is a genuine signal (a cross-request compare-and-set losing) rather than expected background noise, and `rolledBack` is the number to watch.
 
-`/InvTxSmokeTest` (`Config.DevMode`, run in game by an ACE-authorized player
-with a loaded Character) exercises the whole path: create + metadata + locked
-read, rollback, stale revision, a row deleted mid-flight, a row moved
-mid-flight, acceptance gates, unique issuance, and a guard veto.
-
-`InvLifecycleSmokeTest` (F8 console, no leading slash; use
-`/InvLifecycleSmokeTest` in chat) uses three fixed disposable definitions to exercise
-definition-migration preflight, incompatible rollback, compatible identity and
-metadata preservation, revision bumps, source archival, exact destruction,
-wrong-domain and stale-set rollback, and post-commit lifecycle facts. It has
-the same DevMode, ACE, connected-player, and loaded-Character requirements.
-Fixture setup and inspection use SQL; all owned-item mutations use the supported
-Inventory transaction contracts. An interrupted run is cleaned up safely by
-its exact `inv_smoke_migrate_*` definition names on the next invocation.
-
-`InvConcurrencySmokeTest` (F8; slash-prefixed in chat) coordinates simultaneous
-archive/grant and equipment/move requests. It accepts either valid serial
-ordering while rejecting retired-item creation and any equipment row whose item
-has moved out of the owning Character inventory. Its fixtures use the exact
-`inv_smoke_archive_race` definition and a reserved disposable inventory UUID.
-
-The complete release procedure—including exact in-game actions, two-player
-ground/entity tests, required fixture setup, every expected smoke-test line,
-API harness checks, restart testing, and sign-off—is maintained in
-`docs/FEATHER-INVENTORY-TEST-CHECKLIST.md` in the framework workspace.
+Development plans and test procedures are maintained in [feather-framework-docs](https://github.com/DavFount/feather-framework-docs/tree/main/feather-inventory).
 
 `RunIntegrityDiagnostics` performs SELECTs only. It reports orphaned ownership
 references and grants, missing/archived definitions, malformed metadata,

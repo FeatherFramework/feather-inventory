@@ -23,3 +23,10 @@ lua.execute((root / 'tests/lua/slot_updates_spec.lua').read_text(encoding='utf-8
 lua = LuaRuntime(unpack_returned_tuples=True)
 lua.globals().arg = lua.table_from({1: root.as_posix()})
 lua.execute((root / 'tests/lua/guard_equipment_spec.lua').read_text(encoding='utf-8'))
+lua = LuaRuntime(unpack_returned_tuples=True)
+lua.globals().arg = lua.table_from({1: root.as_posix()})
+lua.execute((root / 'tests/lua/access_reads_spec.lua').read_text(encoding='utf-8'))
+
+lua = LuaRuntime(unpack_returned_tuples=True)
+lua.globals().arg = lua.table_from({1: root.as_posix()})
+lua.execute((root / 'tests/lua/startup_readiness_spec.lua').read_text(encoding='utf-8'))
