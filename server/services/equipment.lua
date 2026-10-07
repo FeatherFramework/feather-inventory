@@ -210,6 +210,8 @@ end
 -- Cheap enough for a guard to call on every move.
 --
 function EquipmentAPI.IsInstanceEquipped(instanceId)
+    local equipped, verified = GuardsAPI.GetLockedEquipmentState(instanceId)
+    if verified then return Result.Ok(equipped) end
     local row = DB.query(
         'SELECT `character_id`, `slot` FROM `character_equipment` WHERE `inventory_items_id`=? LIMIT 1;',
         tonumber(instanceId))[1]

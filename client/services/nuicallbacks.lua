@@ -3,6 +3,15 @@
 -- to the matching server/services/callbacks.lua RPC and relays the
 -- response back -- the NUI itself is untrusted input (see MENU-01-style
 -- reasoning); the real validation lives server-side.
+local function CallTimedMutation(name, args)
+  local started = GetGameTimer()
+  local result = Feather.RPC.CallAsync(name, args)
+  if result and type(result.mutationTiming) == 'table' then
+    result.mutationTiming.clientRpcMs = (GetGameTimer() - started) % 4294967296
+  end
+  return result
+end
+
 RegisterNUICallback('Feather:Inventory:NuiCloseInventory', function(args, cb)
   cb('ok')
   TriggerEvent('Feather:Inventory:CloseInventory')
@@ -29,10 +38,11 @@ RegisterNUICallback('Feather:Inventory:UpdateInventory', function(args, cb)
   local data = {
     sourceInventory = args.sourceInventory,
     targetInventory = args.targetInventory,
-    items = args.items
+    items = args.items,
+    traceId = args.traceId,
   }
 
-  local result = Feather.RPC.CallAsync('Feather:Inventory:UpdateInventory', data)
+  local result = CallTimedMutation('Feather:Inventory:UpdateInventory', data)
 
   -- (Rejection surfacing) This used to forward only sourceItems/targetItems,
   -- dropping error/message/code entirely -- so a rejected bulk transfer
@@ -43,7 +53,8 @@ RegisterNUICallback('Feather:Inventory:UpdateInventory', function(args, cb)
     code = result and result.code,
     message = result and result.message,
     sourceItems = result and result.sourceItems,
-    targetItems = result and result.targetItems
+    targetItems = result and result.targetItems,
+    mutationTiming = result and result.mutationTiming,
   })
 end)
 
@@ -84,57 +95,23 @@ RegisterNUICallback('Feather:Inventory:GiveItem', function(args, cb)
 end)
 
 RegisterNUICallback('Feather:Inventory:DropItems', function(args, cb)
-  cb(DropItemsOnGround(args.items))
+  cb(DropItemsOnGround(args.items, args.traceId))
 end)
 
 RegisterNUICallback('Feather:Inventory:MoveItem', function(args, cb)
-  local res = Feather.RPC.CallAsync('Feather:Inventory:MoveItem', args)
+  local res = CallTimedMutation('Feather:Inventory:MoveItem', args)
 
   cb(res)
 end)
 
 RegisterNUICallback('Feather:Inventory:TakeAll', function(args, cb)
-  local res = Feather.RPC.CallAsync('Feather:Inventory:TakeAll', args)
-
-  -- Reconcile from a fresh, access-checked read after the mutation instead of
-  -- rendering arrays returned at the transaction boundary. Do not use the
-  -- normal GetInventoryItems open path here: its numeric argument means a
-  -- player server id, while this is a numeric database inventory id.
-  if res and not res.error then
-    local expectedSourceCount = tonumber(res.expectedSourceCount)
-    local refreshed
-    local converged = false
-    for attempt = 1, 20 do
-      refreshed = Feather.RPC.CallAsync('Feather:Inventory:RefreshOpenPair', {
-        otherInventoryId = args.fromInventory
-      })
-      local sourceItems = refreshed and refreshed.sourceItems
-      if refreshed and refreshed.error == nil
-        and (expectedSourceCount == nil or #(sourceItems or {}) == expectedSourceCount) then
-        converged = true
-        break
-      end
-      if attempt < 20 then Wait(100) end
-    end
-
-    -- Never hand the browser the stale transaction-boundary arrays. If the
-    -- count did not converge (for example, another authorized mutation raced
-    -- this refresh), the last dedicated read is still the authoritative state.
-    if refreshed and refreshed.error == nil then
-      res.sourceItems = refreshed.sourceItems or {}
-      res.targetItems = refreshed.targetItems or {}
-      res.refreshConverged = converged
-    else
-      res.sourceItems = nil
-      res.targetItems = nil
-    end
-  end
-
+  -- The RPC returns its final fresh pair after commit and access validation.
+  local res = CallTimedMutation('Feather:Inventory:TakeAll', args)
   cb(res)
 end)
 
 RegisterNUICallback('Feather:Inventory:SplitStack', function(args, cb)
-  local res = Feather.RPC.CallAsync('Feather:Inventory:SplitStack', args)
+  local res = CallTimedMutation('Feather:Inventory:SplitStack', args)
 
   cb(res)
 end)

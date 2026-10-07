@@ -1,3 +1,19 @@
+local function TimedMutationResponse(operation, params, respond)
+  local metrics = InventoryMutationMetrics.Begin(operation, params.traceId)
+  return metrics, function(payload)
+    return respond(InventoryMutationMetrics.Finish(metrics, payload))
+  end
+end
+
+local function ReadTimedPair(sourceInventory, targetInventory, metrics)
+  return InventoryMutationMetrics.Measure(metrics, 'responseReadMs', function()
+    return {
+      sourceItems = InventoryControllers.GetInventoryItems(sourceInventory),
+      targetItems = InventoryControllers.GetInventoryItems(targetInventory),
+    }
+  end)
+end
+
 Feather.RPC.Register('Feather:Inventory:GetInventoryItems', function(params, res, src)
   local otherInventoryId = params['otherInventoryId']
 
@@ -95,6 +111,7 @@ Feather.RPC.Register('Feather:Inventory:UpdateInventory', function(params, res, 
   local player = InventoryIdentity.GetCharacter(src)
   local character = player and player.char
   local result = InventoryControllers.MoveInventoryItems(sourceInventory, targetInventory, items, {
+    traceId = params.traceId,
     actorSource = src,
     actorCharacterId = character and character.id,
     reason = 'inventory_transfer',
@@ -176,6 +193,8 @@ end)
 -- destination inventory must actually be accessible to the caller right
 -- now, re-derived from src rather than trusted from the client.
 Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
+  local metrics
+  metrics, res = TimedMutationResponse('move_item', params, res)
   local itemId = tonumber(params.itemId)
   local toInventory = params.toInventory
   local toSlot = tonumber(params.toSlot)
@@ -220,10 +239,7 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
 
   if tostring(fromInventory) == tostring(toInventory) and tonumber(fromSlot) == toSlot then
     -- No-op drag back onto itself.
-    return res({
-      sourceItems = InventoryControllers.GetInventoryItems(fromInventory),
-      targetItems = InventoryControllers.GetInventoryItems(toInventory)
-    })
+    return res(ReadTimedPair(fromInventory, toInventory, metrics))
   end
 
   -- (Stack merge) Dropping a stack onto another stack of the SAME item tops
@@ -304,6 +320,8 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
     local character = player and player.char
     local merged = InventoryControllers.MoveSlotItemsPartial(
       fromInventory, fromSlot, toInventory, toSlot, mergeCount, {
+        _timing = metrics,
+        correlationId = metrics and metrics.id,
         actorSource = src,
         actorCharacterId = character and character.id,
         reason = 'slot_merge',
@@ -319,6 +337,8 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
     local player = InventoryIdentity.GetCharacter(src)
     local character = player and player.char
     local moved, code, message = InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory, toSlot, {
+      _timing = metrics,
+      correlationId = metrics and metrics.id,
       actorSource = src,
       actorCharacterId = character and character.id,
       reason = 'slot_move',
@@ -331,10 +351,7 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
     end
   end
 
-  res({
-    sourceItems = InventoryControllers.GetInventoryItems(fromInventory),
-    targetItems = InventoryControllers.GetInventoryItems(toInventory)
-  })
+  res(ReadTimedPair(fromInventory, toInventory, metrics))
 end)
 
 -- (§10.1 split stack) The ledger otherwise only ever moves a whole
@@ -349,6 +366,8 @@ end)
 -- compartment to split into. Ownership is re-derived from the item's own
 -- row, never from the client -- same pattern as MoveItem.
 Feather.RPC.Register('Feather:Inventory:SplitStack', function(params, res, src)
+  local metrics
+  metrics, res = TimedMutationResponse('split_stack', params, res)
   local itemId = tonumber(params.itemId)
   local quantity = tonumber(params.quantity)
 
@@ -390,6 +409,8 @@ Feather.RPC.Register('Feather:Inventory:SplitStack', function(params, res, src)
   local player = InventoryIdentity.GetCharacter(src)
   local character = player and player.char
   local moved = InventoryControllers.SplitSlotItems(inventory, fromSlot, freeSlot, quantity, {
+    _timing = metrics,
+    correlationId = metrics and metrics.id,
     actorSource = src,
     actorCharacterId = character and character.id,
     reason = 'split_stack',
@@ -400,10 +421,7 @@ Feather.RPC.Register('Feather:Inventory:SplitStack', function(params, res, src)
     return res({ error = true, code = 'conflict', message = 'The inventory changed; try again.' })
   end
 
-  res({
-    sourceItems = InventoryControllers.GetInventoryItems(inventory),
-    targetItems = InventoryControllers.GetInventoryItems(inventory)
-  })
+  res(ReadTimedPair(inventory, inventory, metrics))
 end)
 
 -- (§10.3 quick-loot) Moves everything from one inventory into the caller's
@@ -419,6 +437,8 @@ end)
 -- Reports how many actually moved so the UI can tell "took everything" from
 -- "took what fit", rather than both looking like success.
 Feather.RPC.Register('Feather:Inventory:TakeAll', function(params, res, src)
+  local metrics
+  metrics, res = TimedMutationResponse('take_all', params, res)
   local fromInventory = params.fromInventory
 
   if not fromInventory then
@@ -450,13 +470,17 @@ Feather.RPC.Register('Feather:Inventory:TakeAll', function(params, res, src)
     return res({ error = true, message = 'Cannot take from your own inventory.' })
   end
 
-  local sourceItems = InventoryControllers.GetInventoryItems(fromInventory)
+  local sourceItems = InventoryMutationMetrics.Measure(metrics, 'sourceReadMs',
+    InventoryControllers.GetInventoryItems, fromInventory)
   local moved, skipped = 0, 0
   local context = {
       actorSource = src,
       actorCharacterId = character.id,
       reason = 'take_all',
-      resource = 'feather-inventory'
+      resource = 'feather-inventory',
+      _timing = metrics,
+      correlationId = params.traceId,
+      deferResponseReads = true,
   }
 
   -- The usual case is that everything fits. Move the complete set through
@@ -472,7 +496,9 @@ Feather.RPC.Register('Feather:Inventory:TakeAll', function(params, res, src)
     if not (batch and batch.error) then
       moved = #instanceIds
     else
+      if metrics then metrics.fallbackAttempts = 0 end
       for _, item in pairs(sourceItems) do
+        if metrics then metrics.fallbackAttempts = metrics.fallbackAttempts + 1 end
         local result = InventoryControllers.MoveInventoryItems(
           fromInventory, targetInventory, { item.id }, context)
         if result and result.error then
@@ -490,14 +516,16 @@ Feather.RPC.Register('Feather:Inventory:TakeAll', function(params, res, src)
     Feather.Notify.RightNotify(src, Translate(src, 'msg_took_what_fit', 'Took what would fit.'), 3000)
   end
 
-  res({
-    error = false,
-    moved = moved,
-    skipped = skipped,
-    expectedSourceCount = math.max(0, #sourceItems - moved),
-    sourceItems = InventoryControllers.GetInventoryItems(fromInventory),
-    targetItems = InventoryControllers.GetInventoryItems(targetInventory)
-  })
+  -- A count predicted before the mutation is not a freshness token: another
+  -- authorized mutation can change it immediately. Read the committed state
+  -- once after rechecking access, rather than polling for that old count.
+  if not InventoryAPI.Accessible(src, fromInventory) then
+    return res({ error = true, code = 'no_access',
+      message = 'Inventory access is no longer available.', moved = moved, skipped = skipped })
+  end
+  local payload = ReadTimedPair(fromInventory, targetInventory, metrics)
+  payload.error, payload.moved, payload.skipped = false, moved, skipped
+  res(payload)
 end)
 
 -- (INV-11) Access-list management for owned/shared inventories (storage,

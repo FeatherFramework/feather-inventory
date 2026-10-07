@@ -37,6 +37,53 @@ GuardsAPI = {}
 
 local MoveGuards = {}
 local DestroyGuards = {}
+local ActiveEquipmentSnapshots = {}
+
+-- Movement controllers already hold the item locks. Use a current locking
+-- read for equipment too, never a transaction's older consistent-read view.
+function GuardsAPI.PrepareMoveSnapshots(query, rows)
+    if next(MoveGuards) == nil or #rows == 0 then return true end
+    local ids, seen, equipped = {}, {}, {}
+    for _, row in ipairs(rows) do
+        local id = tonumber(row.id)
+        if not id then return false end
+        if not seen[id] then ids[#ids + 1] = id; seen[id] = true end
+    end
+    table.sort(ids)
+    for first = 1, #ids, 200 do
+        local last = math.min(first + 199, #ids)
+        local placeholders, params = {}, {}
+        for index = first, last do
+            placeholders[#placeholders + 1] = '?'
+            params[#params + 1] = ids[index]
+        end
+        local assignments = query('SELECT `inventory_items_id` FROM `character_equipment`' ..
+            ' WHERE `inventory_items_id` IN (' .. table.concat(placeholders, ',') ..
+            ') ORDER BY `inventory_items_id` FOR UPDATE;', params)
+        if type(assignments) ~= 'table' then return false end
+        for _, assignment in ipairs(assignments) do equipped[tonumber(assignment.inventory_items_id)] = true end
+    end
+    for _, row in ipairs(rows) do
+        row._equipmentVerified = true
+        row._equipmentEquipped = equipped[tonumber(row.id)] == true
+    end
+    return true
+end
+
+-- Existing cross-resource guards may call Equipment.IsInstanceEquipped.
+-- This lookup is scoped to an active guard on this exact locked item; other
+-- calls retain the ordinary DB path. Token sets make nested/overlapping
+-- evaluations safe to clean up in either order.
+function GuardsAPI.GetLockedEquipmentState(instanceId)
+    local active = ActiveEquipmentSnapshots[tonumber(instanceId)]
+    if not active then return nil, false end
+    local value
+    for _, state in pairs(active) do
+        if value ~= nil and value ~= state.equipped then return nil, false end
+        value = state.equipped
+    end
+    return value, value ~= nil
+end
 
 -- Cfx serializes callbacks crossing a resource boundary as callable tables.
 -- Use rawget because their metatable intentionally rejects normal indexing.
@@ -89,7 +136,16 @@ end
 
 local function RunResolvedGuards(registry, instance, context)
     for name, guard in pairs(registry) do
+        local metrics = context and context._timing
+        local started = metrics and GetGameTimer()
         local ok, allowed, reason = pcall(guard, instance, context or {})
+        if metrics then
+            metrics.guardConsumers = metrics.guardConsumers or {}
+            local timing = metrics.guardConsumers[name] or { calls = 0, ms = 0 }
+            timing.calls = timing.calls + 1
+            timing.ms = timing.ms + InventoryMutationMetrics.Elapsed(started)
+            metrics.guardConsumers[name] = timing
+        end
         if not ok then
             warn(('Guard "%s" errored (%s); vetoing as fail-closed.'):format(name, tostring(allowed)))
             return false, ('Guard "%s" failed.'):format(name)
@@ -136,7 +192,22 @@ function GuardsAPI.CanMoveInstanceSnapshot(instance, context)
     if type(instance) ~= 'table' or not tonumber(instance.id) then
         return false, 'Item instance could not be read for guard evaluation.'
     end
-    return RunResolvedGuards(MoveGuards, instance, context)
+    local snapshot = instance.equipmentSnapshot
+    if type(snapshot) ~= 'table' or type(snapshot.equipped) ~= 'boolean' then
+        return RunResolvedGuards(MoveGuards, instance, context)
+    end
+    local id, token = tonumber(instance.id), {}
+    local active = ActiveEquipmentSnapshots[id] or {}
+    ActiveEquipmentSnapshots[id] = active
+    active[token] = { equipped = snapshot.equipped }
+    local values = table.pack(pcall(RunResolvedGuards, MoveGuards, instance, context))
+    active[token] = nil
+    if next(active) == nil then ActiveEquipmentSnapshots[id] = nil end
+    if not values[1] then
+        warn('Movement guard evaluation failed; vetoing as fail-closed.')
+        return false, 'Movement guard evaluation failed.'
+    end
+    return table.unpack(values, 2, values.n)
 end
 
 function GuardsAPI.CanDestroyInstance(instanceId, context)

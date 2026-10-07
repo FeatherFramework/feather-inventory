@@ -1,4 +1,10 @@
 AUDIT*
+/ui/
+/web/node_modules/
+/web/.vite/
+/.artifacts/
+__pycache__/
+*.log
 # Planning docs live in Discord, not in the public repo. Kept locally --
 # code comments still cite their sections (§6.1, §10.4, ...) and those
 # references remain valid against the copies the team shares there.

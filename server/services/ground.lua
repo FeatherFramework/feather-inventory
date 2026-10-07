@@ -52,6 +52,11 @@ Feather.RPC.Register("Feather:Inventory:GetGroundUID", function(params, res, src
 end)
 
 Feather.RPC.Register("Feather:Inventory:DropItemsOnGround", function(params, res, src)
+    local metrics = InventoryMutationMetrics.Begin('ground_drop', params.traceId)
+    local originalRes = res
+    res = function(payload)
+        return originalRes(InventoryMutationMetrics.Finish(metrics, payload))
+    end
     -- (Phase 6 consistency pass) No nil-guard here meant any client without
     -- a loaded character crashed this RPC on `character.id` instead of
     -- getting a clean rejection.
@@ -87,6 +92,8 @@ Feather.RPC.Register("Feather:Inventory:DropItemsOnGround", function(params, res
     -- {error, message} on capacity rejection (INV-14) -- it just never
     -- reached the player; the NUI only logged it to the browser console.
     local dropResult = ItemsAPI.DropItemsOnGround(inventoryID, params.items, params.x, params.y, params.z, {
+        _timing = metrics,
+        correlationId = metrics and metrics.id,
         actorSource = src,
         actorCharacterId = character.id,
         reason = 'ground_drop',
