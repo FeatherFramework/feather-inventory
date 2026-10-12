@@ -6,6 +6,9 @@ import '@/assets/tailwind.css';
 import LedgerBook from '@/components/LedgerBook.vue';
 import ContextMenu from '@/components/ContextMenu.vue';
 import ItemCountModal from '@/components/ItemCountModal.vue';
+import AmmunitionPanel from '@/components/AmmunitionPanel.vue';
+import EquipmentPanel from '@/components/EquipmentPanel.vue';
+import { createAmmoPanelLifetime } from './ammoPanelLifetime';
 import Hotbar from '@/components/Hotbar.vue';
 import { t, setStrings, setConditionStages } from '@/i18n';
 
@@ -82,6 +85,124 @@ const hotbarDragEligible = computed(() => {
 });
 
 const contextMenu = ref(null); // { book, slot, x, y } | null
+const ammoPanel = ref(null);
+const ammoBusy = ref(false);
+const ammoMessage = ref('');
+const ammoScope = ref(null);
+const ammoLifetime = createAmmoPanelLifetime();
+const equipmentPanel = ref(null);
+const equipmentBusy = ref(false);
+const equipmentMessage = ref('');
+const equipmentScope = ref(null);
+const equipmentItem = ref(null);
+const equipmentLifetime = createAmmoPanelLifetime();
+function closeEquipmentPanel() {
+  equipmentLifetime.invalidate();
+  equipmentPanel.value = null;
+  equipmentScope.value = null;
+  equipmentItem.value = null;
+}
+function closeAmmoPanel() {
+  closeEquipmentPanel();
+  ammoLifetime.invalidate();
+  ammoPanel.value = null;
+  ammoScope.value = null;
+}
+const contextCanAmmo = computed(() => contextMenu.value?.book === 'player' && contextStack().items.some((item) => /^(ammo_|weapon_)/.test(item.name)));
+const contextCanEquipment = computed(() => contextMenu.value?.book === 'player' && contextStack().items.length === 1
+  && /^weapon_/.test(contextStack().items[0]?.name || ''));
+async function onContextEquipment() {
+  if (equipmentBusy.value || ammoBusy.value || mutationBusy.value) return;
+  const item = contextStack().items[0];
+  contextMenu.value = null;
+  if (!item) return;
+  closeAmmoPanel();
+  const ticket = equipmentLifetime.capture();
+  equipmentBusy.value = true;
+  equipmentPanel.value = [];
+  equipmentMessage.value = 'Checking equipment…';
+  try {
+    const { data } = await api.post('Feather:Inventory:NativeEquipmentOptions', { itemId: item.id });
+    if (!equipmentLifetime.current(ticket)) return;
+    if (data?.ok) {
+      equipmentPanel.value = data.value.options;
+      equipmentScope.value = data.value.identity;
+      equipmentItem.value = item.id;
+      equipmentMessage.value = data.value.options.length ? '' : 'No supported equipment action for this firearm.';
+    } else equipmentMessage.value = data?.error?.code || 'Equipment controls unavailable.';
+  } catch { if (equipmentLifetime.current(ticket)) equipmentMessage.value = 'Equipment controls unavailable.'; }
+  finally { equipmentBusy.value = false; }
+}
+async function changeEquipment(option) {
+  if (equipmentBusy.value || !equipmentScope.value) return;
+  equipmentBusy.value = true;
+  const ticket = equipmentLifetime.capture();
+  try {
+    const { data } = await api.post('Feather:Inventory:NativeEquipmentChange', {
+      itemId: equipmentItem.value, action: option.action, slot: option.slot, scope: equipmentScope.value,
+    });
+    if (!equipmentLifetime.current(ticket)) return;
+    equipmentPanel.value = []; // never leave old-epoch buttons actionable
+    equipmentScope.value = null;
+    equipmentMessage.value = data?.ok ? 'Equipment updated. Reopen Equipment for another action.'
+      : `${data?.error?.code || 'Equipment result uncertain'}. Do not retry an uncertain change.`;
+  } catch {
+    if (equipmentLifetime.current(ticket)) {
+      equipmentPanel.value = [];
+      equipmentScope.value = null;
+      equipmentMessage.value = 'Equipment result uncertain. Do not retry; check Weapons status.';
+    }
+  } finally { equipmentBusy.value = false; }
+}
+async function onContextAmmo() {
+  if (ammoBusy.value) return;
+  const ticket = ammoLifetime.invalidate();
+  const itemId = contextStack().items[0]?.id;
+  contextMenu.value = null;
+  ammoMessage.value = '';
+  try {
+    const { data } = await api.post('Feather:Inventory:NativeAmmoOptions', { itemId });
+    if (!ammoLifetime.current(ticket)) return;
+    if (data?.ok) {
+      ammoScope.value = { characterId: data.value.characterId, sessionId: data.value.sessionId, epoch: data.value.epoch };
+      ammoPanel.value = data.value.options;
+      if (!data.value.options.length) ammoMessage.value = 'No supported shared-pool ammunition for this item.';
+    }
+    else { ammoPanel.value = []; ammoMessage.value = data?.message || data?.error?.code || 'Ammunition controls unavailable.'; }
+  } catch { if (ammoLifetime.current(ticket)) { ammoPanel.value = []; ammoMessage.value = 'Ammunition controls unavailable.'; } }
+}
+async function onAmmoTransfer(ammunitionId, quantity, direction) {
+  if (ammoBusy.value) return;
+  ammoBusy.value = true;
+  const ticket = ammoLifetime.capture();
+  try {
+    const { data } = await api.post('Feather:Inventory:NativeAmmoTransfer', { ammunitionId, quantity, direction, scope: ammoScope.value });
+    if (!ammoLifetime.current(ticket)) return;
+    if (!data?.ok) {
+      ammoMessage.value = data?.message || data?.error?.code || 'Transfer uncertain; do not retry.';
+      if (data?.dispatched === false && data.value?.options) {
+        for (const entry of ammoPanel.value || []) {
+          const refreshed = data.value.options.find((candidate) => candidate.id === entry.id);
+          entry.loose = refreshed?.loose ?? null;
+          if (refreshed) entry.carried = refreshed.carried;
+        }
+        return;
+      }
+      // Freeze this panel after failure, including a lost/ambiguous response.
+      ammoPanel.value = [];
+      return;
+    }
+    const option = ammoPanel.value?.find((entry) => entry.id === ammunitionId);
+    if (option) option.carried = data.value.carried;
+    for (const entry of ammoPanel.value || []) {
+      const refreshed = data.value.options?.find((candidate) => candidate.id === entry.id);
+      entry.loose = refreshed?.loose ?? null;
+      if (refreshed) entry.carried = refreshed.carried;
+    }
+    ammoMessage.value = `${direction === 'load' ? 'Loaded' : 'Unloaded'} ${quantity} round(s). Carried: ${data.value.carried}.`;
+  } catch { if (ammoLifetime.current(ticket)) { ammoMessage.value = 'Transfer uncertain; do not retry. Check Weapons status.'; ammoPanel.value = []; } }
+  finally { ammoBusy.value = false; }
+}
 const mutationBusy = ref(false);
 const mutationBusyLabel = ref('ui_working');
 
@@ -122,7 +243,12 @@ function dragArmedFor(bookKey) {
 
 const onMessage = (event) => {
   const data = event.data;
+  if (data.type === 'ammoPanelInvalidated') {
+    closeAmmoPanel();
+    return;
+  }
   if (data.type === 'closeInventory') {
+    closeAmmoPanel();
     visible.value = false;
     mutationBusy.value = false;
     clearDrag();
@@ -145,6 +271,9 @@ const onMessage = (event) => {
     return;
   }
   if (data.type !== 'toggleInventory') return;
+  // A new authoritative ledger presentation invalidates any panel/request
+  // attached to the preceding book, including a late transfer count reply.
+  closeAmmoPanel();
 
   visible.value = data.visible;
   rawCategories.value = data.categories || [];
@@ -195,12 +324,23 @@ onUnmounted(() => {
 
 const onKeydown = (event) => {
   if (!visible.value) return;
+  if (event.code === 'Escape' && equipmentPanel.value) {
+    event.preventDefault();
+    if (!equipmentBusy.value) closeEquipmentPanel();
+    return;
+  }
+  if (event.code === 'Escape' && ammoPanel.value) {
+    event.preventDefault();
+    if (!ammoBusy.value) closeAmmoPanel();
+    return;
+  }
   if (event.code === 'Escape' && !mutationBusy.value) closeApp();
 };
 
 const closeApp = () => {
-  if (mutationBusy.value) return;
+  if (mutationBusy.value || ammoBusy.value || equipmentBusy.value) return;
   visible.value = false;
+  closeAmmoPanel();
   drag.value = null;
   hover.value = null;
   contextMenu.value = null;
@@ -694,14 +834,20 @@ const quantityActionLabel = computed(() => {
       :x="contextMenu.x"
       :y="contextMenu.y"
       :can-use="contextCanUse"
+      :can-ammo="contextCanAmmo"
+      :can-equipment="contextCanEquipment"
       :can-split="contextCanSplit"
       @use="onContextUse"
+      @ammo="onContextAmmo"
+      @equipment="onContextEquipment"
       @give="onContextGive"
       @drop="onContextDrop"
       @split="onContextSplit"
       @close="contextMenu = null"
     />
 
+    <EquipmentPanel v-if="equipmentPanel" :options="equipmentPanel" :busy="equipmentBusy" :message="equipmentMessage"
+      @change="changeEquipment" @close="closeEquipmentPanel" />
     <ItemCountModal
       v-if="quantityPrompt"
       :item-name="quantityPrompt.itemName"
@@ -710,6 +856,8 @@ const quantityActionLabel = computed(() => {
       @confirm="onQuantityConfirm"
       @cancel="quantityPrompt = null"
     />
+    <AmmunitionPanel v-if="ammoPanel" :options="ammoPanel" :busy="ammoBusy" :message="ammoMessage"
+      @transfer="onAmmoTransfer" @close="closeAmmoPanel" />
 
   </div>
 </template>

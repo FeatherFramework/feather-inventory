@@ -8,6 +8,8 @@ Config = {}
 Config.DevMode = true
 -- Durable ordinary-item fulfillment; callers supply a stable operation ID.
 Config.TrustedIdempotentGrantCallers = { ['feather-shops'] = true }
+-- Migration gate: never enable until Weapons enrollment/runtime is implemented.
+Config.CharacterAmmunitionEnabled = false
 
 -- Gates verbose server-console logging (currently the access/ground
 -- resolution tracing added while building the robbery/ACL system, plus

@@ -694,6 +694,11 @@ function Tx:SetMetadata(instanceId, document, expectedRevision)
         return Result.Err(Result.Codes.CONFLICT, 'Instance moved while metadata was being written.')
     end
     local actual = row and tonumber(row.row_revision)
+    local allowed, reason = GuardsAPI.CanChangeInstance(id, {
+        operation='metadata_write', resource=self.context and self.context.resource,
+        actorSource=self.context and self.context.actorSource,
+    })
+    if not allowed then return Result.Err(Result.Codes.DENIED, reason) end
 
     -- Compared against row_revision: the caller is asserting "nothing about
     -- this instance has changed since I read it", and a MOVE is such a change

@@ -1,8 +1,25 @@
 -- Generic ordinary-item fulfillment. No shop tables or payment decisions here.
 GrantOnceAPI = {}
+local janeGrantKey={}
+local janePreviewGrantKey={}
+local jane='6a2fd060-c46f-11f1-9ae2-e0d55eaa2deb'
+local janeGrantId='native-test-jane-revolver-regular-two-v1'
+local janePreviewGrantId='native-test-jane-preview-regular-two-v1'
+local function janeGrantEnabled(preview)
+    return Config.DevMode==true and Config.CharacterAmmunitionEnabled~=true
+        and type(InventoryReadiness)=='table' and InventoryReadiness.state=='ready'
+        and type(GetConvar)=='function' and GetConvar(preview and 'feather_jane_preview_budget' or 'feather_jane_ammo_budget','0')=='1'
+        and GetResourceState('feather-weapons')=='stopped'
+        and GetResourceState('feather-weapons-native-proof')=='stopped'
+end
 local function Invalid(message) return Result.Err('invalid_input', message) end
-local function Validate(request, resource)
-    if Config.TrustedIdempotentGrantCallers[resource or ''] ~= true then
+local function Validate(request, resource, privateKey)
+    local preview=privateKey==janePreviewGrantKey
+    local dedicated=(privateKey==janeGrantKey or preview) and resource=='feather-inventory'
+        and janeGrantEnabled(preview) and type(request)=='table' and request.characterId==jane
+        and request.grantId==(preview and janePreviewGrantId or janeGrantId)
+        and request.itemName=='ammo_revolver_regular' and request.quantity==2
+    if Config.TrustedIdempotentGrantCallers[resource or ''] ~= true and not dedicated then
         return Result.Err('authorization_denied', 'Idempotent grant caller is not trusted.')
     end
     if type(request) ~= 'table' then return Invalid('Grant request required.') end
@@ -37,13 +54,19 @@ function GrantOnceAPI.Start()
         PRIMARY KEY (`source_resource`,`grant_id`)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin]])
 end
-function GrantOnceAPI.Grant(request, resource)
-    local validated = Validate(request, resource)
+function GrantOnceAPI.Grant(request, resource, privateKey, sessionCurrent)
+    local validated = Validate(request, resource, privateKey)
     if not validated.ok then return validated end
+    local function authorized()
+        if privateKey~=janeGrantKey and privateKey~=janePreviewGrantKey then return true end
+        return janeGrantEnabled(privateKey==janePreviewGrantKey) and type(sessionCurrent)=='function' and sessionCurrent()==true
+    end
+    if not authorized() then return Result.Err('authorization_denied','Jane grant scope/session changed.') end
     -- Do not use the transaction runner's in-memory idempotency cache: this
     -- operation always reads the durable, payload-bound receipt while locked.
     return TransactionAPI.Transaction({ resource = resource,
         reason = 'idempotent_character_grant', correlationId = request.grantId }, function(tx)
+        if not authorized() then return Result.Err('authorization_denied','Jane grant scope/session changed.') end
         tx.query([[INSERT IGNORE INTO `inventory_grant_receipts`
             (`source_resource`,`grant_id`,`request_fingerprint`) VALUES (?,?,?)]],
             { resource, request.grantId, validated.value.fingerprint })
@@ -68,6 +91,7 @@ function GrantOnceAPI.Grant(request, resource)
                 return Result.Err('internal', 'Stored delivery receipt is incomplete.')
             end
             result.replayed = true
+            if not authorized() then return Result.Err('authorization_denied','Jane grant scope/session changed.') end
             return Result.Ok(result)
         end
         local definitions = tx.query([[SELECT `id`,`name`,`type`,`instance_mode`,`archived_at`
@@ -78,6 +102,9 @@ function GrantOnceAPI.Grant(request, resource)
         end
         if definition.instance_mode ~= 'stack' or definition.type == 'weapon' then
             return Result.Err('unique_requires_issuer', 'Unique items require their owning issuer.')
+        end
+        if (privateKey==janeGrantKey or privateKey==janePreviewGrantKey) and definition.type~='item_ammo' then
+            return Result.Err('item_unavailable','Regular revolver stack ammo required.')
         end
         local inventories = tx.query('SELECT `id` FROM `inventory` WHERE `character_id`=? LIMIT 1',
             { validated.value.characterId }) or {}
@@ -91,9 +118,38 @@ function GrantOnceAPI.Grant(request, resource)
         tx.query([[UPDATE `inventory_grant_receipts` SET `result_json`=?
             WHERE `source_resource`=? AND `grant_id`=?]],
             { json.encode(result), resource, request.grantId })
+        if not authorized() then return Result.Err('authorization_denied','Jane grant scope/session changed before commit.') end
         return Result.Ok(result)
     end)
 end
+local function JaneBudget(source,args,preview)
+    if source~=0 then return end
+    local target=tonumber(args and args[1])
+    local prefix=preview and '[InvJanePreviewBudget]' or '[InvJaneAmmoBudget]'
+    if not janeGrantEnabled(preview) or not target or target<1 or target%1~=0 or args[2]~=jane then
+        print(prefix..' BLOCKED: exact Jane UUID, opt-in, disabled production and stopped Weapons/proof required'); return
+    end
+    local called,result=pcall(function()
+        local session=exports['feather-core']:GetSessionContext(target)
+        assert(session and session.ok and session.value.characterId==jane,'Jane session required')
+        local function current()
+            return exports['feather-core']:IsSessionCurrent(target,session.value.sessionId,jane)==true
+        end
+        assert(current(),'current Jane required')
+        local definition=ItemControllers.GetItemDefinitionByName('ammo_revolver_regular')
+        assert(definition and definition.type=='item_ammo' and definition.instance_mode=='stack','ammo definition required')
+        return GrantOnceAPI.Grant({characterId=jane,grantId=preview and janePreviewGrantId or janeGrantId,
+            definitionId=tonumber(definition.id),itemName='ammo_revolver_regular',quantity=2},
+            'feather-inventory',preview and janePreviewGrantKey or janeGrantKey,current)
+    end)
+    if not called or not result or not result.ok then
+        print(prefix..' FAIL '..tostring(called and result and result.error and result.error.code or result)); return
+    end
+    print(prefix..' PASS quantity=2 ammo_revolver_regular replayed='..tostring(result.value.replayed==true)
+        ..' characterId='..jane..'; durable loose-ammo grant only; no carried/native/equip changes')
+end
+RegisterCommand('InvJaneAmmoBudget',function(source,args) JaneBudget(source,args,false) end,true)
+RegisterCommand('InvJanePreviewBudget',function(source,args) JaneBudget(source,args,true) end,true)
 -- Serialize cancellation against delivery on the SAME receipt row. A missing
 -- receipt alone is never evidence for refund: cancellation must first commit
 -- this terminal tombstone, preventing all later delivery attempts for the key.

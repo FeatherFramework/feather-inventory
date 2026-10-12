@@ -11,6 +11,25 @@ local function ReadTimedPair(sourceInventory, targetInventory, metrics)
   end)
 end
 
+-- Read-only own-character preview. Never accept an inventory/character id from
+-- NUI and never treat displayed quantities as economic authorization.
+Feather.RPC.Register('Feather:Inventory:NativeAmmoInventory',function(_,res,src)
+  if Config.CharacterAmmunitionEnabled~=true then return res({ok=false,error={code='native_ammunition_disabled'}}) end
+  local session=InventoryIdentity.GetSession(src)
+  if not session or not session.ok then return res({ok=false,error={code='current_character_required'}}) end
+  local identity={characterId=session.value.characterId,sessionId=session.value.sessionId}
+  local inventory=InventoryAPI.GetCharacterInventory(identity.characterId)
+  if not inventory or not inventory.ok then return res(inventory) end
+  local items=InventoryAPI.GetInventoryItems(inventory.value.id)
+  if not items or not items.ok then return res(items) end
+  local current=InventoryIdentity.GetSession(src)
+  if Config.CharacterAmmunitionEnabled~=true or not current or not current.ok
+    or current.value.characterId~=identity.characterId or current.value.sessionId~=identity.sessionId then
+    return res({ok=false,error={code='ammunition_preview_context_changed'}})
+  end
+  return res({ok=true,value={items=items.value,characterId=identity.characterId,sessionId=identity.sessionId}})
+end)
+
 Feather.RPC.Register('Feather:Inventory:GetInventoryItems', function(params, res, src)
   local otherInventoryId = params['otherInventoryId']
 

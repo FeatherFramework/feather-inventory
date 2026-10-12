@@ -37,6 +37,7 @@ GuardsAPI = {}
 
 local MoveGuards = {}
 local DestroyGuards = {}
+local InstanceChangeGuards = {}
 local ActiveEquipmentSnapshots = {}
 
 -- Movement controllers already hold the item locks. Use a current locking
@@ -133,8 +134,28 @@ function GuardsAPI.UnregisterMoveGuard(name)
     MoveGuards[name] = nil
 end
 
+-- Synchronous item-lifetime holds, separate from movement/equipped checks.
+-- Called under mutation locks for metadata and equipment assignments. Consumers
+-- receive only an item ID and operation context; they must not query or yield.
+function GuardsAPI.RegisterInstanceChangeGuard(name, fn)
+    if type(name)~='string' or name=='' or not IsGuardCallback(fn) then
+        return Result.Err(Result.Codes.INVALID_INPUT, 'A guard name and callable function reference are required.')
+    end
+    InstanceChangeGuards[name]=fn
+    return Result.Ok(true)
+end
+function GuardsAPI.UnregisterInstanceChangeGuard(name)
+    InstanceChangeGuards[name]=nil
+end
+
 function GuardsAPI.UnregisterDestroyGuard(name)
     DestroyGuards[name] = nil
+end
+
+-- Read-only development preflight. Never removes or bypasses a guard: callers
+-- must recover an invalid consumer registration through the resource lifecycle.
+function GuardsAPI.HasRegisteredGuard(name)
+    return MoveGuards[name] ~= nil or DestroyGuards[name] ~= nil or InstanceChangeGuards[name] ~= nil
 end
 
 ------------------------------------------------------------------
@@ -189,6 +210,12 @@ end
 --
 function GuardsAPI.CanMoveInstance(instanceId, context)
     return RunGuards(MoveGuards, instanceId, context)
+end
+
+function GuardsAPI.CanChangeInstance(instanceId, context)
+    local id=tonumber(instanceId)
+    if not id or id<1 or id%1~=0 then return false,'Invalid item instance.' end
+    return RunResolvedGuards(InstanceChangeGuards,{id=id},context)
 end
 
 -- Transaction paths already hold a normalized snapshot from their locking

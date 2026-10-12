@@ -295,6 +295,10 @@ function InstancesAPI.MigrateDefinitionInstances(sourceItemId, targetItemId, rea
             ORDER BY `inventory_id`, `slot_index`, `id` FOR UPDATE;
         ]], { sourceId }) or {}
         migrated = #rows
+        for _,row in ipairs(rows) do
+            local allowed,holdReason=GuardsAPI.CanChangeInstance(row.id,{operation='definition_migration'})
+            if not allowed then failure=Result.Err(Result.Codes.DENIED,holdReason); return false end
+        end
 
         local inventories, inventoryIds = {}, {}
         local slots, slotList = {}, {}

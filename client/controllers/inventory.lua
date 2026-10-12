@@ -1,6 +1,7 @@
 local isInvOpen = false
 local openOtherInventoryId = nil
 local openTarget = nil
+local presentationGeneration = 0
 -- local isHBOpen = false
 
 InventoryAction = {}
@@ -57,7 +58,7 @@ local function BuildUIStrings()
 end
 
 function CanOpenInventory()
-  if InventoryCharacterActive ~= true and not Config.DevMode then return false end
+  if InventoryCharacterActive ~= true then return false end
   if IsEntityDead(PlayerPedId()) then return false end
   if IsPauseMenuActive() then return false end
   -- TODO: Add check for different states where inventory can't open like Handcuffed/HogTied/KnockedOut
@@ -79,7 +80,10 @@ InventoryAction.Open = function(otherInventoryId, target)
   -- OpenInventory is also the post-use refresh signal. Refetch while the UI
   -- is already open so consumed items and changed quantities repaint.
   if CanOpenInventory() then
+    presentationGeneration = presentationGeneration + 1
+    local generation = presentationGeneration
     local results = Feather.RPC.CallAsync('Feather:Inventory:GetInventoryItems', { otherInventoryId = otherInventoryId })
+    if generation ~= presentationGeneration or not CanOpenInventory() then return end
     if results.error ~= nil then
       -- Localized off the server's stable errorCode, falling back to the
       -- English `error` string it has always sent (§10.2).
@@ -87,11 +91,13 @@ InventoryAction.Open = function(otherInventoryId, target)
       return
     end
 
+    local player_display = Feather.RPC.CallAsync('Feather:Inventory:GetCharacterInfoForDisplay')
+    if generation ~= presentationGeneration or not CanOpenInventory() then return end
+    local categories = Feather.RPC.CallAsync('Feather:Inventory:GetCategories', {})
+    if generation ~= presentationGeneration or not CanOpenInventory() then return end
     isInvOpen = true
     openOtherInventoryId = otherInventoryId
     openTarget = target
-
-    local player_display = Feather.RPC.CallAsync('Feather:Inventory:GetCharacterInfoForDisplay')
     
     SendNUIMessage({
       type = "toggleInventory",
@@ -122,7 +128,7 @@ InventoryAction.Open = function(otherInventoryId, target)
       -- every other UI string.
       conditionStages = BuildConditionStages(),
       conditionMax = (Config.Condition and Config.Condition.Max) or 100,
-      categories = Feather.RPC.CallAsync('Feather:Inventory:GetCategories', {}),
+      categories = categories,
       player = {
         dollars = player_display.dollars,
         gold = player_display.gold,
@@ -135,7 +141,8 @@ InventoryAction.Open = function(otherInventoryId, target)
   end
 end
 
-InventoryAction.Close = function(skipHotbarRefresh)
+InventoryAction.Close = function(skipHotbarRefresh, localOnly)
+  presentationGeneration = presentationGeneration + 1
   local wasOpen = isInvOpen
   -- Always clear presentation and focus. Logout may arrive after another
   -- path partially closed the ledger while its NUI state is still visible.
@@ -144,7 +151,7 @@ InventoryAction.Close = function(skipHotbarRefresh)
   isInvOpen = false
   openOtherInventoryId = nil
   openTarget = nil
-  if wasOpen then
+  if wasOpen and localOnly ~= true then
     Feather.RPC.CallAsync('Feather:Inventory:Server:CloseInventory', {})
     -- Give/drop/move operations may have changed quantities while the ledger
     -- hid the hotbar. Reconcile from the server before an Always-visible bar

@@ -23,6 +23,95 @@ RegisterNUICallback('Feather:Inventory:UseItem', function(args, cb)
   cb(res)
 end)
 
+-- UI supplies intent only; Weapons' existing server-authorized transfer owns
+-- inventory conservation, lifecycle validation and exact native restore ack.
+local function NativeAmmoCall(method,...)
+  if Config.CharacterAmmunitionEnabled~=true or GetResourceState('feather-weapons')~='started' then
+    return {ok=false,error={code='native_ammunition_disabled'},message='Native ammunition controls are unavailable.'}
+  end
+  local called,result=pcall(method,...)
+  if not called or type(result)~='table' then
+    return {ok=false,error={code='ammunition_action_unavailable'},message='Ammunition action unavailable; do not retry an uncertain transfer.'}
+  end
+  return result
+end
+local function AmmoPreview(itemId)
+  local inventory=Feather.RPC.CallAsync('Feather:Inventory:NativeAmmoInventory',{})
+  if type(inventory)~='table' or inventory.ok~=true then return inventory or {ok=false,error={code='ammunition_preview_unavailable'}} end
+  local selected,counts=nil,{}
+  for _,item in ipairs(inventory.value.items or {}) do
+    counts[item.name]=(counts[item.name] or 0)+1
+    if tonumber(item.id)==tonumber(itemId) then selected=item.name end
+  end
+  if itemId~=nil and not selected then return {ok=false,error={code='ammunition_item_not_owned'}} end
+  local controls=exports['feather-weapons']:GetNativeAmmunitionControls(selected)
+  if controls.ok~=true then return controls end
+  if controls.value.characterId~=inventory.value.characterId or controls.value.sessionId~=inventory.value.sessionId then
+    return {ok=false,error={code='ammunition_preview_context_changed'}}
+  end
+  for _,option in ipairs(controls.value.options) do option.loose=counts[option.itemName] or 0 end
+  return controls
+end
+RegisterNUICallback('Feather:Inventory:NativeAmmoOptions',function(args,cb)
+  cb(NativeAmmoCall(function() return AmmoPreview(type(args)=='table' and args.itemId or nil) end))
+end)
+local ammoTransferBusy=false
+local equipmentBusy=false
+local function EquipmentCall(method,args,cb)
+  if equipmentBusy then return cb({ok=false,error={code='equipment_action_in_flight'}}) end
+  equipmentBusy=true
+  local result=NativeAmmoCall(function()
+    if type(args)~='table' then return {ok=false,error={code='invalid_equipment_request'}} end
+    if method=='options' then return exports['feather-weapons']:GetNativeEquipmentControls(args.itemId) end
+    return exports['feather-weapons']:ChangeNativeEquipment(args.itemId,args.action,args.slot,args.scope)
+  end)
+  equipmentBusy=false
+  cb(result)
+end
+RegisterNUICallback('Feather:Inventory:NativeEquipmentOptions',function(args,cb) EquipmentCall('options',args,cb) end)
+RegisterNUICallback('Feather:Inventory:NativeEquipmentChange',function(args,cb) EquipmentCall('change',args,cb) end)
+RegisterNUICallback('Feather:Inventory:NativeAmmoTransfer',function(args,cb)
+  args=type(args)=='table' and args or {}
+  if ammoTransferBusy then return cb({ok=false,dispatched=false,error={code='ammunition_action_in_flight'}}) end
+  ammoTransferBusy=true -- reserve before the preview RPC yields
+  local result=NativeAmmoCall(function()
+    if type(args.quantity)~='number' or args.quantity%1~=0 or args.quantity<1 or args.quantity>1000
+      or type(args.ammunitionId)~='string' or (args.direction~='load' and args.direction~='unload') then
+      return {ok=false,dispatched=false,error={code='invalid_ammunition_action'}}
+    end
+    local preview=AmmoPreview()
+    if preview.ok~=true then preview.dispatched=false; return preview end
+    local scope=args.scope
+    if type(scope)~='table' or type(scope.epoch)~='string' or scope.epoch==''
+      or scope.characterId~=preview.value.characterId or scope.sessionId~=preview.value.sessionId
+      or scope.epoch~=preview.value.epoch then
+      return {ok=false,dispatched=false,error={code='ammunition_panel_expired_reopen'},
+        message='This ammunition panel expired. Close it and open it again.'}
+    end
+    local expected={characterId=scope.characterId,sessionId=scope.sessionId,epoch=scope.epoch}
+    local selected
+    for _,option in ipairs(preview.value.options) do if option.id==args.ammunitionId then selected=option end end
+    local available=selected and (args.direction=='load' and selected.loose or selected.carried)
+    if type(available)~='number' or args.quantity>available then
+      return {ok=false,dispatched=false,error={code='ammunition_availability_changed'},
+        message='Available rounds changed. Nothing was transferred.',value={options=preview.value.options}}
+    end
+    local result=exports['feather-weapons']:TransferNativeAmmunition(args.ammunitionId,args.quantity,args.direction,expected)
+    if result.ok then
+      -- A failed preview must not turn a committed transfer into a retryable
+      -- economic failure. Preserve success; mark counts unavailable instead.
+      local called,preview=pcall(AmmoPreview)
+      if called and type(preview)=='table' and preview.ok and preview.value.characterId==expected.characterId
+        and preview.value.sessionId==expected.sessionId and preview.value.epoch==expected.epoch then
+        result.value.options=preview.value.options
+      end
+    end
+    return result
+  end)
+  ammoTransferBusy=false
+  cb(result)
+end)
+
 RegisterNUICallback('Feather:Inventory:Hotbar:Set', function(args, cb)
   local result = Feather.RPC.CallAsync('Feather:Inventory:Hotbar:Set', {
     slot = args.slot,

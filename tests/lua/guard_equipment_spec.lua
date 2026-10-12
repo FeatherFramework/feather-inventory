@@ -58,6 +58,8 @@ assert(fallbackReads == 1)
 GuardsAPI.RegisterDestroyGuard('weapons', function(instance)
   return not EquipmentAPI.IsInstanceEquipped(instance.id).value
 end)
+assert(GuardsAPI.HasRegisteredGuard('weapons'))
+assert(not GuardsAPI.HasRegisteredGuard('unregistered-consumer'))
 assert(GuardsAPI.PrepareDestroySnapshots(query, rows))
 assert(not GuardsAPI.CanDestroyInstanceSnapshot({ id = 2, equipmentSnapshot = { equipped = true } }))
 assert(GuardsAPI.CanDestroyInstanceSnapshot({ id = 1, equipmentSnapshot = { equipped = false } }))

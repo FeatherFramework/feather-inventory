@@ -18,6 +18,26 @@ exports('AwaitReady', function(timeoutMs)
 end)
 
 function StartAPI()
+  exports('GetCharacterAmmunitionSnapshot', function(context, limits)
+    local ready = InventoryReadyResult()
+    if not ready.ok then return ready end
+    return CharacterAmmunitionAPI.Snapshot(context, limits, GetInvokingResource())
+  end)
+  exports('GetCharacterFirearmRuntimeSnapshot', function(context, limits)
+    local ready = InventoryReadyResult()
+    if not ready.ok then return ready end
+    return CharacterAmmunitionAPI.RuntimeSnapshot(context, limits, GetInvokingResource())
+  end)
+  exports('ObserveCharacterAmmunition', function(context, spec)
+    local ready = InventoryReadyResult()
+    if not ready.ok then return ready end
+    return CharacterAmmunitionAPI.Observe(context, spec, GetInvokingResource())
+  end)
+  exports('MutateCharacterAmmunition', function(context, spec)
+    local ready = InventoryReadyResult()
+    if not ready.ok then return ready end
+    return CharacterAmmunitionAPI.Mutate(context, spec, GetInvokingResource())
+  end)
   exports('GrantCharacterItemOnce', function(request)
     local ready = InventoryReadyResult()
     if not ready.ok then return ready end
@@ -44,6 +64,9 @@ function StartAPI()
   inventoryServerAPI.DestroyInstances = TransactionAPI.DestroyInstances
   inventoryServerAPI.UseItemAction = TransactionAPI.UseItemAction
   inventoryServerAPI.CreateInstance = TransactionAPI.CreateInstance
+  inventoryServerAPI.MutateCharacterAmmunition = function(context, spec)
+    return CharacterAmmunitionAPI.Mutate(context, spec, GetInvokingResource())
+  end
   -- (INV-W3) Pre-move/destroy guard registry and structured post-commit
   -- events. This is how feather-weapons forces an authoritative unequip
   -- before an equipped item is allowed to move.
