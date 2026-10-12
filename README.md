@@ -4,6 +4,10 @@ Feather Inventory gives each character a weight- and slot-based inventory presen
 
 This page starts with server setup. The [API reference](#api-reference) is for resource developers.
 
+The opt-in [shared-ammo and native equipment alpha](docs/native-weapons-alpha.md)
+adds coordinated Weapons integration; it is disabled by default and is not a
+general production cutover or automatic legacy ammo migration.
+
 ## Server owner setup
 
 ### Requirements

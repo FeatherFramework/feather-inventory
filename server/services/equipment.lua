@@ -18,6 +18,21 @@
 
 EquipmentAPI = {}
 
+local function CanChangeEquipment(rows, extraId)
+    local ids={}
+    if extraId then ids[extraId]=true end
+    for _,row in ipairs(rows or {}) do
+        local itemId=tonumber(row.inventory_items_id)
+        if not itemId then return false,'Invalid equipment assignment.' end
+        ids[itemId]=true
+    end
+    for itemId in pairs(ids) do
+        local allowed,reason=GuardsAPI.CanChangeInstance(itemId,{operation='equipment_write'})
+        if not allowed then return false,reason end
+    end
+    return true
+end
+
 local function EnsureEquipmentSchema()
     DB.exec([[
         CREATE TABLE IF NOT EXISTS `character_equipment` (
@@ -89,14 +104,17 @@ function EquipmentAPI.SetEquippedForCharacter(characterId, slot, instanceId)
     end
 
     if instanceId == nil then
+        local denied
         local executed, committed = RunLegacyStyleTransaction(function(query)
-            query('SELECT `inventory_items_id` FROM `character_equipment` WHERE `character_id`=? AND `slot`=? FOR UPDATE;',
+            local rows=query('SELECT `inventory_items_id` FROM `character_equipment` WHERE `character_id`=? AND `slot`=? FOR UPDATE;',
                 { id, slot })
+            local allowed,reason=CanChangeEquipment(rows)
+            if not allowed then denied=Result.Err(Result.Codes.DENIED,reason); return false end
             query('DELETE FROM `character_equipment` WHERE `character_id`=? AND `slot`=?;', { id, slot })
             return true
         end)
         if not executed or committed ~= true then
-            return Result.Err(Result.Codes.INTERNAL, 'Equipment update rolled back.')
+            return denied or Result.Err(Result.Codes.INTERNAL, 'Equipment update rolled back.')
         end
         return Result.Ok({ slot = slot, instanceId = nil })
     end
@@ -121,11 +139,13 @@ function EquipmentAPI.SetEquippedForCharacter(characterId, slot, instanceId)
 
         -- Lock both possible conflicts before changing either: the requested
         -- character slot and any slot currently holding this instance.
-        query([[
+        local conflicts=query([[
             SELECT `inventory_items_id` FROM `character_equipment`
             WHERE (`character_id`=? AND `slot`=?) OR `inventory_items_id`=?
             ORDER BY `character_id`, `slot` FOR UPDATE;
         ]], { id, slot, numericInstance })
+        local allowed,reason=CanChangeEquipment(conflicts,numericInstance)
+        if not allowed then failure=Result.Err(Result.Codes.DENIED,reason); return false end
         query('DELETE FROM `character_equipment` WHERE (`character_id`=? AND `slot`=?) OR `inventory_items_id`=?;',
             { id, slot, numericInstance })
         query('INSERT INTO `character_equipment` (`character_id`, `slot`, `inventory_items_id`) VALUES (?, ?, ?);',
@@ -153,7 +173,7 @@ function EquipmentAPI.PromoteEquippedSlot(characterId, fromSlot, toSlot)
             'Character id and two distinct equipment slots are required.')
     end
 
-    local promotedId
+    local promotedId,denied
     local executed, committed = RunLegacyStyleTransaction(function(query)
         local rows = query([[
             SELECT `slot`, `inventory_items_id` FROM `character_equipment`
@@ -164,6 +184,8 @@ function EquipmentAPI.PromoteEquippedSlot(characterId, fromSlot, toSlot)
             if row.slot == fromSlot then promotedId = tonumber(row.inventory_items_id) end
         end
         if not promotedId then return false end
+        local allowed,reason=CanChangeEquipment(rows)
+        if not allowed then denied=Result.Err(Result.Codes.DENIED,reason); return false end
         query('DELETE FROM `character_equipment` WHERE `character_id`=? AND `slot`=?;',
             { id, toSlot })
         local updated = query([[UPDATE `character_equipment` SET `slot`=?
@@ -174,7 +196,7 @@ function EquipmentAPI.PromoteEquippedSlot(characterId, fromSlot, toSlot)
         return true
     end)
     if not executed or committed ~= true then
-        return Result.Err(Result.Codes.CONFLICT,
+        return denied or Result.Err(Result.Codes.CONFLICT,
             'Equipment slot promotion rolled back.')
     end
     return Result.Ok({ fromSlot = fromSlot, toSlot = toSlot,
@@ -193,14 +215,17 @@ function EquipmentAPI.ClearEquippedInstance(instanceId)
     if not numericInstance then
         return Result.Err(Result.Codes.INVALID_INPUT, 'Invalid instance id.')
     end
+    local denied
     local executed, committed = RunLegacyStyleTransaction(function(query)
         query('SELECT `character_id`, `slot` FROM `character_equipment` WHERE `inventory_items_id`=? FOR UPDATE;',
             { numericInstance })
+        local allowed,reason=CanChangeEquipment({},numericInstance)
+        if not allowed then denied=Result.Err(Result.Codes.DENIED,reason); return false end
         query('DELETE FROM `character_equipment` WHERE `inventory_items_id`=?;', { numericInstance })
         return true
     end)
     if not executed or committed ~= true then
-        return Result.Err(Result.Codes.INTERNAL, 'Equipment clear rolled back.')
+        return denied or Result.Err(Result.Codes.INTERNAL, 'Equipment clear rolled back.')
     end
     return Result.Ok(true)
 end

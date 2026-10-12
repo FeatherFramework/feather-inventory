@@ -25,16 +25,33 @@ end
 
 if Config.DevMode then
   EnsureInventoryKeyListener()
-else
-  RegisterNetEvent("Feather:Character:Spawned", function()
-    InventoryCharacterActive = true
-    EnsureInventoryKeyListener()
-  end)
-  AddEventHandler('Feather:Character:Logout', function()
-    InventoryCharacterActive = false
-    InventoryAction.Close(true)
-  end)
 end
+-- DevMode may register the key early, but must never bypass lifecycle cleanup.
+RegisterNetEvent("Feather:Character:Spawned", function()
+  InventoryCharacterActive = true
+  EnsureInventoryKeyListener()
+end)
+AddEventHandler('Feather:Character:Logout', function()
+  InventoryCharacterActive = false
+  InventoryAction.Close(true)
+end)
+AddEventHandler('feather-medical:client:condition-changed.v1', function(condition)
+  if type(condition)=='table' and (condition.lifeState=='dead' or condition.lifeState=='incapacitated') then
+    InventoryAction.Close(true)
+  end
+end)
+AddEventHandler('onResourceStop', function(resourceName)
+  if resourceName == GetCurrentResourceName() or resourceName == 'feather-character' then
+    InventoryCharacterActive = false
+    -- Clear focus/UI immediately; do not make an RPC through a stopping owner
+    -- or imply that pending server economic work was rolled back.
+    InventoryAction.Close(true, true)
+  elseif resourceName == 'feather-weapons' then
+    -- Other Inventory actions remain usable; only the provider-owned ammo
+    -- panel and its pending presentation responses are invalidated.
+    SendNUIMessage({ type = 'ammoPanelInvalidated' })
+  end
+end)
 
 
 RegisterCommand('open_inventory', function()
