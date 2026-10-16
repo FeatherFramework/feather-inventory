@@ -8,6 +8,11 @@ The opt-in [shared-ammo and native equipment alpha](docs/native-weapons-alpha.md
 adds coordinated Weapons integration; it is disabled by default and is not a
 general production cutover or automatic legacy ammo migration.
 
+The 0.6.0 alpha checkpoint adds native wear/repair/attachment/evidence transaction
+support and guard hardening. See [checkpoint scope and deployment](docs/PR_PREPARATION_0.6.0.md)
+for checks, dependencies, exact files and known limits. Existing development mode
+remains enabled by default for testing; native ammo mode remains disabled.
+
 ## Server owner setup
 
 ### Requirements

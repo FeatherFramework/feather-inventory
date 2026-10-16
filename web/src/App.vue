@@ -138,8 +138,10 @@ async function changeEquipment(option) {
   equipmentBusy.value = true;
   const ticket = equipmentLifetime.capture();
   try {
-    const { data } = await api.post('Feather:Inventory:NativeEquipmentChange', {
-      itemId: equipmentItem.value, action: option.action, slot: option.slot, scope: equipmentScope.value,
+    const endpoint = option.kind === 'attachment' ? 'Feather:Inventory:NativeAttachmentChange'
+      : option.kind === 'repair' ? 'Feather:Inventory:NativeRepair' : 'Feather:Inventory:NativeEquipmentChange';
+    const { data } = await api.post(endpoint, {
+      itemId: equipmentItem.value, action: option.action, slot: option.slot, scope: equipmentScope.value, attachmentId: option.attachmentId,
     });
     if (!equipmentLifetime.current(ticket)) return;
     equipmentPanel.value = []; // never leave old-epoch buttons actionable

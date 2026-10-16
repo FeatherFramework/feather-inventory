@@ -215,7 +215,35 @@ previewGrant.result_json.quantity=4
 primary(0,{'1',char,'verify-preview-roundtrip'}); assert(output[#output]:find('FAIL',1,true))
 previewGrant.result_json.quantity=2; rows[3]=nil
 primary(0,{'1',char,'verify-preview-roundtrip'}); assert(output[#output]:find('FAIL',1,true))
+rows[3]={id=204,definition_id=8,name='ammo_revolver_regular',type='item_ammo'}
+ledger.revision=23
+for index=21,22 do
+ local revision=index+1
+ local load=revision==22
+ local id='ui:d50e8cbd-c5e1-11f1-9ae2-e0d55eaa2deb:900:'..index
+ operations[index]={operation_id=id,result={fingerprint='ammo_revolver_regular:'..(load and '1' or '-1')..':'..(revision-1),
+  value={characterId=char,operationId=id,revision=revision,inventoryDelta=load and -1 or 1,pools=pools(load and 1 or 0)}}}
+end
+primary(0,{'1',char,'verify-orderly-stop'})
+assert(output[#output]:find('PASS verify-orderly-stop',1,true) and output[#output]:find('ledgerRevision23 carried0 loose2 receipts24',1,true) and inserted==writes)
+operations[22].result.value.inventoryDelta=2
+primary(0,{'1',char,'verify-orderly-stop'}); assert(output[#output]:find('FAIL',1,true))
+operations[22].result.value.inventoryDelta=1
+ledger.revision=25
+for index=23,24 do
+ local revision=index+1
+ local load=revision==24
+ local id='ui:a34dea3a-c689-11f1-9ae2-e0d55eaa2deb:1000:'..index
+ operations[index]={operation_id=id,result={fingerprint='ammo_revolver_regular:'..(load and '1' or '-1')..':'..(revision-1),
+  value={characterId=char,operationId=id,revision=revision,inventoryDelta=load and -1 or 1,pools=pools(load and 1 or 0)}}}
+end
+primary(0,{'1',char,'verify-funded-equipment'})
+assert(output[#output]:find('PASS verify-funded-equipment',1,true) and output[#output]:find('ledgerRevision25 carried0 loose2 receipts26',1,true) and inserted==writes)
+operations[24].result.value.inventoryDelta=2
+primary(0,{'1',char,'verify-funded-equipment'}); assert(output[#output]:find('FAIL',1,true))
 print=oldPrint
+print('Jane funded equipment verifier PASS (revision25, conserved pair, loose2, receipts26, corruption refusal)')
+print('Jane orderly-stop durable verifier PASS (revision23, same-session conserved pair, loose2, receipts24, corruption refusal)')
 print('Jane preview roundtrip verifier PASS (two grants, revision21, loose2, receipts22, corruption refusal)')
 print('Jane native shot verifier PASS (revision19, no loose/carried round, exact load receipt, no writes)')
 print('Jane loaded death verifier PASS (revision17, same-session conserved UI receipts, no writes)')

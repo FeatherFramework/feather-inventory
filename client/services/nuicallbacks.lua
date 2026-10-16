@@ -63,6 +63,8 @@ local function EquipmentCall(method,args,cb)
   local result=NativeAmmoCall(function()
     if type(args)~='table' then return {ok=false,error={code='invalid_equipment_request'}} end
     if method=='options' then return exports['feather-weapons']:GetNativeEquipmentControls(args.itemId) end
+    if method=='attachment' then return exports['feather-weapons']:ChangeNativeAttachment(args.itemId,args.action,args.scope,args.attachmentId) end
+    if method=='repair' then return exports['feather-weapons']:RepairNativeEquipment(args.itemId,args.scope) end
     return exports['feather-weapons']:ChangeNativeEquipment(args.itemId,args.action,args.slot,args.scope)
   end)
   equipmentBusy=false
@@ -70,6 +72,8 @@ local function EquipmentCall(method,args,cb)
 end
 RegisterNUICallback('Feather:Inventory:NativeEquipmentOptions',function(args,cb) EquipmentCall('options',args,cb) end)
 RegisterNUICallback('Feather:Inventory:NativeEquipmentChange',function(args,cb) EquipmentCall('change',args,cb) end)
+RegisterNUICallback('Feather:Inventory:NativeAttachmentChange',function(args,cb) EquipmentCall('attachment',args,cb) end)
+RegisterNUICallback('Feather:Inventory:NativeRepair',function(args,cb) EquipmentCall('repair',args,cb) end)
 RegisterNUICallback('Feather:Inventory:NativeAmmoTransfer',function(args,cb)
   args=type(args)=='table' and args or {}
   if ammoTransferBusy then return cb({ok=false,dispatched=false,error={code='ammunition_action_in_flight'}}) end

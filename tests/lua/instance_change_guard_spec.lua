@@ -39,6 +39,17 @@ GuardsAPI.RegisterInstanceChangeGuard('native',function() error('stopped referen
 assert(not EquipmentAPI.ClearEquippedInstance(1).ok and writes==1,'errored reference fails closed')
 GuardsAPI.UnregisterInstanceChangeGuard('native')
 assert(not GuardsAPI.HasRegisteredGuard('native'))
+Config={CharacterAmmunitionEnabled=true}
+rows={{slot='weapon',inventory_items_id=1}}
+local nativeWrites=writes
+assert(not EquipmentAPI.SetEquippedForCharacter('c','weapon',nil).ok)
+assert(not EquipmentAPI.SetEquippedForCharacter('c','weapon',3).ok)
+assert(not EquipmentAPI.PromoteEquippedSlot('c','weapon_offhand','weapon').ok)
+assert(not EquipmentAPI.ClearEquippedInstance(1).ok and writes==nativeWrites,
+    'released native hold must not permit generic firearm assignment deletion')
+assert(EquipmentAPI.SetEquippedForCharacter('c','hat',nil).ok,'non-firearm generic slots remain available')
+Config.CharacterAmmunitionEnabled=false
+assert(EquipmentAPI.SetEquippedForCharacter('c','weapon',nil).ok,'legacy mode retains generic equipment contract')
 local command,output
 Config={DevMode=true}
 GetResourceState=function() return 'stopped' end

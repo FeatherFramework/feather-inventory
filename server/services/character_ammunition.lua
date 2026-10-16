@@ -196,6 +196,17 @@ local function mutate(context,spec,invokingResource,apply,reason)
     return TransactionAPI.Transaction(safeContext, function(tx)
         if not current(safeContext) or not runtimeCurrent(safeContext) then return err(Result.Codes.DENIED, 'Session or runtime changed.') end
         local result = apply(tx, safeContext, spec)
+        if not result.ok then return result end
+        if spec.finalWear~=nil then
+            if operation~='observe' or Config.DevMode~=true or type(spec.finalWear)~='table'
+                or spec.finalWear.characterId~=safeContext.characterId or type(NativeLifecycleWear)~='table' then
+                return err(Result.Codes.DENIED,'Reserved final wear observation required.')
+            end
+            local saved=NativeLifecycleWear.Apply(tx,spec.finalWear,function()
+                return current(safeContext) and runtimeCurrent(safeContext)
+            end)
+            if not saved.ok then return saved end
+        end
         if not current(safeContext) or not runtimeCurrent(safeContext) then return err(Result.Codes.DENIED, 'Session or runtime changed before commit.') end
         return result
     end)

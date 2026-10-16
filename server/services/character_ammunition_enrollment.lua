@@ -160,7 +160,9 @@ function E.ReadJaneBaseline(tx)
         ammo=0,serialNumber=metadata.serialNumber})
 end
 function E.ReadJaneEconomic(tx,limits,allowPrimary,roundtrip)
-    local previewRoundtrip=roundtrip=='preview-roundtrip'
+    local fundedEquipment=roundtrip=='funded-equipment'
+    local orderlyStop=roundtrip=='orderly-stop' or fundedEquipment
+    local previewRoundtrip=roundtrip=='preview-roundtrip' or orderlyStop
     local spent=roundtrip=='native-shot' or previewRoundtrip
     local nativeDeath=roundtrip=='native-death' or spent
     local nativeLogin=roundtrip=='native-login' or nativeDeath
@@ -169,8 +171,8 @@ function E.ReadJaneEconomic(tx,limits,allowPrimary,roundtrip)
     local automatic=roundtrip=='auto-login' or roundtrip=='auto-carried' or uiRoundtrip
     local login=roundtrip=='login' or automatic
     local carried=roundtrip=='carried' or roundtrip=='auto-carried'
-    local expectedRevision=previewRoundtrip and 21 or spent and 19 or nativeDeath and 17 or nativeLogin and 15 or drawRoundtrip and 13 or uiRoundtrip and 11 or automatic and (carried and 8 or 9) or login and 7 or carried and 6 or roundtrip and 5 or 3
-    local operationCount=previewRoundtrip and 20 or spent and 18 or expectedRevision
+    local expectedRevision=fundedEquipment and 25 or orderlyStop and 23 or previewRoundtrip and 21 or spent and 19 or nativeDeath and 17 or nativeLogin and 15 or drawRoundtrip and 13 or uiRoundtrip and 11 or automatic and (carried and 8 or 9) or login and 7 or carried and 6 or roundtrip and 5 or 3
+    local operationCount=fundedEquipment and 24 or orderlyStop and 22 or previewRoundtrip and 20 or spent and 18 or expectedRevision
     local char='6a2fd060-c46f-11f1-9ae2-e0d55eaa2deb'
     local headers=tx.query('SELECT id FROM inventory WHERE character_id = ? LIMIT 1 FOR UPDATE',{char})
     if not headers or not headers[1] then return denied('Jane inventory missing.') end
@@ -263,7 +265,7 @@ function E.ReadJaneEconomic(tx,limits,allowPrimary,roundtrip)
             if type(id)=='string' and id:match('^ui:[%x%-]+:%d+:%d+$') then
                 local value=receipt and receipt.value
                 local revision=type(value)=='table' and value.revision
-                if type(revision)~='number' or revision%1~=0 or revision<10 or revision>(previewRoundtrip and 21 or operationCount)
+                if type(revision)~='number' or revision%1~=0 or revision<10 or revision>(previewRoundtrip and expectedRevision or operationCount)
                     or found[revision] then return denied('Unexpected UI receipt.') end
                 found[revision]=id
             end
@@ -292,6 +294,20 @@ function E.ReadJaneEconomic(tx,limits,allowPrimary,roundtrip)
             end
             expectedReceipts[#expectedReceipts+1]={found[20],'ammo_revolver_regular:1:19',20,-1,1}
             expectedReceipts[#expectedReceipts+1]={last,'ammo_revolver_regular:-1:20',21,1,0}
+            if orderlyStop then
+                if not found[22] or not found[23] or found[22]:match('^ui:([^:]+):')~=found[23]:match('^ui:([^:]+):') then
+                    return denied('Orderly-stop same-session receipts required.')
+                end
+                expectedReceipts[#expectedReceipts+1]={found[22],'ammo_revolver_regular:1:21',22,-1,1}
+                expectedReceipts[#expectedReceipts+1]={found[23],'ammo_revolver_regular:-1:22',23,1,0}
+                if fundedEquipment then
+                    if not found[24] or not found[25] or found[24]:match('^ui:([^:]+):')~=found[25]:match('^ui:([^:]+):') then
+                        return denied('Funded-equipment same-session receipts required.')
+                    end
+                    expectedReceipts[#expectedReceipts+1]={found[24],'ammo_revolver_regular:1:23',24,-1,1}
+                    expectedReceipts[#expectedReceipts+1]={found[25],'ammo_revolver_regular:-1:24',25,1,0}
+                end
+            end
         end
     end
     for _,expected in ipairs(expectedReceipts) do
@@ -308,7 +324,8 @@ RegisterCommand('InvJanePrimary',function(source,args)
     if source~=0 or Config.DevMode~=true then return end
     local char='6a2fd060-c46f-11f1-9ae2-e0d55eaa2deb'
     local target=tonumber(args and args[1]); local mode=args and args[3]
-    if not target or target<1 or target%1~=0 or args[2]~=char or (mode~='save' and mode~='verify' and mode~='verify-roundtrip' and mode~='verify-login' and mode~='verify-carried' and mode~='verify-auto-login' and mode~='verify-auto-carried' and mode~='verify-ui-roundtrip' and mode~='verify-native-draw' and mode~='verify-native-login' and mode~='verify-native-death' and mode~='verify-native-shot' and mode~='verify-preview-roundtrip') then
+    local fundedMode=mode=='verify-funded-equipment'
+    if not target or target<1 or target%1~=0 or args[2]~=char or (not fundedMode and mode~='save' and mode~='verify' and mode~='verify-roundtrip' and mode~='verify-login' and mode~='verify-carried' and mode~='verify-auto-login' and mode~='verify-auto-carried' and mode~='verify-ui-roundtrip' and mode~='verify-native-draw' and mode~='verify-native-login' and mode~='verify-native-death' and mode~='verify-native-shot' and mode~='verify-preview-roundtrip' and mode~='verify-orderly-stop') then
         print('[InvJanePrimary] BLOCKED exact Jane UUID and save/verify/verify-roundtrip/verify-login required'); return
     end
     local session=InventoryIdentity.GetSession(target)
@@ -328,7 +345,7 @@ RegisterCommand('InvJanePrimary',function(source,args)
         local registry=assert(policy.Build(catalog))
         return TransactionAPI.Transaction({resource='feather-inventory',reason='jane_saved_primary_'..mode},function(tx)
             if not current() then return denied('Context changed.') end
-            local read=E.ReadJaneEconomic(tx,registry.limits,true,mode=='verify-preview-roundtrip' and 'preview-roundtrip' or mode=='verify-native-shot' and 'native-shot' or mode=='verify-native-death' and 'native-death' or mode=='verify-native-login' and 'native-login' or mode=='verify-native-draw' and 'native-draw' or mode=='verify-ui-roundtrip' and 'ui-roundtrip' or mode=='verify-auto-login' and 'auto-login' or mode=='verify-auto-carried' and 'auto-carried' or mode=='verify-carried' and 'carried' or mode=='verify-login' and 'login' or mode=='verify-roundtrip')
+            local read=E.ReadJaneEconomic(tx,registry.limits,true,fundedMode and 'funded-equipment' or mode=='verify-orderly-stop' and 'orderly-stop' or mode=='verify-preview-roundtrip' and 'preview-roundtrip' or mode=='verify-native-shot' and 'native-shot' or mode=='verify-native-death' and 'native-death' or mode=='verify-native-login' and 'native-login' or mode=='verify-native-draw' and 'native-draw' or mode=='verify-ui-roundtrip' and 'ui-roundtrip' or mode=='verify-auto-login' and 'auto-login' or mode=='verify-auto-carried' and 'auto-carried' or mode=='verify-carried' and 'carried' or mode=='verify-login' and 'login' or mode=='verify-roundtrip')
             if not read.ok then return read end
             if mode~='save' and not read.value.equipped then return denied('Saved primary missing.') end
             if mode=='save' and not read.value.equipped then

@@ -17,6 +17,13 @@
 -- from the row itself. That check is why equipping is not simply a write.
 
 EquipmentAPI = {}
+local function NativeSlot(slot)
+    return Config and Config.CharacterAmmunitionEnabled==true
+        and ({weapon=true,weapon_offhand=true,weapon_shoulder=true,weapon_back=true})[slot]==true
+end
+local function NativeSlotDenied()
+    return Result.Err(Result.Codes.DENIED,'Native firearm assignments require the conditional native coordinator.')
+end
 
 local function CanChangeEquipment(rows, extraId)
     local ids={}
@@ -98,6 +105,7 @@ end
 -- re-derive-don't-trust rule every other mutation here follows.
 --
 function EquipmentAPI.SetEquippedForCharacter(characterId, slot, instanceId)
+    if NativeSlot(slot) then return NativeSlotDenied() end
     local id = InventoryIdentity.NormalizeCharacterId(characterId)
     if not id or type(slot) ~= 'string' or slot == '' then
         return Result.Err(Result.Codes.INVALID_INPUT, 'Character id and slot are required.')
@@ -166,6 +174,7 @@ end
 -- assignment into it. Item ownership does not change.
 --
 function EquipmentAPI.PromoteEquippedSlot(characterId, fromSlot, toSlot)
+    if NativeSlot(fromSlot) or NativeSlot(toSlot) then return NativeSlotDenied() end
     local id = InventoryIdentity.NormalizeCharacterId(characterId)
     if not id or type(fromSlot) ~= 'string' or fromSlot == ''
         or type(toSlot) ~= 'string' or toSlot == '' or fromSlot == toSlot then
@@ -217,8 +226,12 @@ function EquipmentAPI.ClearEquippedInstance(instanceId)
     end
     local denied
     local executed, committed = RunLegacyStyleTransaction(function(query)
-        query('SELECT `character_id`, `slot` FROM `character_equipment` WHERE `inventory_items_id`=? FOR UPDATE;',
+        local assignments=query('SELECT `character_id`, `slot` FROM `character_equipment` WHERE `inventory_items_id`=? FOR UPDATE;',
             { numericInstance })
+        if type(assignments)~='table' then denied=Result.Err(Result.Codes.DENIED,'Equipment unavailable.'); return false end
+        for _,assignment in ipairs(assignments) do
+            if NativeSlot(assignment.slot) then denied=NativeSlotDenied(); return false end
+        end
         local allowed,reason=CanChangeEquipment({},numericInstance)
         if not allowed then denied=Result.Err(Result.Codes.DENIED,reason); return false end
         query('DELETE FROM `character_equipment` WHERE `inventory_items_id`=?;', { numericInstance })
