@@ -183,6 +183,7 @@ dofile(root .. '/server/helpers/metadata_compatibility.lua')
 dofile(root .. '/server/helpers/move_planner.lua')
 dofile(root .. '/server/services/transactions.lua')
 dofile(root .. '/server/controllers/inventory.lua')
+local readInventoryItems = InventoryControllers.GetInventoryItems
 InventoryControllers.GetInventoryItems = function(inventory)
   return selectRows(function(row) return row.inventory_id == inventory end)
 end
@@ -240,6 +241,37 @@ end)
 test('batch-size 1 provides the sequential-write comparison', function()
   Config.UpdateBatchSize = 1; add(200, 1, 0, 1, 1)
   assert(InventoryControllers.MoveSlotItems(1, 0, 2, 0)); assert(writes == 200)
+end)
+
+test('inventory inspection read projects existing row revision without a write', function()
+  local originalQuery=DB.query
+  DB.query=function(sql,id)
+    assert(id==2 and sql:find('SELECT `inventory_items`.`id`, `inventory_items`.`row_revision`',1,true))
+    return {{id=135,row_revision=19,metadata='{}'}}
+  end
+  local listed=readInventoryItems(2)
+  DB.query=originalQuery
+  assert(listed[1].row_revision==19 and type(listed[1].metadata)=='table' and writes==0 and #events==0)
+end)
+
+test('unequipped customized firearm storage roundtrip preserves exact metadata and identity', function()
+  local weapon='{"schemaVersion":2,"weaponDefinitionId":"repeater_carbine","serialNumber":"STORAGE-135","condition":100,"maintenance":{"dirt":0.2,"permanentDegradation":0},"attachments":[{"definitionId":"carbine_wide_sight","slot":"sight"}],"provenance":{"owner":"Jane"},"ammo":{"ownership":"character","type":"ammo_repeater_regular"}}'
+  add(1,1,0,39,1,weapon)
+  definitions[39].instance_mode='unique'; definitions[39].max_stack_size=1
+  local originalId=rows[1].id
+  assert(InventoryControllers.MoveSlotItems(1,0,2,1))
+  assert(rows[1].id==originalId and rows[1].item_id==39 and rows[1].metadata==weapon
+    and rows[1].inventory_id==2 and rows[1].row_revision==5)
+  assert(InventoryControllers.MoveSlotItems(2,1,1,0))
+  assert(rows[1].id==originalId and rows[1].item_id==39 and rows[1].metadata==weapon
+    and rows[1].inventory_id==1 and rows[1].row_revision==6 and #events==2)
+end)
+
+test('customized firearm failed storage move preserves source and emits no committed fact', function()
+  add(1,1,0,39,1,'{"serialNumber":"STORAGE-FAIL","maintenance":{"dirt":0.2},"attachments":[{"definitionId":"carbine_wide_sight","slot":"sight"}]}')
+  definitions[39].instance_mode='unique'; definitions[39].max_stack_size=1
+  local before=copy(rows); failWrite=1
+  assert(not InventoryControllers.MoveSlotItems(1,0,2,1)); unchanged(before)
 end)
 test('swaps use captured IDs and increment both sides once', function()
   add(150, 1, 0, 1, 1); add(120, 2, 1, 2, 1)

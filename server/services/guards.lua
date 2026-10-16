@@ -181,6 +181,10 @@ local function RunResolvedGuards(registry, instance, context)
         if allowed == false then
             return false, reason or ('Blocked by guard "%s".'):format(name)
         end
+        if allowed ~= true then
+            warn(('Guard "%s" returned no explicit permission; vetoing as fail-closed.'):format(name))
+            return false, ('Guard "%s" returned an invalid decision.'):format(name)
+        end
     end
     return true
 end

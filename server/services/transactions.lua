@@ -697,6 +697,10 @@ function Tx:SetMetadata(instanceId, document, expectedRevision)
     local allowed, reason = GuardsAPI.CanChangeInstance(id, {
         operation='metadata_write', resource=self.context and self.context.resource,
         actorSource=self.context and self.context.actorSource,
+        runtimeEpoch=self.context and self.context.runtimeEpoch,
+        runtimeTicket=self.context and self.context.runtimeTicket,
+        expectedRevision=expectedRevision,
+        metadata=self.context and self.context.runtimeTicket and json.decode(encoded) or nil,
     })
     if not allowed then return Result.Err(Result.Codes.DENIED, reason) end
 

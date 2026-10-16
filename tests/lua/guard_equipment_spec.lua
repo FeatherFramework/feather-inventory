@@ -66,4 +66,54 @@ assert(GuardsAPI.CanDestroyInstanceSnapshot({ id = 1, equipmentSnapshot = { equi
 assert(fallbackReads == 1, 'Destruction guard must reuse locked equipment state')
 local _, destructionVerified = GuardsAPI.GetLockedEquipmentState(2)
 assert(not destructionVerified)
+-- A consumer with a missing/malformed return has not granted permission.
+for _,kind in ipairs({'Move','Destroy','InstanceChange'}) do
+  local register=GuardsAPI['Register'..kind..'Guard']
+  local evaluate=kind=='InstanceChange' and function()
+    return GuardsAPI.CanChangeInstance(1,{})
+  end or function()
+    return GuardsAPI['Can'..(kind=='Move' and 'Move' or 'Destroy')..'InstanceSnapshot'](
+      {id=1,equipmentSnapshot={equipped=false}},{})
+  end
+  for _,callback in ipairs({function() end,function() return 1 end,
+    function() return 'true' end,function() return {ok=true} end}) do
+    register('malformed',callback)
+    assert(not evaluate(),'non-boolean guard result must fail closed: '..kind)
+  end
+  register('malformed',function() return true end)
+  assert(evaluate(),'explicit true remains accepted: '..kind)
+end
+-- Compose the actual Weapons native guard with Inventory's locked snapshot
+-- runner. This is a cross-repo mock boundary test, not live storage acceptance.
+GuardsAPI.UnregisterMoveGuard('weapons')
+GuardsAPI.UnregisterDestroyGuard('weapons')
+Config={CharacterAmmunitionEnabled=true,CharacterAmmoTransportEnabled=true,Inventory={requiredContract=4}}
+local nativeAdapter=io.open(root .. '/../feather-weapons/server/adapters/character_ammunition_inventory.lua','r')
+if nativeAdapter then
+nativeAdapter:close()
+dofile(root .. '/../feather-weapons/server/adapters/character_ammunition_inventory.lua')
+local nativeHeld,adminHeld=true,false
+local provider=WeaponCharacterAmmoInventory.New(function()
+ return {GetCapabilities=function() return Result.Ok({contractVersion=4,characterIdentity={uuid=true,mode='uuid'}}) end,
+ Guards=GuardsAPI,Equipment=EquipmentAPI}
+end,function() return nativeHeld end,function() return not adminHeld,'Administrative hold' end)
+assert(provider.Install())
+local metadata={serialNumber='PRESERVED',attachments={{definitionId='carbine_wide_sight',slot='sight'}},
+ maintenance={dirt=0.2},provenance={owner='Jane'}}
+local item={id=135,metadata=metadata,equipmentSnapshot={equipped=false}}
+local beforeFallback=fallbackReads
+assert(not GuardsAPI.CanMoveInstanceSnapshot(item,{}),'native-owned item cannot leave inventory')
+assert(not GuardsAPI.CanDestroyInstanceSnapshot(item,{}),'native-owned item cannot be destroyed')
+assert(not GuardsAPI.CanChangeInstance(135,{}),'native-owned metadata remains held')
+nativeHeld=false; item.equipmentSnapshot.equipped=true
+assert(not GuardsAPI.CanMoveInstanceSnapshot(item,{}),'saved equipped assignment independently vetoes move')
+item.equipmentSnapshot.equipped=false; adminHeld=true
+assert(not GuardsAPI.CanMoveInstanceSnapshot(item,{}),'administrative hold survives native release')
+adminHeld=false
+assert(GuardsAPI.CanMoveInstanceSnapshot(item,{}) and GuardsAPI.CanDestroyInstanceSnapshot(item,{}))
+assert(fallbackReads==beforeFallback,'native guard must use locked equipment snapshot, not query another connection')
+assert(item.metadata==metadata and metadata.serialNumber=='PRESERVED'
+ and metadata.attachments[1].definitionId=='carbine_wide_sight' and metadata.maintenance.dirt==0.2
+ and metadata.provenance.owner=='Jane','guard evaluation cannot mutate instance identity/customization')
+else print('SKIP optional sibling Weapons native guard composition (repository not present)') end
 print('PASS equipment guard snapshots: movement/destruction vetoes, bulk reads, fallback, cleanup, nested guards')

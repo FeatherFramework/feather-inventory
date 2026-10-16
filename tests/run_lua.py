@@ -67,6 +67,21 @@ for name in (
     'native_ammo_preflight_spec.lua', 'native_ammo_preview_spec.lua',
     'native_equipment_commit_spec.lua', 'native_equipment_nui_spec.lua',
     'native_equipment_preflight_spec.lua',
+    'native_repair_commit_spec.lua',
+    'native_evidence_commit_spec.lua',
+    'native_evidence_export_spec.lua',
+    'native_repair_material_spec.lua',
+    'native_attachment_commit_spec.lua',
+    'native_attachment_export_spec.lua',
+    'native_attachment_composition_spec.lua',
+    'native_attachment_material_spec.lua',
+    'native_death_wear_atomic_spec.lua',
+    'native_repair_verify_spec.lua',
+    'native_repair_audit_spec.lua',
+    'native_repair_fixture_spec.lua',
+    'native_saved_attachment_fixture_spec.lua',
+    'native_saved_attachment_fixture_gates_spec.lua',
+    'native_lifecycle_wear_spec.lua',
 ):
     isolated = LuaRuntime(unpack_returned_tuples=True)
     isolated.globals().arg = isolated.table_from({1: root.as_posix()})
