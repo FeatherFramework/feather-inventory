@@ -47,7 +47,8 @@ exports('ReadNativeEquipmentTransition',function(context,itemId)
             candidate={id=tonumber(row.id),revision=tonumber(row.row_revision),itemName=row.itemName,metadata=metadata}
         end
         if not current() then return Result.Err('equipment_preflight_denied','Session changed during read.') end
-        return {ok=true,value={characterId=context.characterId,expected=expected,equipment=equipment.value,candidate=candidate}}
+        return {ok=true,value={characterId=context.characterId,expected=expected,equipment=equipment.value,candidate=candidate,
+            brokenEquipmentContract=1,brokenDeathEquipmentContract=1,brokenPromotionContract=1}}
     end)
 end)
 exports('ReadNativeRepairMaterial',function(context,itemName)
@@ -101,6 +102,12 @@ exports('CommitNativeRepairTransition',function(context,spec)
         actorSource=context.actorSource,characterId=context.characterId,sessionId=context.sessionId},function(tx)
         local result=NativeRepairCommit.Apply(tx,spec,current)
         if not result.ok then return result end
+        if spec.brokenEquipment~=nil then
+            local working=copy(spec)
+            for _,row in pairs(working.expected) do if row.itemId==spec.itemId then row.revision=row.revision+1 end end
+            local detached=NativeLifecycleWear.DetachBroken(tx,working,current)
+            if not detached.ok then return detached end
+        end
         if not current() then return Result.Err('repair_commit_denied','Repair authority changed before commit.') end
         return result
     end)
@@ -202,6 +209,13 @@ exports('CommitNativeEquipmentTransition',function(context,spec)
         if spec.action=='shutdown' then
             if not current() then return Result.Err('equipment_commit_denied','Final wear authority changed.') end
             return Result.Ok({unchanged=true,wearChanges=#spec.lifecycleWear})
+        end
+        -- Final wear may already have removed the requested old assignment.
+        if spec.action=='unequip' and spec.expected[spec.slot]
+            and (not working.expected[spec.slot] or working.expected[spec.slot].itemId~=spec.expected[spec.slot].itemId)
+            and spec.brokenEquipment and spec.brokenEquipment[spec.slot] then
+            if not current() then return Result.Err('equipment_commit_denied','Broken equipment authority changed.') end
+            return Result.Ok({slot=spec.slot,brokenUnequipped=true})
         end
         local result=ConditionalEquipment.Apply(tx,working,current)
         if not result.ok then return result end

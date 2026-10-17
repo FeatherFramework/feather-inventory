@@ -204,7 +204,7 @@ local function mutate(context,spec,invokingResource,apply,reason)
             end
             local saved=NativeLifecycleWear.Apply(tx,spec.finalWear,function()
                 return current(safeContext) and runtimeCurrent(safeContext)
-            end)
+            end,safeContext)
             if not saved.ok then return saved end
         end
         if not current(safeContext) or not runtimeCurrent(safeContext) then return err(Result.Codes.DENIED, 'Session or runtime changed before commit.') end

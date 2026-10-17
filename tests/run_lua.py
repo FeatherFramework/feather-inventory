@@ -82,6 +82,7 @@ for name in (
     'native_saved_attachment_fixture_spec.lua',
     'native_saved_attachment_fixture_gates_spec.lua',
     'native_lifecycle_wear_spec.lua',
+    'native_broken_equipment_spec.lua',
 ):
     isolated = LuaRuntime(unpack_returned_tuples=True)
     isolated.globals().arg = isolated.table_from({1: root.as_posix()})
