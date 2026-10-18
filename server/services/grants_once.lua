@@ -1,5 +1,68 @@
 -- Generic ordinary-item fulfillment. No shop tables or payment decisions here.
 GrantOnceAPI = {}
+-- Owning Weapons issuer only. This does not broaden ordinary-item grants.
+NativeFirearmIssuanceAPI={}
+function NativeFirearmIssuanceAPI.Apply(tx,context,spec,current)
+    local function refused(message) return Result.Err('native_issuance_refused',message) end
+    if current()~=true then return refused('Native issuance authority changed.') end
+    local namespace='native-issue:'..spec.resource
+    tx.query('INSERT IGNORE INTO inventory_grant_receipts (source_resource,grant_id,request_fingerprint) VALUES (?,?,?)',
+        {namespace,spec.requestId,spec.fingerprint})
+    local rows=tx.query('SELECT request_fingerprint,result_json FROM inventory_grant_receipts WHERE source_resource=? AND grant_id=? FOR UPDATE',
+        {namespace,spec.requestId})
+    local receipt=rows and rows[1]
+    if not receipt or receipt.request_fingerprint~=spec.fingerprint or current()~=true then return refused('Issuance receipt conflict or authority changed.') end
+    if receipt.result_json then
+        local ok,value=pcall(json.decode,receipt.result_json)
+        if not ok or type(value)~='table' or value.characterId~=context.characterId
+            or value.definitionId~=spec.definitionId or value.itemName~=spec.itemName
+            or type(value.revision)~='number' or value.revision<0 or value.revision%1~=0
+            or type(value.itemInstanceId)~='number'
+            or value.itemInstanceId<1 or value.itemInstanceId%1~=0 or type(value.metadata)~='table'
+            or value.metadata.serialNumber~=value.serialNumber then return refused('Corrupt issuance receipt; no replacement granted.') end
+        value.replayed=true
+        return Result.Ok(value) -- historical result even after transfer/destruction
+    end
+    local headers=tx.query('SELECT id FROM inventory WHERE character_id=? LIMIT 1 FOR UPDATE',{context.characterId})
+    local inventoryId=headers and headers[1] and tonumber(headers[1].id)
+    if not inventoryId then return refused('Target inventory is unavailable.') end
+    local ledgers=tx.query('SELECT revision FROM feather_character_ammunition WHERE character_id=? FOR UPDATE',{context.characterId})
+    if not ledgers or not ledgers[1] then return refused('Target ammunition enrollment is required; no enrollment created.') end
+    local definitions=tx.query('SELECT id,name,type,instance_mode FROM items WHERE name=? AND archived_at IS NULL FOR UPDATE',{spec.itemName})
+    if not definitions or #definitions~=1 or definitions[1].type~='item_weapon' or definitions[1].instance_mode~='unique' then
+        return refused('Expected active unique firearm definition is unavailable.')
+    end
+    if current()~=true then return refused('Native issuance authority changed.') end
+    local created=tx:CreateInstance(inventoryId,tonumber(definitions[1].id),spec.metadata)
+    if not created or not created.ok then return created or refused('Firearm creation failed.') end
+    local value={itemInstanceId=created.value.instanceId,inventoryId=inventoryId,revision=created.value.revision,
+        characterId=context.characterId,definitionId=spec.definitionId,itemName=spec.itemName,
+        serialNumber=spec.metadata.serialNumber,metadata=spec.metadata,replayed=false}
+    local updated=tx.query('UPDATE inventory_grant_receipts SET result_json=? WHERE source_resource=? AND grant_id=?',
+        {json.encode(value),namespace,spec.requestId})
+    if not updated or tonumber(updated.affectedRows or updated.affected_rows)~=1 or current()~=true then
+        return refused('Issuance completion lost authority; transaction must roll back.')
+    end
+    return Result.Ok(value)
+end
+function NativeFirearmIssuanceAPI.Issue(context,spec,resource)
+    if resource~='feather-weapons' or Config.CharacterAmmunitionEnabled~=true
+        or type(context)~='table' or type(spec)~='table'
+        or not InventoryIdentity.NormalizeCharacterId(context.characterId)
+        or type(spec.resource)~='string' or #spec.resource<1 or #spec.resource>64
+        or type(spec.requestId)~='string' or #spec.requestId>128 or not spec.requestId:match('^[A-Za-z0-9][A-Za-z0-9._:%-]*$')
+        or type(spec.fingerprint)~='string' or #spec.fingerprint>300
+        or type(spec.metadata)~='table' then return Result.Err('authorization_denied','Owning native issuer authority required.') end
+    local function current()
+        if Config.CharacterAmmunitionEnabled~=true then return false end
+        local called,allowed=pcall(function() return exports['feather-weapons']:ValidateNativeIssuance(context,spec) end)
+        return called and allowed==true
+    end
+    if not current() then return Result.Err('authorization_denied','Current native issuance ticket required.') end
+    return TransactionAPI.Transaction({resource=resource,reason='native_firearm_issue',correlationId=spec.requestId},function(tx)
+        return NativeFirearmIssuanceAPI.Apply(tx,context,spec,current)
+    end)
+end
 local janeGrantKey={}
 local janePreviewGrantKey={}
 local jane='6a2fd060-c46f-11f1-9ae2-e0d55eaa2deb'

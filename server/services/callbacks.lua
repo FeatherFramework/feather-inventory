@@ -203,6 +203,8 @@ Feather.RPC.Register('Feather:Inventory:GiveItem', function(params, res, src)
   })
   if giveResult and giveResult.error then
     Feather.Notify.RightNotify(src, TranslateResult(src, giveResult, 'err_give_failed'), 3000)
+  elseif giveResult and (tonumber(giveResult.skippedCount) or 0) > 0 then
+    Feather.Notify.RightNotify(src, giveResult.message or 'Some selected items could not be given.', 5000)
   end
   return res(giveResult)
 end)

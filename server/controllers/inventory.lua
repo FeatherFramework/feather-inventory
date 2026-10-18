@@ -862,6 +862,7 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
   local failureCode, failureMessage
   local moved = {}
   local acceptedIds, skippedCount = {}, 0
+  local skippedMessage
   local deletedContainer
 
   local executed, committed = RunLegacyStyleTransaction(function(query)
@@ -938,6 +939,7 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
           return false
         end
         skippedCount = skippedCount + 1
+        skippedMessage = skippedMessage or reason or 'That item cannot be moved right now.'
       else
         candidates[#candidates + 1] = row
       end
@@ -1044,5 +1046,11 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
 
   local payload = readPair()
   payload.movedCount, payload.skippedCount = #acceptedIds, skippedCount
+  if skippedCount > 0 then
+    -- Greedy moves may commit zero rows without being transaction errors.
+    -- Preserve the guard's actionable reason instead of presenting silent success.
+    payload.message = ('Moved %d; skipped %d. %s'):format(#acceptedIds, skippedCount,
+      skippedMessage or 'Some items could not be moved because of inventory restrictions or capacity.')
+  end
   return respond(payload)
 end

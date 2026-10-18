@@ -124,6 +124,56 @@ function E.Apply(tx,characterId,catalog,planner,limits)
     if not receipt or tonumber(receipt.affectedRows)~=1 then return denied('Enrollment receipt insert failed.') end
     return Result.Ok(value)
 end
+-- Explicit console-only fresh empty-character initialization. No migration of
+-- firearms/loose ammo, no implicit ledger creation in runtime snapshot readers.
+function E.ApplyEmpty(tx,characterId,catalog,planner,limits,current)
+    characterId=InventoryIdentity.NormalizeCharacterId(characterId)
+    if not characterId or type(current)~='function' or current()~=true then return denied('Current empty enrollment authority required.') end
+    local headers=tx.query('SELECT id FROM inventory WHERE character_id = ? LIMIT 1 FOR UPDATE',{characterId})
+    if not headers or not headers[1] then return denied('Character inventory missing.') end
+    local items=tx.query('SELECT id FROM inventory_items WHERE inventory_id=? FOR UPDATE',{tonumber(headers[1].id)})
+    local equipment=tx.query('SELECT slot FROM character_equipment WHERE character_id=? FOR UPDATE',{characterId})
+    if type(items)~='table' or next(items)~=nil or type(equipment)~='table' or next(equipment)~=nil then
+        return denied('Empty inventory and equipment required; existing items need migration preview.')
+    end
+    if current()~=true then return denied('Enrollment authority changed.') end
+    local result=E.Apply(tx,characterId,catalog,planner,limits)
+    if not result.ok then return result end
+    if result.value.items~=0 or result.value.revision~=0 then return denied('Unexpected empty enrollment result.') end
+    for _,value in pairs(result.value.pools) do if value~=0 then return denied('Empty enrollment cannot credit ammunition.') end end
+    if current()~=true then return denied('Enrollment authority changed before commit.') end
+    return result
+end
+RegisterCommand('InvNativeEmptyAmmoEnroll',function(source,args)
+    if source~=0 or Config.DevMode~=true then return end
+    local prefix='[InvNativeEmptyAmmoEnroll] '
+    local target=tonumber(args and args[1])
+    local characterId=InventoryIdentity.NormalizeCharacterId(args and args[2])
+    local function stopped()
+        return Config.DevMode==true and GetResourceState('feather-weapons')=='stopped'
+            and GetResourceState('feather-weapons-native-proof')=='stopped'
+            and not GuardsAPI.HasRegisteredGuard('feather-weapons')
+            and characterId~=nil and GetConvar('feather_native_empty_enrollment_character','')==characterId
+    end
+    if not target or target<1 or target%1~=0 or not stopped() then
+        return print(prefix..'REFUSED explicit current target/UUID, exact opt-in, stopped Weapons/proof and cleared native guard required')
+    end
+    local session=InventoryIdentity.GetSession(target)
+    if not session or not session.ok or session.value.characterId~=characterId then return print(prefix..'REFUSED current character mismatch') end
+    local sessionId=session.value.sessionId
+    local function current()
+        return stopped() and exports['feather-core']:IsSessionCurrent(target,sessionId,characterId)==true
+    end
+    local loaded,catalog,planner,limits=pcall(CharacterAmmoCutoverPreview.Load)
+    if not loaded or not current() then return print(prefix..'REFUSED policy/current authority unavailable') end
+    local called,result=pcall(TransactionAPI.Transaction,{resource='feather-inventory',reason='explicit_empty_native_ammo_enrollment',
+        actorSource=target,characterId=characterId,sessionId=sessionId},function(tx)
+        return E.ApplyEmpty(tx,characterId,catalog,planner,limits,current)
+    end)
+    if called and result and result.ok then
+        print(prefix..'COMMITTED '..json.encode(result.value)..'; no item/equipment/native/ammo grants')
+    else print(prefix..'REFUSED '..tostring(called and result and result.error and result.error.message or 'transaction unconfirmed; inspect before retry')) end
+end,true)
 function E.ReadJaneBaseline(tx)
     local characterId='6a2fd060-c46f-11f1-9ae2-e0d55eaa2deb'
     local headers=tx.query('SELECT id FROM inventory WHERE character_id = ? LIMIT 1 FOR UPDATE',{characterId})

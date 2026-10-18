@@ -18,6 +18,15 @@ exports('AwaitReady', function(timeoutMs)
 end)
 
 function StartAPI()
+  exports('GetNativeIssuanceContract',function()
+    return {contractVersion=1,ready=InventoryReadiness.state=='ready'
+      and Config.CharacterAmmunitionEnabled==true and NativeFirearmIssuanceAPI~=nil}
+  end)
+  exports('IssueNativeFirearmOnce',function(context,spec)
+    local ready=InventoryReadyResult()
+    if not ready.ok then return ready end
+    return NativeFirearmIssuanceAPI.Issue(context,spec,GetInvokingResource())
+  end)
   exports('GetCharacterAmmunitionSnapshot', function(context, limits)
     local ready = InventoryReadyResult()
     if not ready.ok then return ready end

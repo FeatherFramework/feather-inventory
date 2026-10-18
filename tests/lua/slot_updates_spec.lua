@@ -595,6 +595,16 @@ test('greedy planner keeps vetoed and blacklisted rows in the source', function(
   local result = InventoryControllers.MoveInventoryItems(2, 1, ids(2), { takeWhatFits = true })
   assert(not result.error and result.movedCount == 1 and result.skippedCount == 2)
   assert(rows[1].inventory_id == 2 and rows[3].inventory_id == 2 and #events == 1)
+  assert(type(result.message)=='string' and result.message:find('Moved 1; skipped 2.',1,true))
+end)
+
+test('all vetoed greedy moves retain a visible refusal summary without moving rows', function()
+  add(1, 2, 0, 1, 1); denied = 1
+  local before = copy(rows)
+  local result = InventoryControllers.MoveInventoryItems(2, 1, ids(2), {takeWhatFits=true})
+  assert(not result.error and result.movedCount==0 and result.skippedCount==1)
+  assert(type(result.message)=='string' and result.message:find('Moved 0; skipped 1.',1,true))
+  assert(#events==0); unchanged(before)
 end)
 test('unplaced target rows count toward locked weight and quantity', function()
   add(1, 1, nil, 1, 5); add(1, 2, 0, 1, 5); policies[1].max_weight = 9
@@ -776,9 +786,9 @@ test('bulk exact removal rejects duplicates and foreign definitions', function()
 end)
 test('Give uses one transaction and transfers only recipient capacity', function()
   Config.MutationTiming = true
-  local registered = {}
+  local registered, notices = {}, {}
   Feather = { RPC = { Register = function(name, handler) registered[name] = handler end },
-    Notify = { RightNotify = function() end } }
+    Notify = { RightNotify = function(src, message) notices[#notices+1]={src=src,message=message} end } }
   InventoryIdentity = { GetCharacter = function(src) return {char = {id = src}} end }
   InventoryControllers.GetInventoryByCharacter = function(id) return id end
   IsWithinGiveDistance = function() return true end
@@ -790,6 +800,16 @@ test('Give uses one transaction and transfers only recipient capacity', function
   assert(not response.error and response.movedCount == 7 and response.skippedCount == 13)
   assert(writes == 1 and count(2, 0) == 7 and #response.sourceItems == 13)
   assert(response.mutationTiming.operation == 'give_items' and response.mutationTiming.updateStatements == 1)
+  assert(#notices==1 and notices[1].src==1 and notices[1].message==response.message)
+  -- Equipped/native-bound guard veto is a zero-move greedy success, not an error.
+  local guard=GuardsAPI.CanMoveInstanceSnapshot
+  GuardsAPI.CanMoveInstanceSnapshot=function() return false,'Unequip this item before moving or removing it.' end
+  local previousEvents=#events
+  registered['Feather:Inventory:GiveItem']({target=2,items=ids(1)},function(value) response=value end,1)
+  GuardsAPI.CanMoveInstanceSnapshot=guard
+  assert(not response.error and response.movedCount==0 and response.skippedCount==13)
+  assert(#events==previousEvents and #notices==2)
+  assert(notices[2].message:find('Unequip this item before moving or removing it.',1,true))
 end)
 test('Give recipient moving away before write rejects everything', function()
   add(20, 1, 0, 1, 1); local before = copy(rows)

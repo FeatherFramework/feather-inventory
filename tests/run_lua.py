@@ -45,6 +45,7 @@ lua.execute((root / 'tests/lua/character_ammo_pair_spec.lua').read_text(encoding
 
 lua = LuaRuntime(unpack_returned_tuples=True)
 lua.execute((root / 'tests/lua/character_ammo_enrollment_spec.lua').read_text(encoding='utf-8'))
+lua.execute((root / 'tests/lua/native_empty_enrollment_spec.lua').read_text(encoding='utf-8'))
 
 lua = LuaRuntime(unpack_returned_tuples=True)
 lua.execute((root / 'tests/lua/character_ammo_enrollment_fixture_spec.lua').read_text(encoding='utf-8'))
@@ -79,6 +80,8 @@ for name in (
     'native_repair_verify_spec.lua',
     'native_repair_audit_spec.lua',
     'native_repair_fixture_spec.lua',
+    'native_john_fixture_spec.lua',
+    'native_issuance_spec.lua',
     'native_saved_attachment_fixture_spec.lua',
     'native_saved_attachment_fixture_gates_spec.lua',
     'native_lifecycle_wear_spec.lua',
