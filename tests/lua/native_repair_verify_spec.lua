@@ -64,3 +64,46 @@ assert(not NativeRepairVerify.CompareWear(wearBefore,healed,wearSpec).ok)
 local payment=copy(worn); payment.items[113]=nil
 assert(not NativeRepairVerify.CompareWear(wearBefore,payment,wearSpec).ok)
 print('native wear durable verifier PASS (exact one/no-op revision, canonical monotonic condition, no material/ammo/other-item changes)')
+local pair=copy(wearBefore)
+pair.items[115]=copy(pair.items[112]); pair.items[115].id=115
+pair.items[115].metadata.flags={disabled=false,evidence=false}
+pair.equipment={{slot='weapon',inventory_items_id=112},{slot='weapon_offhand',inventory_items_id=115},
+ {slot='weapon_shoulder',inventory_items_id=114}}
+local promoted=copy(pair)
+promoted.items[112].revision=2; promoted.items[112].metadata.condition=0
+promoted.items[112].metadata.maintenance.degradation=1
+promoted.equipment={{slot='weapon_shoulder',inventory_items_id=114},{slot='weapon',inventory_items_id=115}}
+local promotionSpec=copy(wearSpec)
+local accepted=NativeRepairVerify.ComparePromotionWear(pair,promoted,promotionSpec)
+assert(accepted.ok and accepted.value.promotionVerified and accepted.value.promotedItemId==115)
+assert(not accepted.value.equipmentUnchanged and accepted.value.ammoUnchanged and accepted.value.materialConsumed==0)
+assert(not NativeRepairVerify.CompareWear(pair,promoted,promotionSpec).ok,'ordinary wear remains strict')
+assert(#pair.equipment==3 and #promoted.equipment==2,'verifier never mutates snapshots')
+for _,mutate in ipairs({
+ function(v) v.equipment[2].inventory_items_id=112 end,
+ function(v) v.equipment[3]={slot='weapon_offhand',inventory_items_id=112} end,
+ function(v) v.equipment[1]=nil end,
+ function(v) v.equipment[1].inventory_items_id=113 end,
+ function(v) v.equipment[3]={slot='weapon',inventory_items_id=113} end,
+ function(v) v.items[115].revision=2 end,
+ function(v) v.items[115].metadata.maintenance.dirt=0 end,
+ function(v) v.items[112].metadata.serialNumber='swapped' end,
+ function(v) v.items[112].metadata.condition=1 end,
+ function(v) v.items[112].revision=3 end,
+ function(v) v.items[112].metadata.maintenance.soot=-1 end,
+ function(v) v.items[113]=nil end,
+ function(v) v.items[120]=copy(v.items[114]) end,
+ function(v) v.ledger[1].revision=26 end,
+ function(v) v.operations={} end,
+ function(v) v.grants={} end,
+}) do
+ local bad=copy(promoted); mutate(bad)
+ assert(not NativeRepairVerify.ComparePromotionWear(pair,bad,promotionSpec).ok,'promotion conservation refusal')
+end
+local disabled=copy(pair); disabled.items[115].metadata.flags.disabled=true
+local disabledAfter=copy(promoted); disabledAfter.items[115]=copy(disabled.items[115])
+assert(not NativeRepairVerify.ComparePromotionWear(disabled,disabledAfter,promotionSpec).ok)
+local broken=copy(pair); broken.items[115].metadata.condition=0
+local brokenAfter=copy(promoted); brokenAfter.items[115]=copy(broken.items[115])
+assert(not NativeRepairVerify.ComparePromotionWear(broken,brokenAfter,promotionSpec).ok)
+print('promotion wear audit PASS (exact promotion only; independent economic/item conservation; ordinary wear unchanged)')

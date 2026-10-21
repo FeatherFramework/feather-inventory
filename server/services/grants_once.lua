@@ -65,6 +65,29 @@ function NativeFirearmIssuanceAPI.Issue(context,spec,resource)
 end
 local janeGrantKey={}
 local janePreviewGrantKey={}
+local throwableBudgetKey={}
+local throwableDeathBudgetKey={}
+local throwablePickupBudgetKey={}
+local throwableBudgets={
+    [throwableBudgetKey]={id='native-tomahawk-loose-budget-v1',quantity=2,
+        convar='feather_native_throwable_budget',command='InvNativeThrowableBudget'},
+    [throwableDeathBudgetKey]={id='native-tomahawk-death-budget-v1',quantity=1,
+        convar='feather_native_throwable_death_budget',command='InvNativeThrowableDeathBudget'},
+    [throwablePickupBudgetKey]={id='native-tomahawk-pickup-budget-v1',quantity=1,
+        convar='feather_native_throwable_pickup_budget',command='InvNativeThrowablePickupBudget'},
+}
+local function throwableCallable(value)
+    return type(value)=='function' or (type(value)=='table'
+        and type(rawget(value,'__cfx_functionReference'))=='string')
+end
+local throwableBudgetCharacter='4560a489-ca6c-11f1-9ad4-e0d55eaa2deb'
+local function throwableBudgetEnabled(key)
+    local profile=throwableBudgets[key]
+    return Config.DevMode==true and Config.CharacterAmmunitionEnabled==true
+        and profile~=nil and type(GetConvar)=='function' and GetConvar(profile.convar,'0')=='1'
+        and type(InventoryReadiness)=='table' and InventoryReadiness.state=='ready'
+        and GetResourceState('feather-weapons-native-proof')=='stopped'
+end
 local jane='6a2fd060-c46f-11f1-9ae2-e0d55eaa2deb'
 local janeGrantId='native-test-jane-revolver-regular-two-v1'
 local janePreviewGrantId='native-test-jane-preview-regular-two-v1'
@@ -82,7 +105,11 @@ local function Validate(request, resource, privateKey)
         and janeGrantEnabled(preview) and type(request)=='table' and request.characterId==jane
         and request.grantId==(preview and janePreviewGrantId or janeGrantId)
         and request.itemName=='ammo_revolver_regular' and request.quantity==2
-    if Config.TrustedIdempotentGrantCallers[resource or ''] ~= true and not dedicated then
+    local budget=throwableBudgets[privateKey]
+    local throwable=budget and resource=='feather-inventory' and throwableBudgetEnabled(privateKey)
+        and type(request)=='table' and request.characterId==throwableBudgetCharacter
+        and request.grantId==budget.id and request.itemName=='ammo_tomahawk_regular' and request.quantity==budget.quantity
+    if Config.TrustedIdempotentGrantCallers[resource or ''] ~= true and not dedicated and not throwable then
         return Result.Err('authorization_denied', 'Idempotent grant caller is not trusted.')
     end
     if type(request) ~= 'table' then return Invalid('Grant request required.') end
@@ -121,6 +148,9 @@ function GrantOnceAPI.Grant(request, resource, privateKey, sessionCurrent)
     local validated = Validate(request, resource, privateKey)
     if not validated.ok then return validated end
     local function authorized()
+        if throwableBudgets[privateKey] then
+            return throwableBudgetEnabled(privateKey) and throwableCallable(sessionCurrent) and sessionCurrent()==true
+        end
         if privateKey~=janeGrantKey and privateKey~=janePreviewGrantKey then return true end
         return janeGrantEnabled(privateKey==janePreviewGrantKey) and type(sessionCurrent)=='function' and sessionCurrent()==true
     end
@@ -153,6 +183,11 @@ function GrantOnceAPI.Grant(request, resource, privateKey, sessionCurrent)
             if type(result.instanceIds) ~= 'table' then
                 return Result.Err('internal', 'Stored delivery receipt is incomplete.')
             end
+            if throwableBudgets[privateKey] and (result.characterId~=request.characterId
+                or result.grantId~=request.grantId or result.definitionId~=request.definitionId
+                or result.itemName~=request.itemName or result.quantity~=throwableBudgets[privateKey].quantity) then
+                return Result.Err('internal','Stored throwable budget receipt does not match its fixed scope.')
+            end
             result.replayed = true
             if not authorized() then return Result.Err('authorization_denied','Jane grant scope/session changed.') end
             return Result.Ok(result)
@@ -166,7 +201,7 @@ function GrantOnceAPI.Grant(request, resource, privateKey, sessionCurrent)
         if definition.instance_mode ~= 'stack' or definition.type == 'weapon' then
             return Result.Err('unique_requires_issuer', 'Unique items require their owning issuer.')
         end
-        if (privateKey==janeGrantKey or privateKey==janePreviewGrantKey) and definition.type~='item_ammo' then
+        if (privateKey==janeGrantKey or privateKey==janePreviewGrantKey or throwableBudgets[privateKey]) and definition.type~='item_ammo' then
             return Result.Err('item_unavailable','Regular revolver stack ammo required.')
         end
         local inventories = tx.query('SELECT `id` FROM `inventory` WHERE `character_id`=? LIMIT 1',
@@ -178,9 +213,12 @@ function GrantOnceAPI.Grant(request, resource, privateKey, sessionCurrent)
         local result = { grantId = request.grantId, characterId = validated.value.characterId,
             inventoryId = inventoryId, definitionId = definition.id, itemName = definition.name,
             quantity = request.quantity, instanceIds = granted.value, replayed = false }
-        tx.query([[UPDATE `inventory_grant_receipts` SET `result_json`=?
+        local saved=tx.query([[UPDATE `inventory_grant_receipts` SET `result_json`=?
             WHERE `source_resource`=? AND `grant_id`=?]],
             { json.encode(result), resource, request.grantId })
+        if throwableBudgets[privateKey] and (not saved or tonumber(saved.affectedRows or saved.affected_rows)~=1) then
+            return Result.Err('internal','Throwable budget receipt was not persisted; transaction must roll back.')
+        end
         if not authorized() then return Result.Err('authorization_denied','Jane grant scope/session changed before commit.') end
         return Result.Ok(result)
     end)
@@ -213,6 +251,36 @@ local function JaneBudget(source,args,preview)
 end
 RegisterCommand('InvJaneAmmoBudget',function(source,args) JaneBudget(source,args,false) end,true)
 RegisterCommand('InvJanePreviewBudget',function(source,args) JaneBudget(source,args,true) end,true)
+-- Fixed development allowance, loose stacks only. Receipt replay never tops up
+-- spent/transferred quantities; it cannot enroll or change carried/native ammo.
+local function throwableBudgetCommand(source,args,key)
+    if source~=0 then return end
+    local profile=throwableBudgets[key]
+    local prefix='['..profile.command..']'
+    local target=tonumber(args and args[1])
+    if not throwableBudgetEnabled(key) or not target or target<1 or target%1~=0
+        or not args or #args~=2 or args[2]~=throwableBudgetCharacter then
+        return print(prefix..' REFUSED exact John/current source and explicit budget gate required')
+    end
+    local ok,result=pcall(function()
+        local session=exports['feather-core']:GetSessionContext(target)
+        assert(session and session.ok and session.value.characterId==throwableBudgetCharacter,'John session required')
+        local function current()
+            return exports['feather-core']:IsSessionCurrent(target,session.value.sessionId,throwableBudgetCharacter)==true
+        end
+        assert(current(),'current John required')
+        local definition=ItemControllers.GetItemDefinitionByName('ammo_tomahawk_regular')
+        assert(definition and definition.type=='item_ammo' and definition.instance_mode=='stack','regular Tomahawk stack definition required')
+        return GrantOnceAPI.Grant({characterId=throwableBudgetCharacter,grantId=profile.id,
+            itemName='ammo_tomahawk_regular',definitionId=tonumber(definition.id),quantity=profile.quantity},
+            'feather-inventory',key,current)
+    end)
+    print(prefix..' '..(ok and result and result.ok and 'PASS ' or 'REFUSED ')
+        ..(ok and json.encode(result) or tostring(result))..'; loose stack only; no carried/native/equipment writes')
+end
+RegisterCommand('InvNativeThrowableBudget',function(source,args) throwableBudgetCommand(source,args,throwableBudgetKey) end,true)
+RegisterCommand('InvNativeThrowableDeathBudget',function(source,args) throwableBudgetCommand(source,args,throwableDeathBudgetKey) end,true)
+RegisterCommand('InvNativeThrowablePickupBudget',function(source,args) throwableBudgetCommand(source,args,throwablePickupBudgetKey) end,true)
 -- Serialize cancellation against delivery on the SAME receipt row. A missing
 -- receipt alone is never evidence for refund: cancellation must first commit
 -- this terminal tombstone, preventing all later delivery attempts for the key.

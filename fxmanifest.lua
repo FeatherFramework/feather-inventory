@@ -22,6 +22,10 @@ server_scripts {
   '/translations/*.lua',
   '/server/helpers/*.lua',
   '/server/controllers/*.lua',
+  '/server/internal/native_throwable_native_pickup_claim.lua',
+  '/server/internal/native_utility_equipment.lua',
+  '/server/internal/native_utility_exports.lua',
+  '/server/internal/native_equipment_snapshot.lua',
   '/server/services/*.lua',
   '/server/main.lua',
 }

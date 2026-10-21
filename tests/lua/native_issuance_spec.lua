@@ -25,7 +25,8 @@ local tx={query=function(sql,p)
  error(sql)
 end}
 function tx:CreateInstance(inv,id,metadata)
- assert(inv==5 and id==10 and metadata.ammo.ownership=='character')
+ assert(inv==5 and id==10 and (metadata.weaponDefinitionId=='melee_knife'
+  or metadata.weaponDefinitionId=='utility_lasso' or metadata.ammo.ownership=='character'))
  if not capacity then return Result.Err('capacity','full') end
  db.items={{id=300,metadata=copy(metadata)}}
  if loseAuthority then active=false end
@@ -50,3 +51,22 @@ reset(); enrolled=false; assert(not apply().ok and db.receipt==nil and #db.items
 reset(); active=false; assert(not apply().ok and db.receipt==nil)
 assert(not NativeFirearmIssuanceAPI.Issue({},spec,'untrusted').ok)
 print('Native issuance transaction PASS (atomic item/receipt, payload conflict, no replenishment, rollback, capacity/enrollment/authority refusal, unchanged equipment/ammo; mocked SQL)')
+reset()
+spec={resource='feather-weapons',requestId='knife-v1',fingerprint='knife-payload',definitionId='melee_knife',
+ itemName='weapon_melee_knife',metadata={weaponDefinitionId='melee_knife',serialNumber='FW-KNIFE'}}
+local knife=apply(); assert(knife.ok and db.items[1].metadata.ammo==nil and db.ammo==7 and db.ledgerRevision==5 and db.equipment.weapon==99)
+db.items={}; assert(apply().value.replayed and #db.items==0,'knife replay never replenishes delivered item')
+spec.fingerprint='changed'; assert(not apply().ok)
+print('knife receipt reuse PASS (same canonical delivery namespace, no ammo/equipment writes, historical replay/conflict)')
+reset()
+spec={resource='feather-weapons',requestId='lasso-v1',fingerprint='lasso-payload',definitionId='utility_lasso',
+ itemName='weapon_lasso',metadata={weaponDefinitionId='utility_lasso',serialNumber='FW-LASSO'}}
+local lasso=apply()
+assert(lasso.ok and lasso.value.itemInstanceId==300 and lasso.value.serialNumber=='FW-LASSO')
+assert(db.items[1].metadata.ammo==nil and db.ammo==7 and db.ledgerRevision==5 and db.equipment.weapon==99)
+db.items={}
+local lassoReplay=apply()
+assert(lassoReplay.ok and lassoReplay.value.replayed and #db.items==0 and lassoReplay.value.serialNumber=='FW-LASSO',
+ 'lasso historical receipt cannot replenish a transferred/destroyed item')
+spec.fingerprint='different-lasso-payload'; assert(not apply().ok and #db.items==0)
+print('lasso receipt reuse PASS: historical item/serial replay, no replenishment or equipment/ammo writes; mocked SQL')

@@ -19,7 +19,12 @@
 EquipmentAPI = {}
 local function NativeSlot(slot)
     return Config and Config.CharacterAmmunitionEnabled==true
-        and ({weapon=true,weapon_offhand=true,weapon_shoulder=true,weapon_back=true})[slot]==true
+        and (({weapon=true,weapon_offhand=true,weapon_shoulder=true,weapon_back=true})[slot]==true
+            or (slot=='weapon_throwable' and type(GetConvarInt)=='function' and GetConvarInt('feather_native_throwable',0)==1)
+            or (({weapon_melee=true,weapon_melee_secondary=true,weapon_melee_tertiary=true,
+                weapon_melee_quaternary=true,weapon_melee_quinary=true})[slot]==true
+                and type(GetConvarInt)=='function' and GetConvarInt('feather_native_melee',0)==1)
+            or (slot=='weapon_melee' and type(GetConvarInt)=='function' and GetConvarInt('feather_native_knife',0)==1))
 end
 local function NativeSlotDenied()
     return Result.Err(Result.Codes.DENIED,'Native firearm assignments require the conditional native coordinator.')

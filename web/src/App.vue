@@ -91,6 +91,7 @@ const ammoMessage = ref('');
 const ammoScope = ref(null);
 const ammoLifetime = createAmmoPanelLifetime();
 const equipmentPanel = ref(null);
+const equipmentSlots = ref([]);
 const equipmentBusy = ref(false);
 const equipmentMessage = ref('');
 const equipmentScope = ref(null);
@@ -99,6 +100,7 @@ const equipmentLifetime = createAmmoPanelLifetime();
 function closeEquipmentPanel() {
   equipmentLifetime.invalidate();
   equipmentPanel.value = null;
+  equipmentSlots.value = [];
   equipmentScope.value = null;
   equipmentItem.value = null;
 }
@@ -108,7 +110,7 @@ function closeAmmoPanel() {
   ammoPanel.value = null;
   ammoScope.value = null;
 }
-const contextCanAmmo = computed(() => contextMenu.value?.book === 'player' && contextStack().items.some((item) => /^(ammo_|weapon_)/.test(item.name)));
+const contextCanAmmo = computed(() => contextMenu.value?.book === 'player' && contextStack().items.some((item) => !/^weapon_melee_(knife|machete|hammer|cleaver|hatchet)$/.test(item.name) && /^(ammo_|weapon_)/.test(item.name)));
 const contextCanEquipment = computed(() => contextMenu.value?.book === 'player' && contextStack().items.length === 1
   && /^weapon_/.test(contextStack().items[0]?.name || ''));
 async function onContextEquipment() {
@@ -126,6 +128,7 @@ async function onContextEquipment() {
     if (!equipmentLifetime.current(ticket)) return;
     if (data?.ok) {
       equipmentPanel.value = data.value.options;
+      equipmentSlots.value = Array.isArray(data.value.slots) ? data.value.slots : [];
       equipmentScope.value = data.value.identity;
       equipmentItem.value = item.id;
       equipmentMessage.value = data.value.options.length ? '' : 'No supported equipment action for this firearm.';
@@ -145,12 +148,14 @@ async function changeEquipment(option) {
     });
     if (!equipmentLifetime.current(ticket)) return;
     equipmentPanel.value = []; // never leave old-epoch buttons actionable
+    equipmentSlots.value = [];
     equipmentScope.value = null;
     equipmentMessage.value = data?.ok ? 'Equipment updated. Reopen Equipment for another action.'
       : `${data?.error?.code || 'Equipment result uncertain'}. Do not retry an uncertain change.`;
   } catch {
     if (equipmentLifetime.current(ticket)) {
       equipmentPanel.value = [];
+      equipmentSlots.value = [];
       equipmentScope.value = null;
       equipmentMessage.value = 'Equipment result uncertain. Do not retry; check Weapons status.';
     }
@@ -848,7 +853,7 @@ const quantityActionLabel = computed(() => {
       @close="contextMenu = null"
     />
 
-    <EquipmentPanel v-if="equipmentPanel" :options="equipmentPanel" :busy="equipmentBusy" :message="equipmentMessage"
+    <EquipmentPanel v-if="equipmentPanel" :options="equipmentPanel" :slots="equipmentSlots" :busy="equipmentBusy" :message="equipmentMessage"
       @change="changeEquipment" @close="closeEquipmentPanel" />
     <ItemCountModal
       v-if="quantityPrompt"
