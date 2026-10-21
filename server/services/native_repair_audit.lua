@@ -5,16 +5,19 @@ local function denied(message) return Result.Err('repair_audit_refused',message)
 local function validId(v) return type(v)=='number' and v>=1 and v%1==0 and v<math.huge end
 function NativeRepairAudit.New(api)
     local A={}
-    function A.Run(target,characterId,itemId,mode)
+    function A.Run(target,characterId,itemId,mode,label)
+        if label~=nil and (type(label)~='string' or #label<1 or #label>40
+            or not label:match('^[a-z0-9][a-z0-9%-]*$')) then return denied('Invalid audit label.') end
         if not validId(target) or not validId(itemId) or type(characterId)~='string'
             or #characterId~=36 or not characterId:match('^[a-fA-F0-9%-]+$')
             or (mode~='capture' and mode~='verify' and mode~='inspect' and mode~='diagnose'
-                and mode~='capture-wear' and mode~='verify-wear') or api.enabled()~=true then return denied('Invalid scoped audit request.') end
+                and mode~='capture-wear' and mode~='verify-wear' and mode~='verify-promotion-wear') or api.enabled()~=true then return denied('Invalid scoped audit request.') end
         local context=api.context(target,characterId)
         if not context then return denied('Current character required.') end
         local function current() return api.enabled()==true and api.current(target,context,characterId)==true end
-        local wear=mode=='capture-wear' or mode=='verify-wear'
+        local wear=mode=='capture-wear' or mode=='verify-wear' or mode=='verify-promotion-wear'
         local name=(wear and '.native-wear-audit-%s.json' or '.native-repair-audit-%s.json'):format(characterId:lower())
+        if label then name=name:sub(1,-6)..'-'..label..'.json' end
         if mode=='capture' or mode=='capture-wear' then
             if api.load(name)~=nil then return denied('Baseline already exists; retain it, do not overwrite.') end
             local spec=wear and api.wearPlan(target,itemId) or api.plan(target,itemId)
@@ -57,6 +60,7 @@ function NativeRepairAudit.New(api)
             if not api.equal(stored.before,read.value) then return denied('Retained baseline differs from current pre-repair state; do not overwrite.') end
             return Result.Ok({mode='inspect',file=name,itemId=itemId,baselineMatches=true,noEconomicWrites=true})
         end
+        if mode=='verify-promotion-wear' then return NativeRepairVerify.ComparePromotionWear(stored.before,read.value,stored.spec) end
         if wear then return NativeRepairVerify.CompareWear(stored.before,read.value,stored.spec) end
         return NativeRepairVerify.Compare(stored.before,read.value,stored.spec)
     end
@@ -87,8 +91,8 @@ if type(RegisterCommand)=='function' then
     })
     RegisterCommand('InvNativeRepairAudit',function(source,args)
         if source~=0 then return end
-        if not args or #args~=4 then return print('[InvNativeRepairAudit] usage: server-id character-uuid item-id capture|inspect|diagnose|verify|capture-wear|verify-wear') end
-        local called,result=pcall(audit.Run,tonumber(args[1]),args[2],tonumber(args[3]),args[4])
+        if not args or (#args~=4 and #args~=5) then return print('[InvNativeRepairAudit] usage: server-id character-uuid item-id capture|inspect|diagnose|verify|capture-wear|verify-wear|verify-promotion-wear [audit-label]') end
+        local called,result=pcall(audit.Run,tonumber(args[1]),args[2],tonumber(args[3]),args[4],args[5])
         if called and result and result.ok then print('[InvNativeRepairAudit] PASS '..json.encode(result.value))
         else print('[InvNativeRepairAudit] REFUSED '..tostring(called and result and result.error and result.error.message or result)) end
     end,true)

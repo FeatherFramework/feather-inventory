@@ -124,3 +124,55 @@ function NativeRepairVerify.CompareWear(before,after,spec)
     return Result.Ok({itemId=spec.itemId,revision=observed.revision,changed=observed.revision~=saved.revision,
         ammoUnchanged=true,equipmentUnchanged=true,materialConsumed=0})
 end
+-- Separate SELECT-audit policy: never weaken ordinary unchanged-equipment wear.
+function NativeRepairVerify.ComparePromotionWear(before,after,spec)
+    if type(before)~='table' or type(after)~='table' or type(spec)~='table'
+        or type(before.items)~='table' or type(after.items)~='table'
+        or type(spec.itemRevision)~='number' or spec.itemRevision<0 or spec.itemRevision%1~=0
+        or spec.itemRevision==math.huge then return denied('Promotion snapshots required.') end
+    local function assignments(rows)
+        if type(rows)~='table' then return nil end
+        local slots,ids,count={},{},0
+        for index,row in pairs(rows) do
+            if type(index)~='number' or index%1~=0 or index<1 or index>#rows or type(row)~='table'
+                or type(row.slot)~='string' or slots[row.slot] then return nil end
+            local id=tonumber(row.inventory_items_id)
+            if not id or id<1 or id%1~=0 or id==math.huge or ids[id] then return nil end
+            ids[id]=true
+            for key in pairs(row) do if key~='slot' and key~='inventory_items_id' then return nil end end
+            slots[row.slot]=id; count=count+1
+        end
+        if count~=#rows then return nil end
+        return slots
+    end
+    local oldSlots,newSlots=assignments(before.equipment),assignments(after.equipment)
+    if not oldSlots or not newSlots or oldSlots.weapon~=spec.itemId
+        or not oldSlots.weapon_offhand or oldSlots.weapon_offhand==spec.itemId then return denied('Exact primary/offhand baseline required.') end
+    local siblingId=oldSlots.weapon_offhand
+    local primary,sibling=after.items[spec.itemId],before.items[siblingId]
+    if not primary or not sibling or type(primary.metadata)~='table' or primary.metadata.condition~=0
+        or primary.revision~=spec.itemRevision+1 or type(sibling.metadata)~='table'
+        or type(sibling.metadata.condition)~='number' or not (sibling.metadata.condition>0)
+        or not equal(sibling,after.items[siblingId]) then return denied('Broken primary and unchanged healthy offhand required.') end
+    local wear=sibling.metadata.maintenance
+    if type(wear)~='table' then return denied('Healthy offhand wear required.') end
+    for _,key in ipairs({'degradation','damage','permanentDegradation'}) do
+        local value=wear[key]
+        if type(value)~='number' or not (value>=0 and value<1) then return denied('Healthy offhand wear required.') end
+    end
+    local flags=sibling.metadata.flags
+    if type(flags)~='table' or flags.disabled~=false or flags.evidence~=false then return denied('Equippable offhand flags required.') end
+    local expected=copy(oldSlots); expected.weapon=siblingId; expected.weapon_offhand=nil
+    for slot,id in pairs(expected) do if id==spec.itemId then return denied('Broken primary remains assigned.') end end
+    if not equal(expected,newSlots) then return denied('Exact offhand-to-primary promotion required.') end
+    -- Equipment has been checked independently. Reuse all strict conservation,
+    -- canonical condition and monotonic wear checks without mutating snapshots.
+    local normalized=copy(after); normalized.equipment=copy(before.equipment)
+    local result=NativeRepairVerify.CompareWear(before,normalized,spec)
+    if not result.ok then return result end
+    result.value.equipmentUnchanged=false
+    result.value.promotionVerified=true
+    result.value.promotedItemId=siblingId
+    result.value.noEconomicWrites=true
+    return result
+end

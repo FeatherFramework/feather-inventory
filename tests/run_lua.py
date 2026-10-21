@@ -45,6 +45,7 @@ lua.execute((root / 'tests/lua/character_ammo_pair_spec.lua').read_text(encoding
 
 lua = LuaRuntime(unpack_returned_tuples=True)
 lua.execute((root / 'tests/lua/character_ammo_enrollment_spec.lua').read_text(encoding='utf-8'))
+lua.execute((root / 'tests/lua/native_empty_enrollment_spec.lua').read_text(encoding='utf-8'))
 
 lua = LuaRuntime(unpack_returned_tuples=True)
 lua.execute((root / 'tests/lua/character_ammo_enrollment_fixture_spec.lua').read_text(encoding='utf-8'))
@@ -67,6 +68,25 @@ for name in (
     'native_ammo_preflight_spec.lua', 'native_ammo_preview_spec.lua',
     'native_equipment_commit_spec.lua', 'native_equipment_nui_spec.lua',
     'native_equipment_preflight_spec.lua',
+    'native_knife_equipment_spec.lua',
+    'native_utility_equipment_spec.lua',
+    'native_equipment_snapshot_spec.lua',
+    'native_reinforced_lasso_equipment_spec.lua',
+    'native_utility_equipment_commit_spec.lua',
+    'native_utility_export_spec.lua',
+    'native_utility_projection_composition_spec.lua',
+    'native_melee_equipment_spec.lua',
+    'native_throwable_equipment_spec.lua',
+    'native_throwable_funding_spec.lua',
+    'native_throwable_funding_atomic_spec.lua',
+    'native_throwable_budget_spec.lua',
+    'native_throwable_recovery_claim_spec.lua',
+    'native_throwable_native_pickup_claim_spec.lua',
+    'native_throwable_native_pickup_spend_spec.lua',
+    'native_throwable_native_pickup_export_spec.lua',
+    'native_knife_export_spec.lua',
+    'native_melee_export_spec.lua',
+    'native_throwable_export_spec.lua',
     'native_repair_commit_spec.lua',
     'native_evidence_commit_spec.lua',
     'native_evidence_export_spec.lua',
@@ -79,9 +99,12 @@ for name in (
     'native_repair_verify_spec.lua',
     'native_repair_audit_spec.lua',
     'native_repair_fixture_spec.lua',
+    'native_john_fixture_spec.lua',
+    'native_issuance_spec.lua',
     'native_saved_attachment_fixture_spec.lua',
     'native_saved_attachment_fixture_gates_spec.lua',
     'native_lifecycle_wear_spec.lua',
+    'native_broken_equipment_spec.lua',
 ):
     isolated = LuaRuntime(unpack_returned_tuples=True)
     isolated.globals().arg = isolated.table_from({1: root.as_posix()})

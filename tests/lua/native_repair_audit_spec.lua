@@ -64,3 +64,18 @@ end
 assert(audit.Run(2,before.characterId,112,'capture-wear').ok)
 assert(audit.Run(2,before.characterId,112,'verify-wear').ok)
 assert(next(files):find('.native-wear-audit-',1,true),'wear baseline must not overwrite repair baseline')
+local original=files[next(files)]
+local labeled=audit.Run(2,before.characterId,112,'capture-wear','death-broken-v1')
+assert(labeled.ok and labeled.value.file:find('-death-broken-v1.json',1,true))
+assert(audit.Run(2,before.characterId,112,'verify-wear','death-broken-v1').ok)
+NativeRepairVerify.ComparePromotionWear=function(old,new,intent)
+ assert(old.items[112].revision==1 and intent.characterId==before.characterId)
+ return Result.Ok({promotionVerified=true})
+end
+assert(audit.Run(2,before.characterId,112,'verify-promotion-wear','death-broken-v1').value.promotionVerified)
+assert(not audit.Run(2,before.characterId,112,'verify-promotion-wear','missing').ok)
+assert(not audit.Run(2,before.characterId,112,'capture-wear','death-broken-v1').ok)
+assert(files['.native-wear-audit-'..before.characterId..'.json']==original)
+for _,label in ipairs({'../escape','a/b','UPPER','',string.rep('x',41)}) do
+ assert(not audit.Run(2,before.characterId,112,'capture-wear',label).ok)
+end

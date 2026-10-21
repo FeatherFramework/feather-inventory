@@ -4,7 +4,7 @@ ConditionalEquipment = {}
 local function denied(message) return Result.Err('equipment_change_refused',message) end
 local function integer(value) return type(value)=='number' and value>0 and value%1==0 and value<math.huge end
 local function revision(value) return type(value)=='number' and value>=0 and value%1==0 and value<math.huge end
-function ConditionalEquipment.Apply(tx,spec,current)
+function ConditionalEquipment.Apply(tx,spec,current,guardContext)
     if type(spec)~='table' or type(current)~='function' or current()~=true
         or not InventoryIdentity.NormalizeCharacterId(spec.characterId)
         or type(spec.slot)~='string' or #spec.slot>50 or not spec.slot:match('^[a-z][a-z0-9_]*$')
@@ -51,8 +51,19 @@ function ConditionalEquipment.Apply(tx,spec,current)
         end
         ids[spec.itemId]=true
     elseif not spec.expected[spec.slot] then return denied('Expected slot is not equipped.') end
+    local guard={operation='equipment_write'}
+    if type(guardContext)=='table' then
+        -- Internal death-wear composition only; never forward arbitrary caller
+        -- fields or let a context override the actual requested slot/action.
+        for _,key in ipairs({'resource','actorSource','characterId','sessionId','runtimeEpoch','runtimeTicket'}) do
+            guard[key]=guardContext[key]
+        end
+        guard.equipmentAction=spec.action
+        guard.equipmentSlot=spec.slot
+        guard.equipmentItemId=spec.action=='equip' and spec.itemId or spec.expected[spec.slot] and spec.expected[spec.slot].itemId
+    end
     for id in pairs(ids) do
-        local allowed,reason=GuardsAPI.CanChangeInstance(id,{operation='equipment_write'})
+        local allowed,reason=GuardsAPI.CanChangeInstance(id,guard)
         if allowed~=true then return denied(reason or 'Equipment is still held by its native owner.') end
     end
     if current()~=true then return denied('Session/release authority changed during validation.') end

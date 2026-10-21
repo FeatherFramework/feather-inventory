@@ -4,7 +4,72 @@ local function copy(v)
     if type(v)~='table' then return v end
     local out={}; for k,x in pairs(v) do out[k]=copy(x) end; return out
 end
-function NativeLifecycleWear.Apply(tx,spec,current)
+-- Released-owner or exact reserved death-observation path. Use guarded conditional equipment writes;
+-- no item removal, ammo mutation or attachment changes. Healthy dependent offhand
+-- promotion changes assignments only, inside the same transaction.
+function NativeLifecycleWear.DetachBroken(tx,spec,current,guardContext)
+    local working=copy(spec)
+    if spec.brokenEquipment==nil then return Result.Ok(working) end
+    if type(spec.brokenEquipment)~='table' or type(spec.expected)~='table' or current()~=true then
+        return Result.Err('broken_equipment_refused','Reserved broken equipment plan required.')
+    end
+    local allowed={weapon=true,weapon_offhand=true,weapon_shoulder=true,weapon_back=true}
+    if spec.action=='death' and next(spec.brokenEquipment)~=nil and (type(guardContext)~='table'
+        or guardContext.resource~='feather-weapons' or guardContext.characterId~=spec.characterId
+        or type(guardContext.runtimeEpoch)~='string' or type(guardContext.runtimeTicket)~='string') then
+        return Result.Err('broken_equipment_refused','Reserved death equipment authority required.')
+    end
+    for slot,entry in pairs(spec.brokenEquipment) do
+        local expected=working.expected[slot]
+        if not allowed[slot] or type(entry)~='table' or not expected or entry.itemId~=expected.itemId then
+            return Result.Err('broken_equipment_refused','Broken assignment changed.')
+        end
+        local read=tx:GetItemForUpdate(entry.itemId)
+        local item=read and read.ok and read.value
+        if not item or item.revision~=expected.revision or type(item.metadata)~='table' or current()~=true then
+            return Result.Err('broken_equipment_refused','Broken item revision changed.')
+        end
+        if entry.reason=='broken' then
+            local condition=item.metadata.condition
+            if type(entry.minimum)~='number' or entry.minimum~=entry.minimum or entry.minimum<=0 or entry.minimum>100
+                or type(condition)~='number' or condition~=condition or condition<0 or condition>=entry.minimum then
+                return Result.Err('broken_equipment_refused','Item is not below its reserved equip minimum.')
+            end
+        elseif entry.reason~='primary_broken' or slot~='weapon_offhand'
+            or not spec.brokenEquipment.weapon or spec.brokenEquipment.weapon.reason~='broken' then
+            return Result.Err('broken_equipment_refused','Invalid dependent offhand removal.')
+        end
+        if entry.promote~=nil then
+            if entry.promote~=true or entry.reason~='primary_broken' or slot~='weapon_offhand'
+                or type(entry.minimum)~='number' or entry.minimum~=entry.minimum or entry.minimum<=0 or entry.minimum>100
+                or type(item.metadata.condition)~='number' or item.metadata.condition~=item.metadata.condition
+                or item.metadata.condition<entry.minimum or item.metadata.condition>100
+                or (item.metadata.flags or {}).disabled or (item.metadata.flags or {}).evidence then
+                return Result.Err('broken_equipment_refused','Invalid healthy offhand promotion.')
+            end
+        end
+    end
+    for _,slot in ipairs({'weapon_offhand','weapon','weapon_shoulder','weapon_back'}) do
+        if spec.brokenEquipment[slot] then
+            local result=ConditionalEquipment.Apply(tx,{characterId=spec.characterId,action='unequip',slot=slot,
+                expected=working.expected},current,spec.action=='death' and guardContext or nil)
+            if not result.ok then return result end
+            working.expected[slot]=nil
+        end
+    end
+    local promotion=spec.brokenEquipment.weapon_offhand
+    if promotion and promotion.promote then
+        local expected=spec.expected.weapon_offhand
+        local result=ConditionalEquipment.Apply(tx,{characterId=spec.characterId,action='equip',slot='weapon',
+            itemId=promotion.itemId,itemRevision=expected.revision,expected=working.expected},current,
+            spec.action=='death' and guardContext or nil)
+        if not result.ok then return result end
+        working.expected.weapon={itemId=promotion.itemId,revision=expected.revision}
+    end
+    if current()~=true then return Result.Err('broken_equipment_refused','Broken equipment authority changed.') end
+    return Result.Ok(working)
+end
+function NativeLifecycleWear.Apply(tx,spec,current,guardContext)
     local working=copy(spec)
     if type(spec.lifecycleWear)~='table' or #spec.lifecycleWear>4 or type(spec.expected)~='table' then
         return Result.Err('lifecycle_wear_refused','Reserved final wear plan required.')
@@ -50,5 +115,5 @@ function NativeLifecycleWear.Apply(tx,spec,current)
         for _,row in pairs(working.expected) do if row.itemId==change.itemId then row.revision=row.revision+1 end end
     end
     if current()~=true then return Result.Err('lifecycle_wear_refused','Final wear authority changed.') end
-    return Result.Ok(working)
+    return NativeLifecycleWear.DetachBroken(tx,working,current,guardContext)
 end

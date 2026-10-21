@@ -117,3 +117,13 @@ assert(item.metadata==metadata and metadata.serialNumber=='PRESERVED'
  and metadata.provenance.owner=='Jane','guard evaluation cannot mutate instance identity/customization')
 else print('SKIP optional sibling Weapons native guard composition (repository not present)') end
 print('PASS equipment guard snapshots: movement/destruction vetoes, bulk reads, fallback, cleanup, nested guards')
+Config={CharacterAmmunitionEnabled=true}
+GetConvarInt=function() return 1 end
+assert(not EquipmentAPI.SetEquippedForCharacter('john','weapon_melee',90).ok,
+ 'generic equipment API cannot bypass native knife conditional coordinator')
+assert(not EquipmentAPI.SetEquippedForCharacter('john','weapon_throwable',170).ok,
+ 'generic equipment API cannot bypass native throwable conditional coordinator')
+for _,slot in ipairs({'weapon_melee_secondary','weapon_melee_tertiary','weapon_melee_quaternary','weapon_melee_quinary'}) do
+ assert(not EquipmentAPI.SetEquippedForCharacter('john',slot,90).ok,
+  'generic equipment API cannot bypass aggregate native melee coordinator')
+end
