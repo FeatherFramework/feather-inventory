@@ -661,6 +661,8 @@ function InstancesAPI.GetCapabilities()
             transactions = true,        -- INV-W2: optimistic, revision-guarded
             durableCharacterGrants = true, -- grant and replay receipt commit atomically
             durableGrantCancellation = true, -- terminal no-delivery fence for compensation
+            durableUniqueCharacterGrants = true, -- non-weapon instance + payload-bound receipt
+            durableUniqueGrantCancellation = true, -- shares the unique delivery receipt lock
             movementGuards = true,      -- INV-W3: pre-move/destroy veto registry
             postCommitEvents = true,    -- INV-W3: structured, internal, post-commit
             accessModes = true,         -- INV-W4: read/insert/remove/manage
