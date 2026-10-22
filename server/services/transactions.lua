@@ -849,7 +849,8 @@ end
 --
 function TransactionAPI.Transaction(context, fn)
     context = context or {}
-    if type(fn) ~= 'function' then
+    if type(fn) ~= 'function' and not (type(fn) == 'table'
+        and type(rawget(fn, '__cfx_functionReference')) == 'string') then
         return Result.Err(Result.Codes.INVALID_INPUT, 'Transaction body must be a function.')
     end
 

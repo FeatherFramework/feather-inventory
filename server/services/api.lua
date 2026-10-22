@@ -57,6 +57,16 @@ function StartAPI()
     if not ready.ok then return ready end
     return GrantOnceAPI.Cancel(request, GetInvokingResource())
   end)
+  exports('GrantCharacterUniqueItemOnce', function(request)
+    local ready = InventoryReadyResult()
+    if not ready.ok then return ready end
+    return UniqueGrantOnceAPI.Grant(request, GetInvokingResource())
+  end)
+  exports('CancelCharacterUniqueItemGrant', function(request)
+    local ready = InventoryReadyResult()
+    if not ready.ok then return ready end
+    return UniqueGrantOnceAPI.Cancel(request, GetInvokingResource())
+  end)
   ItemsAPI.RegisterInternalUseGuard()
   local inventoryServerAPI = {}
   inventoryServerAPI.Inventory = InventoryAPI

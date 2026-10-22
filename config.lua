@@ -8,6 +8,8 @@ Config = {}
 Config.DevMode = true
 -- Durable ordinary-item fulfillment; callers supply a stable operation ID.
 Config.TrustedIdempotentGrantCallers = { ['feather-shops'] = true }
+-- Non-weapon unique issuers; separate from stack grants and Weapons issuance.
+Config.TrustedUniqueGrantCallers = { ['bcc-stables'] = true }
 -- Migration gate: never enable until Weapons enrollment/runtime is implemented.
 Config.CharacterAmmunitionEnabled = false
 

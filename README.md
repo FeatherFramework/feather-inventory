@@ -1,6 +1,6 @@
 # Feather Inventory
 
-Current alpha version: **0.6.2**. Access-backed delegation is opt-in per container;
+Current alpha version: **0.7.0**. Access-backed delegation is opt-in per container;
 existing legacy storage continues to work without an Access cutover. Native
 delegation requires the matching Inventory integration in feather-access and
 the exact feather-admin service policy. Weapons integration testing is deferred
@@ -1375,3 +1375,73 @@ registration finish. Initialization failures are logged and reported, not treate
 as readiness. Durable grant/cancellation exports fail closed until ready.
 Resource dependency order alone does not guarantee database initialization has
 completed; consumers should await readiness before acquiring `initiate()`.
+
+## Durable non-weapon unique fulfillment
+
+Separate top-level server exports support tack and other non-weapon unique
+items. Existing weapon issuance and ordinary stack grants retain their contracts.
+ContractVersion remains 4; require both boolean capability flags
+`durableUniqueCharacterGrants` and `durableUniqueGrantCancellation` before use.
+Config.TrustedUniqueGrantCallers admits bcc-stables independently of stack grants.
+Readiness and GetInvokingResource-derived authority are checked at the exports.
+These are trusted server operations by character UUID, so recovery does not
+require the original client to remain online. Gameplay owns purchase authority.
+
+```lua
+local request = {
+    grantId = savedOperationId,
+    characterId = originalBuyerCharacterId,
+    definitionId = existingTackDefinitionId,
+    itemName = existingTackItemName,
+    metadata = { version = 1, durability = 100 }
+}
+local delivered = exports['feather-inventory']:GrantCharacterUniqueItemOnce(request)
+-- Only after the domain has durably chosen compensation instead of fulfillment:
+local cancelled = exports['feather-inventory']:CancelCharacterUniqueItemGrant(request)
+```
+
+Exactly one instance is created. No quantity or caller/resource override field is
+accepted. The definition must exist, match its supplied ID/name, be active and
+unique, and have a non-weapon type/name. This API creates no item definitions or
+renames. Metadata is issuer-defined JSON-compatible data, at most 4096 encoded
+bytes, depth 6 and 128 value nodes; objects or contiguous arrays are accepted,
+with finite numbers, no cycles or mixed array/object keys. Object key order does
+not affect the exact payload fingerprint. Weapon/ammunition/equipment ownership
+remains with existing services; this method cannot issue weapon definitions.
+
+A new Inventory-owned inventory_unique_grant_receipts table stores the exact
+bounded canonical request and result. Startup creates it idempotently beside the
+existing stack receipt schema. The item and receipt commit in one normal
+Inventory transaction, preserving capacity and post-commit behavior. It uses the
+current 0.6.2 delegation-aware transaction runner. No process-local idempotency
+cache is used for delivery. Transaction callbacks also accept CFX callable tables.
+
+A successful delivery result contains grantId, characterId, definitionId,
+itemName, inventoryId, instanceId, revision, delivered=true, cancelled=false and
+replayed. Revision is the original issuance revision, not a current item read.
+A replay returns historical identity even after transfer/destruction; it never
+replenishes the item. Same key with changed payload returns idempotency_conflict.
+A cancellation shares the receipt row lock: if it wins, a durable cancelled=true/
+delivered=false receipt blocks late grants with grant_cancelled; if delivery won,
+cancellation returns grant_already_delivered even if the item is no longer held.
+Corrupt receipts and save failures fail closed. Consumers must not infer no
+historical delivery from item absence or refund after an unknown delivery result.
+
+Server-console InventoryUniqueFulfillmentContractSmokeTest checks 4 read-only
+admission/payload/schema conditions. It grants/cancels nothing and needs no
+DevMode change. Tests/run_lua.py includes ten new mocked-SQL scenarios for atomic
+receipt behavior, historical replay after reload, both cancellation orderings,
+metadata binding, capacity/failure rollback, weapon exclusion, CFX callables and
+export readiness/caller isolation. Full current Inventory suite, including Access
+delegation and Weapons regressions, passes locally with the sibling feather-access
+repo present. Live SQL concurrency/restart/capacity acceptance remains pending.
+
+Deploy config.lua, server/services/api.lua, server/services/grants_once.lua,
+server/services/instances.lua and server/services/transactions.lua together. Merge
+config additions while retaining server settings. No manifest/new script change
+is introduced here. If upgrading to upstream 0.6.2 at the same time, deploy that
+complete release and matching Access integration first and run refresh for its
+new scripts. Restart Inventory and its consumers in dependency order, or restart
+the server once after both framework updates. Keep the new receipt table and its
+history on rollback; never delete a receipt to retry delivery. Bcc-stables purchase
+and tack gameplay are not enabled by these framework contracts alone.

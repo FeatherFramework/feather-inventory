@@ -143,6 +143,14 @@ function GrantOnceAPI.Start()
         `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (`source_resource`,`grant_id`)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin]])
+    DB.exec([[CREATE TABLE IF NOT EXISTS `inventory_unique_grant_receipts` (
+        `source_resource` VARCHAR(100) NOT NULL,
+        `grant_id` VARCHAR(128) NOT NULL,
+        `request_fingerprint` LONGTEXT NOT NULL,
+        `result_json` LONGTEXT NULL,
+        `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (`source_resource`,`grant_id`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin]])
 end
 function GrantOnceAPI.Grant(request, resource, privateKey, sessionCurrent)
     local validated = Validate(request, resource, privateKey)
@@ -323,6 +331,175 @@ function GrantOnceAPI.Cancel(request, resource)
         return Result.Ok(result)
     end)
 end
+-- Generic non-weapon unique issuance. No Weapons enrollment/ammo/equipment writes.
+UniqueGrantOnceAPI = {}
+
+-- Exact canonical payload rather than a lossy Lua/native hash. Tables are JSON
+-- objects or contiguous arrays; bound traversal before serializing/crossing yields.
+local function UniqueDocument(document)
+    local seen, nodes = {}, 0
+    local function visit(value, depth)
+        nodes = nodes + 1
+        assert(nodes <= 128 and depth <= 6, 'Metadata is too complex.')
+        local kind = type(value)
+        if kind == 'string' then
+            assert(#value <= 4096, 'Metadata string is too long.')
+            return 's' .. #value .. ':' .. value, value
+        elseif kind == 'boolean' then return value and 'b1' or 'b0', value
+        elseif kind == 'number' then
+            assert(value == value and value ~= math.huge and value ~= -math.huge, 'Finite metadata numbers required.')
+            return 'n' .. (value == 0 and '0' or ('%.17g'):format(value)) .. ';', value
+        end
+        assert(kind == 'table' and not seen[value], 'Metadata must be JSON-compatible and acyclic.')
+        seen[value] = true
+        local keys, numeric, textual = {}, false, false
+        for key in pairs(value) do
+            assert(#keys < 128, 'Metadata has too many keys.')
+            if type(key) == 'string' then
+                assert(#key <= 128, 'Metadata key is too long.'); textual = true
+            else
+                assert(type(key) == 'number' and key >= 1 and key % 1 == 0, 'Invalid metadata key.')
+                numeric = true
+            end
+            keys[#keys + 1] = key
+        end
+        assert(not (numeric and textual), 'Mixed array/object metadata is unsupported.')
+        table.sort(keys)
+        local parts, snapshot = { numeric and 'a{' or 'o{' }, {}
+        for index, key in ipairs(keys) do
+            if numeric then assert(key == index, 'Metadata arrays must be contiguous.')
+            else parts[#parts + 1] = 'k' .. #key .. ':' .. key end
+            local encoded, copied = visit(value[key], depth + 1)
+            parts[#parts + 1], snapshot[key] = encoded, copied
+        end
+        parts[#parts + 1] = '}'
+        seen[value] = nil
+        return table.concat(parts), snapshot
+    end
+    assert(type(document) == 'table', 'Metadata document required.')
+    local canonical, snapshot = visit(document, 0)
+    assert(#canonical <= 8192 and #json.encode(snapshot) <= 4096, 'Metadata exceeds 4096 JSON bytes.')
+    return canonical, snapshot
+end
+
+function UniqueGrantOnceAPI.Validate(request, resource)
+    if type(Config.TrustedUniqueGrantCallers) ~= 'table' or Config.TrustedUniqueGrantCallers[resource or ''] ~= true then
+        return Result.Err('authorization_denied', 'Unique grant caller is not trusted.')
+    end
+    if type(request) ~= 'table' then return Invalid('Unique grant request required.') end
+    for key in pairs(request) do
+        if key ~= 'grantId' and key ~= 'characterId' and key ~= 'definitionId' and key ~= 'itemName' and key ~= 'metadata' then
+            return Invalid('Unexpected unique grant field.')
+        end
+    end
+    local characterId = InventoryIdentity.NormalizeCharacterId(request.characterId)
+    if not characterId or type(request.grantId) ~= 'string' or #request.grantId > 128
+        or not request.grantId:match('^[A-Za-z0-9][A-Za-z0-9._:%-]*$')
+        or type(request.definitionId) ~= 'number' or request.definitionId < 1
+        or request.definitionId > 9007199254740991 or request.definitionId % 1 ~= 0
+        or type(request.itemName) ~= 'string' or #request.itemName > 100
+        or not request.itemName:match('^[a-z0-9_]+$') then
+        return Invalid('Stable grant ID, Character UUID, definition ID and item name required.')
+    end
+    local ok, canonical, metadata = pcall(UniqueDocument, request.metadata)
+    if not ok then return Invalid('Bounded JSON-compatible metadata required (4096 bytes, depth 6, nodes 128).') end
+    local snapshot = { grantId = request.grantId, characterId = characterId,
+        definitionId = request.definitionId, itemName = request.itemName, metadata = metadata }
+    return Result.Ok({ request = snapshot, fingerprint = table.concat({ characterId,
+        ('%.0f'):format(request.definitionId), request.itemName, canonical }, '|') })
+end
+
+local function UniqueOperation(request, resource, cancel)
+    local validated = UniqueGrantOnceAPI.Validate(request, resource)
+    if not validated.ok then return validated end
+    request = validated.value.request -- Detached from the caller before SQL yields.
+    local fingerprint = validated.value.fingerprint
+    return TransactionAPI.Transaction({ resource = resource,
+        reason = cancel and 'cancel_unique_character_grant' or 'idempotent_unique_character_grant',
+        correlationId = request.grantId }, function(tx)
+        tx.query([[INSERT IGNORE INTO inventory_unique_grant_receipts
+            (source_resource,grant_id,request_fingerprint) VALUES (?,?,?)]], { resource, request.grantId, fingerprint })
+        local rows = tx.query([[SELECT request_fingerprint,result_json FROM inventory_unique_grant_receipts
+            WHERE source_resource=? AND grant_id=? FOR UPDATE]], { resource, request.grantId }) or {}
+        local receipt = rows[1]
+        if not receipt then return Result.Err('internal', 'Unique receipt reservation failed.') end
+        if receipt.request_fingerprint ~= fingerprint then return Result.Err('idempotency_conflict', 'Unique grant payload changed.') end
+        if receipt.result_json then
+            local ok, value = pcall(json.decode, receipt.result_json)
+            if not ok or type(value) ~= 'table' or value.characterId ~= request.characterId
+                or value.grantId ~= request.grantId or value.definitionId ~= request.definitionId
+                or value.itemName ~= request.itemName then return Result.Err('internal', 'Invalid unique receipt.') end
+            if value.cancelled == true and value.delivered == false then
+                if not cancel then return Result.Err('grant_cancelled', 'Unique grant was durably cancelled.') end
+            elseif value.delivered == true and type(value.instanceId) == 'number' and value.instanceId > 0
+                and value.instanceId <= 9007199254740991 and value.instanceId % 1 == 0
+                and type(value.revision) == 'number' and value.revision >= 0
+                and value.revision <= 9007199254740991 and value.revision % 1 == 0 then
+                if cancel then return Result.Err('grant_already_delivered', 'Historical unique delivery blocks cancellation.') end
+            else return Result.Err('internal', 'Incomplete unique receipt; no replacement created.') end
+            value.replayed = true
+            return Result.Ok(value) -- Historical even if the item moved or was destroyed.
+        end
+        local value = { grantId = request.grantId, characterId = request.characterId,
+            definitionId = request.definitionId, itemName = request.itemName, replayed = false,
+            cancelled = cancel == true, delivered = cancel ~= true }
+        if not cancel then
+            local definitions = tx.query([[SELECT id,name,type,instance_mode,archived_at FROM items
+                WHERE id=? LIMIT 1 FOR UPDATE]], { request.definitionId }) or {}
+            local def = definitions[1]
+            if not def or def.name ~= request.itemName or def.archived_at ~= nil then
+                return Result.Err('item_unavailable', 'Expected active item definition is unavailable.')
+            end
+            if def.instance_mode ~= 'unique' or type(def.type) ~= 'string'
+                or def.type:lower():find('weapon', 1, true) or def.name:match('^weapon_') then
+                return Result.Err('unique_requires_issuer', 'Only non-weapon unique definitions are supported.')
+            end
+            local inventories = tx.query('SELECT id FROM inventory WHERE character_id=? LIMIT 1 FOR UPDATE',
+                { request.characterId }) or {}
+            if not inventories[1] then return Result.Err('not_found', 'Character inventory is unavailable.') end
+            local created = tx:CreateInstance(inventories[1].id, request.definitionId, request.metadata)
+            if not created.ok then return created end
+            value.inventoryId, value.instanceId, value.revision = inventories[1].id, created.value.instanceId, created.value.revision
+        end
+        local saved = tx.query([[UPDATE inventory_unique_grant_receipts SET result_json=?
+            WHERE source_resource=? AND grant_id=?]], { json.encode(value), resource, request.grantId })
+        if not saved or tonumber(saved.affectedRows or saved.affected_rows) ~= 1 then
+            return Result.Err('internal', 'Unique receipt was not saved; transaction must roll back.')
+        end
+        return Result.Ok(value)
+    end)
+end
+
+function UniqueGrantOnceAPI.Grant(request, resource) return UniqueOperation(request, resource, false) end
+function UniqueGrantOnceAPI.Cancel(request, resource) return UniqueOperation(request, resource, true) end
+
+RegisterCommand('InventoryUniqueFulfillmentContractSmokeTest', function(source)
+    if source ~= 0 then return end
+    if not InventoryReadiness or InventoryReadiness.state ~= 'ready' then
+        print('[InventoryUniqueFulfillmentContractSmokeTest] not ready; wait for Inventory startup.')
+        return
+    end
+    local request = { grantId = 'contract-only', characterId = '00000000-0000-4000-8000-000000000001',
+        definitionId = 1, itemName = 'test_saddle', metadata = { version = 1, durability = 100 } }
+    local allowed = UniqueGrantOnceAPI.Validate(request, 'bcc-stables')
+    local untrusted = UniqueGrantOnceAPI.Validate(request, 'untrusted-test')
+    local changed = { grantId = request.grantId, characterId = request.characterId, definitionId = 1,
+        itemName = request.itemName, metadata = { durability = 50, version = 1 } }
+    local different = UniqueGrantOnceAPI.Validate(changed, 'bcc-stables')
+    local passed = 0
+    local tests = {
+        { 'trusted Stables caller', allowed.ok },
+        { 'untrusted caller refused', not untrusted.ok and untrusted.error.code == 'authorization_denied' },
+        { 'metadata binds payload', allowed.ok and different.ok and allowed.value.fingerprint ~= different.value.fingerprint },
+        { 'separate unique receipts ready', tonumber(DB.value("SELECT COUNT(*) FROM inventory_unique_grant_receipts WHERE result_json IS NULL")) == 0 },
+    }
+    for _, test in ipairs(tests) do
+        if test[2] then passed = passed + 1 end
+        print(('[InventoryUniqueFulfillmentContractSmokeTest] %s %s'):format(test[1], test[2] and 'PASS' or 'FAIL'))
+    end
+    print(('[InventoryUniqueFulfillmentContractSmokeTest] %d/%d; no items granted or cancelled'):format(passed, #tests))
+end, true)
+
 RegisterCommand('InventoryFulfillmentContractSmokeTest', function(source)
     if source ~= 0 then return end
     local base = { grantId = 'contract-test', characterId = '00000000-0000-4000-8000-000000000001',
