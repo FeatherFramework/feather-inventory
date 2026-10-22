@@ -13,6 +13,9 @@ end, GetPosition = function(src)
   if tostring(src) == '1' and not near then return 100, 100, 100 end
   return 0, 0, 0
 end }
+InventoryIdentity.GetSession = function(src)
+  return Result.Ok({characterId = tostring(src) == '1' and 'self' or 'target'})
+end
 InventoryControllers = {
   GetInventoryByCharacter = function() ownReads = ownReads + 1; return 1 end,
   GetInventoryLocationById = function(id) return id == 2 and 'ground' or 'character' end,

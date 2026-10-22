@@ -2,6 +2,29 @@ InventoryAPI = {}
 local RegisteredForeignKeys = {}
 local OpenInventories = {}
 
+-- Defensive server-side projection for pre-transaction delegation preparation.
+InventoryAPI.DelegationSessions = function(source)
+  local result = {}
+  for id, opened in pairs(OpenInventories) do
+    if opened.src == tostring(source) then result[tostring(id)] = {src = opened.src, uuid = opened.uuid} end
+  end
+  return result
+end
+InventoryAPI.OpenDelegationFixtureSession = function(source, id)
+  local row = InventoryDelegation and InventoryDelegation.Row(id)
+  if not Config.DevMode or not row or row.location ~= 'delegation_fixture'
+    or InventoryDelegation.Read(source, id, 'read') ~= true then return false end
+  OpenInventories[tostring(id)] = {src = tostring(source), uuid = row.uuid}
+  return true
+end
+InventoryAPI.CloseDelegationFixtureSession = function(source, id)
+  local row = InventoryDelegation and InventoryDelegation.Row(id)
+  local opened = OpenInventories[tostring(id)]
+  if Config.DevMode and row and row.location == 'delegation_fixture' and opened and opened.src == tostring(source) then
+    OpenInventories[tostring(id)] = nil
+  end
+end
+
 ---
 -- Register Script with Inventory
 --
@@ -99,6 +122,9 @@ end
 -- @return Inventory UUID for accessing the inventory later (can be saved in your database table)
 --
 InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItemLimits, maxWeight, restrictedItems, ownerCharacterId, isPublic, maxSlots)
+  if InventoryDelegation and not InventoryDelegation.ready then
+    return Result.Err(Result.Codes.DEPENDENCY_MISSING, 'Delegation schema not ready; await Inventory readiness.')
+  end
   if not tableName or not id then
     warn('All parameters are required!')
     return Result.Err(Result.Codes.INVALID_INPUT, 'tableName and id are required.')
@@ -158,7 +184,13 @@ InventoryAPI.RegisterInventory = function(tableName, id, displayName, ignoreItem
     end
 
     if ownerCharacterId ~= nil then
-      DB.exec('UPDATE `inventory` SET `owner_character_id`=? WHERE `id`=?;', ownerCharacterId, inventory[1].id)
+      if InventoryDelegation then
+        if not InventoryDelegation.ready then return Result.Err(Result.Codes.DEPENDENCY_MISSING, 'Delegation schema not ready; retry registration.') end
+        DB.exec([[UPDATE `inventory` SET `access_epoch`=`access_epoch`+IF(`owner_character_id` <=> ?,0,1),
+          `owner_character_id`=? WHERE `id`=?;]], ownerCharacterId, ownerCharacterId, inventory[1].id)
+      else
+        DB.exec('UPDATE `inventory` SET `owner_character_id`=? WHERE `id`=?;', ownerCharacterId, inventory[1].id)
+      end
     end
     if isPublic ~= nil then
       DB.exec('UPDATE `inventory` SET `is_public`=? WHERE `id`=?;', isPublic and 1 or 0, inventory[1].id)
@@ -804,7 +836,7 @@ end
 -- @param inventoryId Raw inventory.id being requested
 -- @return True if src may read/write this inventory right now
 --
-InventoryAPI.IsInventoryAccessibleBySrc = function(src, inventoryId, query)
+InventoryAPI.IsInventoryAccessibleBySrc = function(src, inventoryId, query, action)
   -- Predicate returning an envelope (contract 2): `ok` says whether the
   -- question could be answered, `value` is the answer. Callers MUST fail
   -- closed on `ok == false` -- a failure envelope is truthy, so testing the
@@ -820,13 +852,18 @@ InventoryAPI.IsInventoryAccessibleBySrc = function(src, inventoryId, query)
   -- UUIDs are robbery targets and retain the live identity/status checks below.
   local opened = OpenInventories[tostring(inventoryId)]
   if opened and opened.src == tostring(src) and not tonumber(opened.uuid) then
+    if InventoryDelegation then
+      local native = InventoryDelegation.Check(src, inventoryId, action or 'read', query)
+      if native ~= nil then return native and allow() or deny() end
+    end
     return allow()
   end
 
-  local player = InventoryIdentity.GetCharacter(src)
-  local character = player and player.char
-  if character then
-    local ownInventoryId = InventoryControllers.GetInventoryByCharacter(character.id, query)
+  -- Core session identity is sufficient for ownership; avoid a Character profile
+  -- provider lookup while an item mutation already holds Inventory SQL locks.
+  local identity = InventoryIdentity.GetSession(src)
+  if Result.IsOk(identity) then
+    local ownInventoryId = InventoryControllers.GetInventoryByCharacter(identity.value.characterId, query)
     if ownInventoryId and tostring(ownInventoryId) == tostring(inventoryId) then
       return allow()
     end
@@ -860,8 +897,8 @@ end
 -- Internal boolean adapter for access-sensitive RPCs. The public predicate
 -- returns a Contract 2 envelope; this unwraps it fail-closed so a failure
 -- envelope can never become authorization merely because tables are truthy.
-InventoryAPI.Accessible = function(src, inventoryId, query)
-  local decision = InventoryAPI.IsInventoryAccessibleBySrc(src, inventoryId, query)
+InventoryAPI.Accessible = function(src, inventoryId, query, action)
+  local decision = InventoryAPI.IsInventoryAccessibleBySrc(src, inventoryId, query, action)
   return Result.IsOk(decision) and decision.value == true
 end
 

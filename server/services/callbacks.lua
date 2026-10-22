@@ -258,11 +258,11 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
     return res(ReadTimedPair(fromInventory, toInventory, metrics))
   end
   -- Merge/swap selection, bounds and net capacity are derived once under locks.
-  local player = InventoryIdentity.GetCharacter(src)
-  local character = player and player.char
+  local session = InventoryIdentity.GetSession(src)
+  if not Result.IsOk(session) then return res({error = true, message = 'A current character session is required.'}) end
   local moved, code, message = InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory, toSlot, {
     _timing = metrics, correlationId = metrics and metrics.id,
-    actorSource = src, actorCharacterId = character and character.id,
+    actorSource = src, actorCharacterId = session.value.characterId,
     reason = 'slot_move', resource = 'feather-inventory',
     autoMerge = true, expectedItemId = itemId,
   })
@@ -315,25 +315,26 @@ Feather.RPC.Register('Feather:Inventory:SplitStack', function(params, res, src)
 
   -- Splitting off the whole stack would just relocate it and leave an empty
   -- compartment behind -- that's a move, which MoveItem already does.
-  local stack = InventoryControllers.GetItemsInSlot(inventory, fromSlot)
-  if quantity >= #stack then
+  local preflight = InventoryMutationMetrics.Measure(metrics, 'splitPreflightMs',
+    InventoryControllers.GetSplitPreflight, inventory, fromSlot)
+  if not preflight or quantity >= preflight.stackSize then
     Feather.Notify.RightNotify(src, Translate(src, 'err_split_whole_stack', 'Choose fewer than the whole stack.'), 3000)
     return res({ error = true, message = 'Choose fewer than the whole stack.' })
   end
 
-  local freeSlot = InventoryControllers.GetFreeSlot(inventory, InventoryControllers.GetInventoryCapacity(inventory))
+  local freeSlot = preflight.freeSlot
   if freeSlot == nil then
     Feather.Notify.RightNotify(src, Translate(src, 'err_no_free_compartment', 'No free compartment to split into.'), 3000)
     return res({ error = true, message = 'No free compartment to split into.' })
   end
 
-  local player = InventoryIdentity.GetCharacter(src)
-  local character = player and player.char
+  local session = InventoryIdentity.GetSession(src)
+  if not Result.IsOk(session) then return res({error = true, message = 'A current character session is required.'}) end
   local moved = InventoryControllers.SplitSlotItems(inventory, fromSlot, freeSlot, quantity, {
     _timing = metrics,
     correlationId = metrics and metrics.id,
     actorSource = src,
-    actorCharacterId = character and character.id,
+    actorCharacterId = session.value.characterId,
     reason = 'split_stack',
     resource = 'feather-inventory'
   })

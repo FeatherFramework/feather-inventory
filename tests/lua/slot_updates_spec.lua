@@ -557,7 +557,8 @@ local function takeAllHandler(access)
   local registered = {}
   Feather = { RPC = { Register = function(name, handler) registered[name] = handler end },
     Notify = { RightNotify = function() end } }
-  InventoryIdentity = { GetCharacter = function() return { char = { id = 1 } } end }
+  InventoryIdentity = { GetCharacter = function() return { char = { id = 1 } } end,
+    GetSession = function() return {ok = true, value = {characterId = 1}} end }
   InventoryControllers.GetInventoryByCharacter = function() return 1 end
   InventoryAPI.Accessible = access or function() return true end
   Translate = function(_, _, fallback) return fallback end

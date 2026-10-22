@@ -141,7 +141,8 @@ end
 -- (executed, committed) exactly like pcall(MySQL.startTransaction, ...) did, so every call
 -- site's own `if not executed or committed ~= true then ... end` check needs no change --
 -- only the two-line pcall(...)/function(query) header at each site does.
-function RunLegacyStyleTransaction(body, metrics)
+function RunLegacyStyleTransaction(body, metrics, context)
+    local function Perform(snapshot)
     local started = metrics and GetGameTimer()
     local executed, committed = pcall(DB.transaction, function(tx)
         local function query(sql, params)
@@ -152,13 +153,19 @@ function RunLegacyStyleTransaction(body, metrics)
             return InventoryMutationMetrics.Measure(metrics, 'sqlMs', tx.raw,
                 sql, table.unpack(params or {}, 1, CountPlaceholders(sql)))
         end
-        return body(query)
+        if InventoryDelegation and not InventoryDelegation.LockSnapshot(query, snapshot) then return false end
+        local result = body(query)
+        if InventoryDelegation and not InventoryDelegation.EndSnapshot(snapshot) then return false end
+        return result
     end)
     if metrics then
         metrics.transactionMs = metrics.transactionMs + InventoryMutationMetrics.Elapsed(started)
         metrics.committed = executed and committed == true
     end
     return executed, committed
+    end
+    if InventoryDelegation then return InventoryDelegation.Transaction(context, Perform) end
+    return Perform()
 end
 
 -- (feather-mysql migration bugfix) The access-check chain (ContextCanAccess /
@@ -190,7 +197,8 @@ end
 -- @return committed (boolean), bodyResult (any), bodyError (string|nil)
 --
 
-local function RunInTransaction(body)
+local function RunInTransaction(body, context)
+    local function Perform(snapshot)
     local bodyResult, bodyError
 
     -- (Weapons review #1) pcall returns (executed, value). Reading only the
@@ -207,6 +215,7 @@ local function RunInTransaction(body)
         local function query(sql, params)
             return tx.raw(sql, table.unpack(params or {}, 1, CountPlaceholders(sql)))
         end
+        if InventoryDelegation and not InventoryDelegation.LockSnapshot(query, snapshot) then return false end
         local ok, result = pcall(body, query)
         if not ok then
             bodyError = tostring(result)
@@ -219,6 +228,7 @@ local function RunInTransaction(body)
             return false
         end
         bodyResult = result
+        if InventoryDelegation and not InventoryDelegation.EndSnapshot(snapshot) then return false end
         return true
     end)
 
@@ -229,6 +239,9 @@ local function RunInTransaction(body)
     end
 
     return committed == true, bodyResult, bodyError
+    end
+    if InventoryDelegation then return InventoryDelegation.Transaction(context, Perform) end
+    return Perform()
 end
 
 ------------------------------------------------------------------
@@ -852,7 +865,7 @@ function TransactionAPI.Transaction(context, fn)
     local committed, bodyResult, bodyError = RunInTransaction(function(query)
         handle = NewTx(query, context)
         return fn(handle)
-    end)
+    end, context)
 
     if bodyError then
         Metrics.bodyErrors = Metrics.bodyErrors + 1
