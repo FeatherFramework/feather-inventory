@@ -134,6 +134,9 @@ Config.Condition = {
 -- (INV-11/INV-12/INV-23) Access control for opening an inventory that isn't
 -- your own -- see server/services/access.lua.
 Config.Access = {
+    -- Native delegation is selected per container by InventoryAccessMigrate.
+    -- Existing legacy containers are not automatically converted.
+    NativeDelegation = true,
     -- Max distance (world units) between two players' server-cached
     -- positions to open one's inventory from the other -- robbery/forced
     -- search. Checked at open time and re-checked on every subsequent move.

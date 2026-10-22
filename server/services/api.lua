@@ -176,6 +176,14 @@ function StartAPI()
   -- Register the complete API before the first database yield. Consumers can
   -- discover it immediately, but must await readiness before doing work.
   InventoryAwaitDatabase()
+  if InventoryDelegation then
+    local delegationDeadline = GetGameTimer() + 30000
+    while not InventoryDelegation.ready and GetGameTimer() < delegationDeadline do Wait(50) end
+    if not InventoryDelegation.ready then
+      InventoryReadiness.state, InventoryReadiness.failure = 'failed', 'delegation_schema_unavailable'
+      return Result.Err('startup_failed', 'Inventory delegation schema did not become ready.')
+    end
+  end
   GrantOnceAPI.Start()
   RegisterCharacterStart(inventoryServerAPI)
   RegisterGroundInventory()

@@ -371,6 +371,28 @@ function InventoryControllers.GetFreeSlot(inventory, capacity)
   return nil
 end
 
+-- One advisory read for SplitStack; the controller still revalidates under locks.
+function InventoryControllers.GetSplitPreflight(inventory, sourceSlot)
+  local rows = DB.query([[SELECT i.`max_slots`, ii.`slot_index`, COUNT(ii.`id`) AS quantity
+    FROM `inventory` i LEFT JOIN `inventory_items` ii ON ii.`inventory_id`=i.`id`
+    WHERE i.`id`=? GROUP BY i.`id`, i.`max_slots`, ii.`slot_index`;]], inventory)
+  if not rows or #rows == 0 then return nil end
+  local capacity = tonumber(rows[1].max_slots) or tonumber(Config.maxItemSlots) or 0
+  local occupied, stackSize = {}, 0
+  for _, row in ipairs(rows) do
+    local slot = tonumber(row.slot_index)
+    if slot then
+      occupied[slot] = true
+      if slot == tonumber(sourceSlot) then stackSize = tonumber(row.quantity) or 0 end
+    end
+  end
+  local freeSlot
+  for slot = 0, capacity - 1 do
+    if not occupied[slot] then freeSlot = slot; break end
+  end
+  return {stackSize = stackSize, freeSlot = freeSlot}
+end
+
 -- Every row sharing an (inventory, slot) pair -- a whole compartment's stack,
 -- since a slot can hold more than one unit of the same item.
 function InventoryControllers.GetItemsInSlot(inventory, slot)
@@ -544,7 +566,7 @@ function InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory
     end
 
     return true
-  end, context._timing)
+  end, context._timing, context)
 
   if not executed or committed ~= true then
     return false, failureCode or 'conflict', failureMessage or 'The inventory changed; try again.'
@@ -610,7 +632,7 @@ function InventoryControllers.SplitSlotItems(inventory, fromSlot, toSlot, quanti
       }
     end
     return true
-  end, context._timing)
+  end, context._timing, context)
 
   if not executed or committed ~= true then return 0 end
   local eventStarted = context._timing and GetGameTimer()
@@ -1017,7 +1039,7 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
     end
 
     return true
-  end, metrics)
+  end, metrics, context)
 
   if not executed or committed ~= true then
     local payload = readPair()

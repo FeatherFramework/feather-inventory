@@ -167,6 +167,7 @@ end
 CreateThread(function()
     InventoryAwaitDatabase()
     EnsureAccessSchema()
+    InventoryAccessSchemaReady = true
 end)
 
 local function GetOwnCharacterId(src)
@@ -216,6 +217,14 @@ InventoryAPI.HasInventoryAccessGrant = function(characterId, inventoryId)
     if not characterId or not inventoryId then
         return Result.Ok(false)
     end
+    if InventoryDelegation then
+        local row = InventoryDelegation.Row(inventoryId)
+        if row and row.access_authority == 'access' then
+            local checked = InventoryDelegation.Access('CheckCapability', {targetType = 'inventory.storage',
+                targetId = row.uuid, capability = 'inventory.read', characterId = characterId})
+            return Result.Ok(checked.ok == true and checked.value.allowed == true)
+        end
+    end
     local result = DB.query(
         'SELECT `id` FROM `inventory_access` WHERE `inventory_id`=? AND `character_id`=? LIMIT 1;',
         inventoryId, characterId
@@ -231,6 +240,9 @@ end
 -- trusted from the client.
 --
 InventoryAPI.GrantInventoryAccess = function(src, inventoryId, targetCharacterId)
+    if InventoryDelegation and not InventoryDelegation.LegacyWrite(inventoryId) then
+        return Result.Err(Result.Codes.DENIED, 'Container uses Access or is migrating; use exact finite capability grants.')
+    end
     targetCharacterId = InventoryIdentity.NormalizeCharacterId(targetCharacterId)
     if not targetCharacterId then
         return Result.Err(Result.Codes.INVALID_INPUT, 'A valid target character id is required.')
@@ -243,6 +255,12 @@ InventoryAPI.GrantInventoryAccess = function(src, inventoryId, targetCharacterId
         return Result.Err(Result.Codes.DENIED, "You do not own this inventory.")
     end
 
+    if InventoryDelegation then
+        return InventoryDelegation.LegacyMutation(inventoryId, function(tx)
+            tx.exec('INSERT IGNORE INTO `inventory_access` (`inventory_id`,`character_id`,`granted_by_character_id`) VALUES (?,?,?)',
+                inventoryId, targetCharacterId, GetOwnCharacterId(src))
+        end)
+    end
     DB.exec(
         'INSERT IGNORE INTO `inventory_access` (`inventory_id`, `character_id`, `granted_by_character_id`) VALUES (?, ?, ?);',
         inventoryId, targetCharacterId, GetOwnCharacterId(src)
@@ -251,6 +269,9 @@ InventoryAPI.GrantInventoryAccess = function(src, inventoryId, targetCharacterId
 end
 
 InventoryAPI.RevokeInventoryAccess = function(src, inventoryId, targetCharacterId)
+    if InventoryDelegation and not InventoryDelegation.LegacyWrite(inventoryId) then
+        return Result.Err(Result.Codes.DENIED, 'Container uses Access or is migrating; revoke its Access grants.')
+    end
     targetCharacterId = InventoryIdentity.NormalizeCharacterId(targetCharacterId)
     if not targetCharacterId then
         return Result.Err(Result.Codes.INVALID_INPUT, 'A valid target character id is required.')
@@ -260,6 +281,11 @@ InventoryAPI.RevokeInventoryAccess = function(src, inventoryId, targetCharacterI
         return Result.Err(Result.Codes.DENIED, "You do not own this inventory.")
     end
 
+    if InventoryDelegation then
+        return InventoryDelegation.LegacyMutation(inventoryId, function(tx)
+            tx.exec('DELETE FROM `inventory_access` WHERE `inventory_id`=? AND `character_id`=?', inventoryId, targetCharacterId)
+        end)
+    end
     DB.exec(
         'DELETE FROM `inventory_access` WHERE `inventory_id`=? AND `character_id`=?;',
         inventoryId, targetCharacterId
@@ -278,6 +304,12 @@ InventoryAPI.SetInventoryPublic = function(src, inventoryId, isPublic)
 end
 
 InventoryAPI.ListInventoryAccess = function(src, inventoryId)
+    if InventoryDelegation then
+        local row = InventoryDelegation.Row(inventoryId)
+        if row and row.access_authority == 'access' then
+            return Result.Err(Result.Codes.DENIED, 'Container uses Access; list exact grants with ListInventoryCapabilities.')
+        end
+    end
     local ownerCharacterId = InventoryAPI.GetInventoryOwner(inventoryId)
     if not IsOwnerOrAdmin(src, ownerCharacterId) then
         return Result.Err(Result.Codes.DENIED, "You do not own this inventory.")
@@ -430,7 +462,7 @@ InventoryAPI.CanAccessInventory = function(src, inventoryId, action, context, qu
     -- a robbery target on every call rather than trusting an open lock
     -- (INV-11/INV-23). Re-checked here rather than cached, so a mutation
     -- arriving late cannot ride an authorization that was true a minute ago.
-    if not InventoryAPI.Accessible(src, inventoryId, query) then
+    if not InventoryAPI.Accessible(src, inventoryId, query, action) then
         return Result.Err(Result.Codes.DENIED, 'You do not have access to that inventory.',
             { action = action }, context.correlationId)
     end
@@ -451,6 +483,10 @@ InventoryAPI.CanAccessInventory = function(src, inventoryId, action, context, qu
 end
 
 function IsAuthorizedForOwnedInventory(src, callerCharacterId, inventoryId)
+    if InventoryDelegation then
+        local native = InventoryDelegation.Read(src, inventoryId, 'read')
+        if native ~= nil then return native end
+    end
     local ownerCharacterId, isPublic = InventoryAPI.GetInventoryOwnerAndVisibility(inventoryId)
     -- Predicates return envelopes (contract 2); unwrap fail-closed -- a
     -- failure envelope is truthy, so testing it directly would grant access.

@@ -30,6 +30,11 @@ lua = LuaRuntime(unpack_returned_tuples=True)
 lua.globals().arg = lua.table_from({1: root.as_posix()})
 lua.execute((root / 'tests/lua/access_reads_spec.lua').read_text(encoding='utf-8'))
 
+for name in ('delegation_spec.lua', 'delegation_cutover_spec.lua'):
+    isolated = LuaRuntime(unpack_returned_tuples=True)
+    isolated.globals().arg = isolated.table_from({1: root.as_posix()})
+    isolated.execute((root / 'tests/lua' / name).read_text(encoding='utf-8'))
+
 lua = LuaRuntime(unpack_returned_tuples=True)
 lua.globals().arg = lua.table_from({1: root.as_posix()})
 lua.execute((root / 'tests/lua/startup_readiness_spec.lua').read_text(encoding='utf-8'))
@@ -61,6 +66,7 @@ lua.execute((root / 'tests/lua/character_ammo_runtime_snapshot_spec.lua').read_t
 
 # New native UI/equipment and dedicated-alpha regressions run in isolated VMs.
 for name in (
+    'split_preflight_spec.lua',
     'character_ammo_jane_readscope_spec.lua', 'character_ammo_jane_spec.lua',
     'character_ammo_native_fixture_spec.lua', 'conditional_equipment_spec.lua',
     'inventory_client_lifecycle_spec.lua', 'jane_ammo_budget_spec.lua',

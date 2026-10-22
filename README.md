@@ -1,5 +1,50 @@
 # Feather Inventory
 
+Current alpha version: **0.6.2**. Access-backed delegation is opt-in per container;
+existing legacy storage continues to work without an Access cutover. Native
+delegation requires the matching Inventory integration in feather-access and
+the exact feather-admin service policy. Weapons integration testing is deferred
+until its runtime is stable; the ammunition gate remains disabled by default.
+
+## Access-backed storage delegation (alpha)
+
+Config.Access.NativeDelegation=true enables the native adapter; existing containers
+remain on legacy shares until console cutover. Start feather-access with its exact
+Inventory provider/trust config and Admin service-policy grants. InventoryAccessStatus
+reports schema/provider readiness and pending cutovers. Access is optional at startup;
+native delegated operations fail closed during outage, while ownership/public/
+temporary paths retain their rules. Keep DevMode=true for this alpha.
+
+InventoryAccessMigrate <containerUUID> <validUntilEpochMilliseconds> imports up to
+100 existing character shares as independent read/insert/remove grants. Choose
+expiry explicitly; legacy shares were indefinite. It retains legacy rows and switches
+one authority only after reconciliation. Retry interrupted preparation with identical
+terms; writers freeze while preparing. InventoryAccessRollback <containerUUID>
+restores the unchanged legacy authority only if ownership/archive/native grants have
+not changed. General rollback after new native changes is refused. An edited legacy
+archive after rollback needs separate reconciliation, not silent import rewriting.
+
+Inventory.GrantInventoryCapability(source, inventoryId, request) accepts exact Access
+grant terms; server supplies target/epoch/actor. RevokeInventoryCapability(source,
+request) accepts grantId, expectedRevision, requestId and reasonCode.
+ListInventoryCapabilities(source, inventoryId, limit?, cursor?) is owner/admin scoped.
+Native capabilities are inventory.read, inventory.insert and inventory.remove;
+manage remains owner/admin. Old GrantInventoryAccess/RevokeInventoryAccess/
+ListInventoryAccess reject native containers. Existing container UUIDs are target
+identities; changed owners advance the delegation epoch and invalidate old grants.
+
+Native checks prepare outside SQL and validate again through Inventory transaction
+guards. Access serializes normal grant writes against guarded native mutations.
+Consumer stop while holding that fence requires Access restart; AccessStatus exposes
+inventoryFenceHeld/inventoryFenceStopped. No cross-domain SQL in Inventory's transaction.
+Membership facts remain point-in-time reads, not a distributed domain transaction.
+
+The sibling feather-inventory-access-tests provides solo InventoryAccessSmokeTest,
+InventoryAccessMigrationTest, InventoryAccessOutageTest and InventoryAccessRestartTest.
+Optional InventoryAccessUiTest/UiRevoke/UiRestore use a distinct fixture container
+for actual item movement checks. Full deployment/acceptance and implementation
+decisions live in feather-framework-docs/feather-access/ACCESS_INVENTORY_ACCEPTANCE.md.
+
 Feather Inventory gives each character a weight- and slot-based inventory presented as an immersive ledger. It also supports persistent hotbar bindings, custom storage, ground drops, usable items, item condition, access sharing, unique item instances, and safe server-side transactions.
 
 This page starts with server setup. The [API reference](#api-reference) is for resource developers.
