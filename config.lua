@@ -10,6 +10,9 @@ Config.DevMode = true
 Config.TrustedIdempotentGrantCallers = { ['feather-shops'] = true }
 -- Non-weapon unique issuers; separate from stack grants and Weapons issuance.
 Config.TrustedUniqueGrantCallers = { ['bcc-stables'] = true }
+-- Opt-in per caller, purpose and established item name. No care consumer yet.
+-- Example shape only: { ['consumer'] = { ['care.v1'] = { existing_item = true } } }
+Config.TrustedConsumptionCallers = {}
 -- Migration gate: never enable until Weapons enrollment/runtime is implemented.
 Config.CharacterAmmunitionEnabled = false
 

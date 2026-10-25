@@ -7,6 +7,7 @@ TransactionAPI, InstancesAPI, EquipmentAPI, DiagnosticsAPI = {}, {}, {}, {}
 local initialized, reachable = 0, true
 DB = {awaitReady = function(timeout) assert(timeout == 60000); coroutine.yield('waiting'); return reachable end}
 GrantOnceAPI = {Start = function() initialized = initialized + 1 end}
+ConsumptionOnceAPI = {Start = function() end}
 RegisterCharacterStart, RegisterGroundInventory = function() end, function() end
 
 dofile(root .. '/server/helpers/main.lua')

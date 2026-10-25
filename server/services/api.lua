@@ -18,6 +18,27 @@ exports('AwaitReady', function(timeoutMs)
 end)
 
 function StartAPI()
+  exports('GetConsumptionContract', function()
+    local contract=ConsumptionOnceAPI.Contract()
+    if InventoryReadiness.state~='ready' then contract.ready=false; contract.durableConsumption=0 end
+    return contract
+  end)
+  for name, method in pairs({ConsumeCharacterItemOnce='Consume', InspectCharacterConsumption='Inspect', CancelCharacterConsumption='Cancel'}) do
+    local operation=method
+    exports(name,function(request)
+      local ready=InventoryReadyResult()
+      if not ready.ok then return ready end
+      if operation=='Inspect' and StablesCareConsumptionProof then
+        local handled,result=StablesCareConsumptionProof.TryInspect(request,GetInvokingResource())
+        if handled then return result end
+      end
+      return ConsumptionOnceAPI[operation](request,GetInvokingResource())
+    end)
+  end
+  exports('StablesCareProofFixture',function(action)
+    local ready=InventoryReadyResult(); if not ready.ok then return ready end
+    return StablesCareConsumptionProof.Step(action,GetInvokingResource())
+  end)
   exports('GetNativeIssuanceContract',function()
     return {contractVersion=1,ready=InventoryReadiness.state=='ready'
       and Config.CharacterAmmunitionEnabled==true and NativeFirearmIssuanceAPI~=nil}
@@ -195,6 +216,7 @@ function StartAPI()
     end
   end
   GrantOnceAPI.Start()
+  ConsumptionOnceAPI.Start()
   RegisterCharacterStart(inventoryServerAPI)
   RegisterGroundInventory()
   InventoryReadiness.state = 'ready'
