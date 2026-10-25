@@ -1,6 +1,6 @@
 # Feather Inventory
 
-Current alpha version: **0.7.0**. Access-backed delegation is opt-in per container;
+Current alpha version: **0.8.0**. Access-backed delegation is opt-in per container;
 existing legacy storage continues to work without an Access cutover. Native
 delegation requires the matching Inventory integration in feather-access and
 the exact feather-admin service policy. Weapons integration testing is deferred
@@ -1445,3 +1445,20 @@ new scripts. Restart Inventory and its consumers in dependency order, or restart
 the server once after both framework updates. Keep the new receipt table and its
 history on rollback; never delete a receipt to retry delivery. Bcc-stables purchase
 and tack gameplay are not enabled by these framework contracts alone.
+
+### Durable consumption receipts (server only)
+
+Additive exports `GetConsumptionContract`, `ConsumeCharacterItemOnce`, `InspectCharacterConsumption` and `CancelCharacterConsumption` bind one exact ordinary item instance to a durable source/operation receipt. Consumption/cancellation serialize on that same receipt; callers must inspect returned `state` (`consumed` or `cancelled`), including on replay. `outcome_unknown` requires inspection/retry of the identical operation, never a replacement ID or refund inferred from absence. No client event or care effect is provided.
+
+`Config.TrustedConsumptionCallers` defaults to `{}`; enablement is per resource/purpose/established item name and requires a consumer recovery policy. See [authoritative contract and test gates](../feather-framework-docs/feather-inventory/FEATHER-INVENTORY-CONSUMPTION-RECEIPTS.md). Local Lua suite and controlled MariaDB concurrent/restart receipt proofs passed. Production feeding remains disabled. New service script requires server-console `refresh` before `restart feather-inventory` when deployed. Do not overwrite server-specific config during upload.
+
+Development receipt proof: server-console `InvConsumptionProof run`, then after `restart feather-inventory`, `InvConsumptionProof verify <printedRunId>`. Uses synthetic items and private receipt scope; tests real MariaDB receipt transactions without player inventory. Controlled live race/rollback/lost-reply/resource-restart replay and exact cleanup passed; full scope/limitations are in the authoritative contract.
+
+`InvConsumptionItemProof run` exercises receipt consumption through real Inventory item/transaction/removal-guard methods using isolated generated fixture inventories/units, then exact cleanup. Controlled live real-item/ownership/revision/removal-guard/replay/cancellation and cleanup acceptance passed. Requires the new consumption_item_proof.lua script (`refresh` before restart); keep the production consumption allowlist empty. See authoritative contract for scope and failure handling.
+
+Development-only StablesCareProofFixture supports the fixed cross-resource care receipt fixture, requiring bcc-stables/DevMode/readiness. Ordinary inspection delegates only exact active-manifest proof requests; production consumption authorization remains unchanged. See [care bridge proof](../gameplay-resource-docs/bcc-stables/HORSE_CARE_BRIDGE_PROOF.md). New service requires refresh before Inventory restart.
+
+
+### 0.8.0 validation checkpoint — 2026-10-25
+
+The full Lua suite passes, including eleven receipt cases, fixture authorization gates and existing regression suites (79 production Lua files parse). Live MariaDB evidence covers separate-connection consume/cancel races, rollback, lost commit replies, replay across Inventory resource restart, real guarded item removal and exact disposable fixture cleanup. Stables' live cross-resource proof recovered a real disposable item's receipt, applied one local benefit and recovered cancellation; production allowlist remained unchanged. These are controlled development proofs, not production feeding, full-process crash or every session-interruption acceptance. Existing transaction, item-use and grant APIs remain unchanged. The version bump synchronizes manifest and web package metadata; pnpm lock has no project-version field. No UI source/build changes are introduced.

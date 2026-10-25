@@ -30,7 +30,7 @@ lua = LuaRuntime(unpack_returned_tuples=True)
 lua.globals().arg = lua.table_from({1: root.as_posix()})
 lua.execute((root / 'tests/lua/access_reads_spec.lua').read_text(encoding='utf-8'))
 
-for name in ('delegation_spec.lua', 'delegation_cutover_spec.lua'):
+for name in ('delegation_spec.lua', 'delegation_cutover_spec.lua', 'consumption_once_spec.lua', 'consumption_proof_gates_spec.lua', 'consumption_item_proof_gates_spec.lua', 'stables_care_proof_gates_spec.lua'):
     isolated = LuaRuntime(unpack_returned_tuples=True)
     isolated.globals().arg = isolated.table_from({1: root.as_posix()})
     isolated.execute((root / 'tests/lua' / name).read_text(encoding='utf-8'))
