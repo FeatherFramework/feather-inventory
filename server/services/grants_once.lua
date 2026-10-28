@@ -388,7 +388,7 @@ function UniqueGrantOnceAPI.Validate(request, resource)
     end
     if type(request) ~= 'table' then return Invalid('Unique grant request required.') end
     for key in pairs(request) do
-        if key ~= 'grantId' and key ~= 'characterId' and key ~= 'definitionId' and key ~= 'itemName' and key ~= 'metadata' then
+        if key ~= 'grantId' and key ~= 'characterId' and key ~= 'definitionId' and key ~= 'itemName' and key ~= 'metadata' and key ~= 'collectionKey' then
             return Invalid('Unexpected unique grant field.')
         end
     end
@@ -405,8 +405,15 @@ function UniqueGrantOnceAPI.Validate(request, resource)
     if not ok then return Invalid('Bounded JSON-compatible metadata required (4096 bytes, depth 6, nodes 128).') end
     local snapshot = { grantId = request.grantId, characterId = characterId,
         definitionId = request.definitionId, itemName = request.itemName, metadata = metadata }
-    return Result.Ok({ request = snapshot, fingerprint = table.concat({ characterId,
-        ('%.0f'):format(request.definitionId), request.itemName, canonical }, '|') })
+    local fingerprint=table.concat({ characterId,('%.0f'):format(request.definitionId),request.itemName,canonical },'|')
+    if request.collectionKey~=nil then
+        local collection=CharacterCollectionAPI.Validate(request,resource)
+        if not collection.ok then return collection end
+        if collection.value.items[request.itemName]~=true then return Invalid('Item is not allowed in this collection.') end
+        snapshot.collectionKey=request.collectionKey
+        fingerprint=fingerprint..'|collection:'..request.collectionKey
+    end
+    return Result.Ok({request=snapshot,fingerprint=fingerprint})
 end
 
 local function UniqueOperation(request, resource, cancel)
@@ -444,6 +451,15 @@ local function UniqueOperation(request, resource, cancel)
             definitionId = request.definitionId, itemName = request.itemName, replayed = false,
             cancelled = cancel == true, delivered = cancel ~= true }
         if not cancel then
+            -- Resolve/lock private custody before definitions, matching adoption's
+            -- lock order instead of taking the item definition first.
+            local collectionPolicy,collectionInventory
+            if request.collectionKey then
+                local checked=CharacterCollectionAPI.Validate(request,resource);if not checked.ok then return checked end
+                collectionPolicy=checked.value
+                local resolved=CharacterCollectionAPI.Resolve(tx,collectionPolicy);if not resolved.ok then return resolved end
+                collectionInventory=resolved.value.id
+            end
             local definitions = tx.query([[SELECT id,name,type,instance_mode,archived_at FROM items
                 WHERE id=? LIMIT 1 FOR UPDATE]], { request.definitionId }) or {}
             local def = definitions[1]
@@ -454,12 +470,20 @@ local function UniqueOperation(request, resource, cancel)
                 or def.type:lower():find('weapon', 1, true) or def.name:match('^weapon_') then
                 return Result.Err('unique_requires_issuer', 'Only non-weapon unique definitions are supported.')
             end
-            local inventories = tx.query('SELECT id FROM inventory WHERE character_id=? LIMIT 1 FOR UPDATE',
-                { request.characterId }) or {}
-            if not inventories[1] then return Result.Err('not_found', 'Character inventory is unavailable.') end
-            local created = tx:CreateInstance(inventories[1].id, request.definitionId, request.metadata)
+            local inventoryId
+            if request.collectionKey then
+                if not CharacterCollectionAPI.Allowed(collectionPolicy,{name=def.name,type=def.type,instance_mode=def.instance_mode,metadata=request.metadata}) then
+                    return Invalid('Item metadata is not eligible for the collection.')
+                end
+                inventoryId=collectionInventory
+            else
+                local inventories=tx.query('SELECT id FROM inventory WHERE character_id=? LIMIT 1 FOR UPDATE',{request.characterId}) or {}
+                if not inventories[1] then return Result.Err('not_found','Character inventory is unavailable.') end
+                inventoryId=inventories[1].id
+            end
+            local created=tx:CreateInstance(inventoryId,request.definitionId,request.metadata)
             if not created.ok then return created end
-            value.inventoryId, value.instanceId, value.revision = inventories[1].id, created.value.instanceId, created.value.revision
+            value.inventoryId,value.instanceId,value.revision=inventoryId,created.value.instanceId,created.value.revision
         end
         local saved = tx.query([[UPDATE inventory_unique_grant_receipts SET result_json=?
             WHERE source_resource=? AND grant_id=?]], { json.encode(value), resource, request.grantId })

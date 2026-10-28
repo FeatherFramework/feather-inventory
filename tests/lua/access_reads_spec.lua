@@ -57,3 +57,14 @@ assert(not InventoryAPI.Accessible(1, 3))
 near, targetPresent = true, false
 assert(not InventoryAPI.Accessible(1, 3))
 print('PASS real access APIs: fewer reads, ground proximity, missing pile, closed/foreign session, own inventory, robbery status/distance/identity')
+
+local originalLocation=InventoryControllers.GetInventoryLocationById
+InventoryControllers.GetInventoryLocationById=function(id,query)
+  if id==42 then return 'character_collection' end
+  return originalLocation(id,query)
+end
+assert(not IsAuthorizedForOwnedInventory(1,'self',42))
+for _,mode in pairs(InventoryAPI.AccessModes) do
+  assert(not InventoryAPI.CanAccessInventory(1,42,mode,{}).ok)
+end
+print('PASS private collections refuse generic open/read/insert/remove/manage')

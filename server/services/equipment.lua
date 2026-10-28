@@ -172,6 +172,96 @@ function EquipmentAPI.SetEquippedForCharacter(characterId, slot, instanceId)
     return Result.Ok({ slot = slot, instanceId = numericInstance })
 end
 
+-- Compare-and-set several generic slots in one provider transaction. Zero means
+-- empty. Every source/destination must be declared; an item cannot be stolen from
+-- an undeclared slot. Existing single-slot APIs retain their contract.
+local function ApplyEquipmentBatch(characterId, changes, collectionId, collectionPolicy)
+    local character=InventoryIdentity.NormalizeCharacterId(characterId)
+    if not character or type(changes)~='table' or #changes<1 or #changes>16 then
+        return Result.Err(Result.Codes.INVALID_INPUT,'Invalid equipment batch.')
+    end
+    local slots,ids,ordered,snapshot={},{},{},{}
+    for _,c in ipairs(changes) do
+        if type(c)~='table' or type(c.slot)~='string' or #c.slot<1 or #c.slot>50
+            or NativeSlot(c.slot) or slots[c.slot] or type(c.expected)~='number'
+            or c.expected<0 or c.expected%1~=0 or type(c.instanceId)~='number'
+            or c.instanceId<0 or c.instanceId%1~=0 then
+            return Result.Err(Result.Codes.INVALID_INPUT,'Invalid equipment change.')
+        end
+        c={slot=c.slot,expected=c.expected,instanceId=c.instanceId}
+        snapshot[#snapshot+1]=c
+        slots[c.slot]=c;ordered[#ordered+1]=c.slot
+        if c.instanceId>0 then
+            if ids[c.instanceId] then return Result.Err(Result.Codes.INVALID_INPUT,'Duplicate destination item.') end
+            ids[c.instanceId]=true
+        end
+    end
+    changes=snapshot
+    table.sort(ordered)
+    local failure
+    local executed,committed=RunLegacyStyleTransaction(function(query)
+        local itemIds={}
+        for _,c in ipairs(changes) do
+            if c.expected>0 then itemIds[c.expected]=true end
+            if c.instanceId>0 then itemIds[c.instanceId]=true end
+        end
+        local sorted={};for id in pairs(itemIds) do sorted[#sorted+1]=id end;table.sort(sorted)
+        for _,id in ipairs(sorted) do
+            local row
+            if collectionId then
+                row=query([[SELECT ii.id,ii.metadata,i.name,i.type,i.instance_mode FROM inventory_items ii
+                    INNER JOIN items i ON i.id=ii.item_id
+                    INNER JOIN inventory_character_collections c ON c.inventory_id=ii.inventory_id
+                    INNER JOIN inventory inv ON inv.id=c.inventory_id AND inv.location='character_collection'
+                        AND inv.character_id IS NULL AND inv.owner_character_id IS NULL AND inv.is_public=0
+                    WHERE ii.id=? AND c.inventory_id=? AND c.character_id=? AND c.source_resource=? AND c.collection_key=? FOR UPDATE]],
+                    {id,collectionId,character,collectionPolicy.resource,collectionPolicy.key})[1]
+                if row and not CharacterCollectionAPI.Allowed(collectionPolicy,row) then row=nil end
+            else
+                row=query([[SELECT ii.id FROM inventory_items ii
+                    INNER JOIN inventory inv ON inv.id=ii.inventory_id
+                    WHERE ii.id=? AND inv.character_id=? FOR UPDATE]],{id,character})[1]
+            end
+            if not row then failure=Result.Err(Result.Codes.DENIED,'Equipment item is not owned.');return false end
+        end
+        local rows=query([[SELECT slot,inventory_items_id FROM character_equipment
+            WHERE character_id=? ORDER BY slot FOR UPDATE]],{character})
+        local current={}
+        for _,r in ipairs(rows) do
+            current[r.slot]=tonumber(r.inventory_items_id)
+            if ids[tonumber(r.inventory_items_id)] and not slots[r.slot] then
+                failure=Result.Err(Result.Codes.DENIED,'Equipment source changed.');return false
+            end
+        end
+        for _,c in ipairs(changes) do
+            if (current[c.slot] or 0)~=c.expected then
+                failure=Result.Err(Result.Codes.CONFLICT or Result.Codes.DENIED,'Equipment changed.');return false
+            end
+        end
+        for _,id in ipairs(sorted) do
+            local allowed,reason=GuardsAPI.CanChangeInstance(id,{operation='equipment_write'})
+            if allowed~=true then failure=Result.Err(Result.Codes.DENIED,reason);return false end
+        end
+        for _,slot in ipairs(ordered) do
+            query('DELETE FROM character_equipment WHERE character_id=? AND slot=?',{character,slot})
+        end
+        for _,slot in ipairs(ordered) do
+            local id=slots[slot].instanceId
+            if id>0 then query('INSERT INTO character_equipment (character_id,slot,inventory_items_id) VALUES (?,?,?)',{character,slot,id}) end
+        end
+        return true
+    end)
+    if not executed or committed~=true then return failure or Result.Err(Result.Codes.INTERNAL,'Equipment batch rolled back.') end
+    return Result.Ok({changed=true})
+end
+
+function EquipmentAPI.SetEquipmentBatchForCharacter(characterId,changes)
+    return ApplyEquipmentBatch(characterId,changes)
+end
+function EquipmentAPI.SetCollectionEquipmentBatch(characterId,changes,collectionId,policy)
+    return ApplyEquipmentBatch(characterId,changes,collectionId,policy)
+end
+
 ---
 -- Promote Equipped Slot
 --
