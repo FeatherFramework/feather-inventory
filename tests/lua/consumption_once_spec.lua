@@ -36,6 +36,12 @@ function tx:RemoveInstances(inv,def,ids)
     if blocked then return Result.Err('denied','guard refused') end
     state.item=nil; state.removed=state.removed+1; return Result.Ok({5})
 end
+function tx:SetMetadata(id,metadata,revision)
+    assert(id==5 and revision==state.item.revision)
+    if blocked then return Result.Err('denied','guard refused') end
+    state.item.metadata=copy(metadata);state.item.revision=revision+1
+    return Result.Ok({revision=revision+1})
+end
 TransactionAPI={Transaction=function(context,body)
     assert(context.resource=='bcc-stables' and context.idempotencyKey==nil)
     local before=copy(state); local result=body(tx)
@@ -123,4 +129,64 @@ test('readiness false before successful schema start',function()
     assert(not pcall(ConsumptionOnceAPI.Start) and not ConsumptionOnceAPI.Contract().ready)
     DB.query=query
 end)
-print(('%s/%s consumption receipt cases passed; MariaDB concurrency/restart still pending.'):format(count,count))
+local function tool()
+    local r=request();r.itemName='horsebrush';r.purpose='brush.v1';r.wear=1;r.maximumDurability=100
+    Config.TrustedConsumptionCallers['bcc-stables']['brush.v1']={horsebrush=true}
+    state.item.definition.name='horsebrush';state.item.definition.instanceMode='unique'
+    return r
+end
+test('wear commits metadata and receipt once, preserving other metadata',function()
+    local r=tool();state.item.metadata={condition=20,custom='keep'}
+    local v=run('Wear',r);assert(v.ok and v.value.state=='used' and v.value.remainingDurability==19)
+    assert(state.item.metadata.custom=='keep' and state.item.metadata.condition==19)
+    assert(run('Wear',r).value.replayed and run('CancelWear',r).value.state=='used')
+    assert(state.item.metadata.condition==19 and ConsumptionOnceAPI.Contract().durableWear==1)
+end)
+test('last tool use breaks exactly once and replays after instance deletion',function()
+    local r=tool();state.item.metadata={condition=1}
+    local v=run('Wear',r);assert(v.ok and v.value.broken and v.value.remainingDurability==0 and state.removed==1)
+    dofile(root..'/server/services/consumption_once.lua');ConsumptionOnceAPI.Start()
+    assert(run('InspectWear',r).value.broken and run('Wear',r).value.replayed and state.removed==1)
+end)
+test('cancelled wear cannot later mutate tool',function()
+    local r=tool();assert(run('CancelWear',r).value.state=='cancelled')
+    assert(run('Wear',r).value.state=='cancelled' and state.item.revision==3)
+end)
+test('wear receipt loss and rollback do not lose or repeat durability',function()
+    local r=tool();failSave=true;code(run('Wear',r),'outcome_unknown');assert(not state.item.metadata and state.item.revision==3)
+    failSave=false;unknown=true;code(run('Wear',r),'outcome_unknown');assert(state.item.metadata.condition==99)
+    unknown=false;assert(run('InspectWear',r).value.remainingDurability==99)
+    assert(run('Wear',r).value.replayed and state.item.metadata.condition==99)
+end)
+test('wear policy and action kind are immutable',function()
+    local r=tool();assert(run('Wear',r).ok)
+    r.wear=2;code(run('Wear',r),'receipt_conflict')
+    r.wear=1;r.maximumDurability=101;code(run('CancelWear',r),'receipt_conflict')
+    r=tool();r.wear=nil;r.maximumDurability=nil;code(run('Consume',r),'receipt_conflict')
+end)
+test('wear refuses exhausted invalid and guarded tools without a receipt',function()
+    local r=tool();state.item.metadata={condition=0};code(run('Wear',r),'item_unavailable')
+    state.item.metadata={condition=101};code(run('Wear',r),'item_unavailable')
+    state.item.metadata={condition=30};blocked=true;code(run('Wear',r),'denied')
+    assert(next(state.receipts)==nil and state.item.metadata.condition==30)
+end)
+test('disabled durability still has a durable non-mutating use receipt',function()
+    local r=tool();r.wear=0;assert(run('Wear',r).value.remainingDurability==100)
+    assert(state.item.revision==3 and state.item.metadata==nil and run('Wear',r).value.replayed)
+end)
+test('wear rejects malformed policy and corrupt saved result',function()
+    local r=tool();r.wear=-1;code(run('Wear',r),'invalid_input')
+    r.wear=1;assert(run('Wear',r).ok)
+    local receipt=state.receipts['bcc-stables|'..r.operationId]
+    local v=json.decode(receipt.result_json);v.remainingDurability=nil;receipt.result_json=json.encode(v)
+    code(run('InspectWear',r),'receipt_invalid')
+end)
+test('wear follows Inventory configurable condition key and maximum',function()
+    local r=tool();Config.Condition={Key='tool_condition',Max=100}
+    state.item.metadata={tool_condition=40,durability=9}
+    assert(run('Wear',r).value.remainingDurability==39)
+    assert(state.item.metadata.tool_condition==39 and state.item.metadata.durability==9)
+    assert(ConsumptionOnceAPI.Contract().conditionKey=='tool_condition')
+    Config.Condition=nil
+end)
+print(('%s/%s receipt cases passed; wear MariaDB concurrency/restart acceptance pending.'):format(count,count))
