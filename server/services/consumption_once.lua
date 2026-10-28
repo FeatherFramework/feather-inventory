@@ -3,17 +3,20 @@
 ConsumptionOnceAPI = {}
 local ready=false
 local fields={'operationId','characterId','instanceId','definitionId','expectedRevision','itemName','purpose','effectReference'}
+local wearFields={table.unpack(fields)}
+wearFields[#wearFields+1]='wear';wearFields[#wearFields+1]='maximumDurability'
 local function Integer(v,min) return type(v)=='number' and v%1==0 and v>=min and v<=9007199254740991 end
-local function Validate(request,resource)
+local function Validate(request,resource,wear)
+    local names=wear and wearFields or fields
     local policy=(Config.TrustedConsumptionCallers or {})[resource or '']
     if type(policy)~='table' then return Result.Err('authorization_denied','Consumption caller is not trusted.') end
     if type(request)~='table' then return Result.Err('invalid_input','Consumption request required.') end
     local r={}
     for k in pairs(request) do
-        local known=false; for _,name in ipairs(fields) do if k==name then known=true; break end end
+        local known=false; for _,name in ipairs(names) do if k==name then known=true; break end end
         if not known then return Result.Err('invalid_input','Unexpected consumption field.') end
     end
-    for _,name in ipairs(fields) do r[name]=request[name] end
+    for _,name in ipairs(names) do r[name]=request[name] end
     r.characterId=InventoryIdentity.NormalizeCharacterId(r.characterId)
     r.operationId=InventoryIdentity.NormalizeCharacterId(r.operationId)
     if not r.characterId or not r.operationId or not Integer(r.instanceId,1)
@@ -26,11 +29,13 @@ local function Validate(request,resource)
     if type(policy[r.purpose])~='table' or policy[r.purpose][r.itemName]~=true then
         return Result.Err('authorization_denied','Consumption item/purpose is not allowed.')
     end
+    if wear and (not Integer(r.maximumDurability,1) or r.maximumDurability>1000000
+        or not Integer(r.wear,0) or r.wear>r.maximumDurability) then return Result.Err('invalid_input','Invalid item wear policy.') end
     -- Fixed order, delimiter excluded from every string field.
-    local parts={}; for _,name in ipairs(fields) do
+    local parts={}; for _,name in ipairs(names) do
         parts[#parts+1]=type(r[name])=='number' and string.format('%.0f',r[name]) or r[name]
     end
-    r.fingerprint=table.concat(parts,'|')
+    r.fingerprint=(wear and 'wear.v1|' or '')..table.concat(parts,'|')
     return Result.Ok(r)
 end
 
@@ -60,14 +65,18 @@ function ConsumptionOnceAPI.Start()
     ready=true
 end
 function ConsumptionOnceAPI.Contract()
-    return {contractVersion=1,ready=ready,durableConsumption=ready and 1 or 0}
+    return {contractVersion=1,ready=ready,durableConsumption=ready and 1 or 0,durableWear=ready and 1 or 0,
+        conditionKey=(Config.Condition and Config.Condition.Key) or 'condition',conditionMaximum=tonumber(Config.Condition and Config.Condition.Max) or 100}
 end
 
-local function Operation(request,resource,mode)
+local function Operation(request,resource,mode,wear)
+    local names=wear and wearFields or fields
+    local terminal=wear and 'used' or 'consumed'
     if not ready then return Result.Err('not_ready','Consumption receipts are not ready.') end
-    local validated=Validate(request,resource); if not validated.ok then return validated end
+    local validated=Validate(request,resource,wear); if not validated.ok then return validated end
     local r=validated.value
-    local called,result=pcall(TransactionAPI.Transaction,{resource=resource,reason='character_consumption_'..mode,correlationId=r.operationId},function(tx)
+    local called,result=pcall(TransactionAPI.Transaction,{resource=resource,
+        reason=(wear and 'character_item_wear_' or 'character_consumption_')..mode,correlationId=r.operationId},function(tx)
         local inserted=false
         if mode~='inspect' then
             local write=tx.query('INSERT IGNORE INTO inventory_consumption_receipts (source_resource,operation_id,request_fingerprint) VALUES (?,?,?)',
@@ -82,16 +91,18 @@ local function Operation(request,resource,mode)
         if receipt.result_json then
             local decoded,v=pcall(json.decode,receipt.result_json)
             if not decoded or type(v)~='table' or v.contractVersion~=1 or v.sourceResource~=resource
-                or (v.state~='consumed' and v.state~='cancelled') or not Integer(v.inventoryId,0)
-                or (v.state=='consumed' and v.inventoryId==0) or (v.state=='cancelled' and v.inventoryId~=0) then
+                or (v.state~=terminal and v.state~='cancelled') or not Integer(v.inventoryId,0)
+                or (v.state==terminal and v.inventoryId==0) or (v.state=='cancelled' and v.inventoryId~=0)
+                or (wear and v.state=='used' and (not Integer(v.remainingDurability,0) or v.remainingDurability>r.maximumDurability
+                    or v.broken~=(v.remainingDurability==0))) then
                 return Result.Err('receipt_invalid','Stored consumption receipt is invalid.')
             end
-            for _,name in ipairs(fields) do if v[name]~=r[name] then return Result.Err('receipt_invalid','Stored consumption binding is invalid.') end end
+            for _,name in ipairs(names) do if v[name]~=r[name] then return Result.Err('receipt_invalid','Stored consumption binding is invalid.') end end
             v.replayed=true; return Result.Ok(v)
         end
         -- A pending row cannot survive a successful commit in this protocol.
         if not inserted then return Result.Err('receipt_invalid','Incomplete consumption receipt retained.') end
-        local inventoryId=0
+        local inventoryId,remaining,broken=0,nil,nil
         if mode=='consume' then
             local itemResult=tx:GetItemForUpdate(r.instanceId); if not itemResult.ok then return itemResult end
             local item=itemResult.value
@@ -102,17 +113,37 @@ local function Operation(request,resource,mode)
             if item.definition.id~=r.definitionId or item.definition.name~=r.itemName or item.revision~=r.expectedRevision then
                 return Result.Err('conflict','Item identity or revision changed.')
             end
-            if item.definition.instanceMode~='stack' or item.definition.type~='item_item' then
-                return Result.Err('item_unavailable','Only ordinary stack instances can be consumed.')
+            if (not wear and item.definition.instanceMode~='stack') or item.definition.type~='item_item'
+                or (wear and item.definition.instanceMode~='stack' and item.definition.instanceMode~='unique') then
+                return Result.Err('item_unavailable','Item type or instance mode is not supported for this operation.')
             end
             local definition=tx.query('SELECT archived_at FROM items WHERE id=? FOR UPDATE',{r.definitionId}) or {}
             if not definition[1] or definition[1].archived_at~=nil then return Result.Err('item_unavailable','Item definition is archived or absent.') end
-            local removed=tx:RemoveInstances(item.inventoryId,r.definitionId,{r.instanceId})
-            if not removed.ok then return removed end
+            if wear then
+                local conditionKey=(Config.Condition and Config.Condition.Key) or 'condition'
+                local maximum=tonumber(Config.Condition and Config.Condition.Max) or 100
+                if r.maximumDurability>maximum then return Result.Err('invalid_input','Wear maximum exceeds Inventory condition range.') end
+                local durability=item.metadata and item.metadata[conditionKey]
+                durability=durability==nil and r.maximumDurability or durability
+                if not Integer(durability,1) or durability>r.maximumDurability then return Result.Err('item_unavailable','Tool durability is invalid or exhausted.') end
+                remaining=math.max(0,durability-r.wear);broken=remaining==0
+                local changed
+                if broken then changed=tx:RemoveInstances(item.inventoryId,r.definitionId,{r.instanceId})
+                elseif r.wear>0 then
+                    local metadata={};for k,v in pairs(item.metadata or {}) do metadata[k]=v end
+                    metadata[conditionKey]=remaining
+                    changed=tx:SetMetadata(item.id,metadata,item.revision)
+                else changed=Result.Ok(true) end
+                if not changed.ok then return changed end
+            else
+                local removed=tx:RemoveInstances(item.inventoryId,r.definitionId,{r.instanceId})
+                if not removed.ok then return removed end
+            end
             inventoryId=item.inventoryId
         end
-        local v={contractVersion=1,sourceResource=resource,state=mode=='consume' and 'consumed' or 'cancelled',inventoryId=inventoryId,replayed=false}
-        for _,name in ipairs(fields) do v[name]=r[name] end
+        local v={contractVersion=1,sourceResource=resource,state=mode=='consume' and terminal or 'cancelled',inventoryId=inventoryId,replayed=false,
+            remainingDurability=remaining,broken=broken}
+        for _,name in ipairs(names) do v[name]=r[name] end
         local saved=tx.query('UPDATE inventory_consumption_receipts SET result_json=? WHERE source_resource=? AND operation_id=? AND result_json IS NULL',
             {json.encode(v),resource,r.operationId})
         if not saved or tonumber(saved.affectedRows or saved.affected_rows)~=1 then
@@ -130,3 +161,6 @@ end
 function ConsumptionOnceAPI.Consume(request,resource) return Operation(request,resource,'consume') end
 function ConsumptionOnceAPI.Cancel(request,resource) return Operation(request,resource,'cancel') end
 function ConsumptionOnceAPI.Inspect(request,resource) return Operation(request,resource,'inspect') end
+function ConsumptionOnceAPI.Wear(request,resource) return Operation(request,resource,'consume',true) end
+function ConsumptionOnceAPI.CancelWear(request,resource) return Operation(request,resource,'cancel',true) end
+function ConsumptionOnceAPI.InspectWear(request,resource) return Operation(request,resource,'inspect',true) end

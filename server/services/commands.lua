@@ -23,8 +23,24 @@ if Config.DevMode then
         end
     end)
 
-    RegisterCommand('AddItems', function(source, args)
-        local result = ItemsAPI.AddItem(args[1], tonumber(args[2]), args[3] or nil, source)
+    RegisterCommand('AddItems', function(source, args, rawCommand)
+        -- Read the untouched JSON tail: splitting command arguments loses spaces
+        -- within metadata values. Metadata is optional, but must be an object.
+        local encoded = rawCommand and rawCommand:match('^%S+%s+%S+%s+%S+%s+(.+)$')
+            or args[3]
+        local metadata, result
+        if encoded then
+            local ok, decoded = false, nil
+            if #encoded <= 4096 and encoded:match('^%s*{') then
+                ok, decoded = pcall(json.decode, encoded)
+            end
+            if not ok or type(decoded) ~= 'table' then
+                result = Result.Err(Result.Codes.INVALID_INPUT, 'Metadata must be a JSON object no larger than 4096 bytes.')
+            else
+                metadata = decoded
+            end
+        end
+        result = result or ItemsAPI.AddItem(args[1], tonumber(args[2]), metadata, source)
 
         if not Result.IsOk(result) then
             Feather.Notify.RightNotify(source, TranslateResult(source, result, 'err_move_failed'), 3000)

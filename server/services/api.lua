@@ -20,10 +20,11 @@ end)
 function StartAPI()
   exports('GetConsumptionContract', function()
     local contract=ConsumptionOnceAPI.Contract()
-    if InventoryReadiness.state~='ready' then contract.ready=false; contract.durableConsumption=0 end
+    if InventoryReadiness.state~='ready' then contract.ready=false; contract.durableConsumption=0;contract.durableWear=0 end
     return contract
   end)
-  for name, method in pairs({ConsumeCharacterItemOnce='Consume', InspectCharacterConsumption='Inspect', CancelCharacterConsumption='Cancel'}) do
+  for name, method in pairs({ConsumeCharacterItemOnce='Consume', InspectCharacterConsumption='Inspect', CancelCharacterConsumption='Cancel',
+    WearCharacterItemOnce='Wear',InspectCharacterItemWear='InspectWear',CancelCharacterItemWear='CancelWear'}) do
     local operation=method
     exports(name,function(request)
       local ready=InventoryReadyResult()

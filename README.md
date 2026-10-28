@@ -1,6 +1,6 @@
 # Feather Inventory
 
-Current alpha version: **0.8.0**. Access-backed delegation is opt-in per container;
+Current alpha version: **0.9.0**. Access-backed delegation is opt-in per container;
 existing legacy storage continues to work without an Access cutover. Native
 delegation requires the matching Inventory integration in feather-access and
 the exact feather-admin service policy. Weapons integration testing is deferred
@@ -1448,6 +1448,23 @@ and tack gameplay are not enabled by these framework contracts alone.
 
 ### Durable consumption receipts (server only)
 
+Tool wear is additive to the same receipt service: `WearCharacterItemOnce`,
+`InspectCharacterItemWear` and `CancelCharacterItemWear`; `GetConsumptionContract`
+advertises `durableWear=1` when ready. Requests contain the consumption binding
+fields plus integer `wear` (0..maximumDurability) and `maximumDurability` (1..1000000).
+Use a separate caller purpose such as `stables.brush.v1` in the existing trusted
+consumption allowlist. A terminal `used` receipt atomically records metadata wear
+or final-use removal; `cancelled` prevents future wear on that exact operation.
+Inspect/cancel/replay cannot wear again, even after breakage. Wear uses the existing `Config.Condition.Key` (default `condition`) and
+`Config.Condition.Max`; unrelated metadata is preserved. The capability reports
+`conditionKey` and `conditionMaximum`. Existing condition APIs are unchanged. Ordinary item tools may be stack/unique definitions; independently
+worn stack units need separate slots (`max_stack_size=1` for new horse brushes).
+Existing food consumption behavior and schema remain unchanged. Full local Lua
+suite passes. Controlled live Stables brushing accepted cancellation, normal wear,
+mounted use and a final-use worn-out result with one saved benefit. Separate
+item-removal inspection and live wear concurrency/restart/lost-reply fault
+injection remain unverified; those failure paths have automated simulation coverage.
+
 Additive exports `GetConsumptionContract`, `ConsumeCharacterItemOnce`, `InspectCharacterConsumption` and `CancelCharacterConsumption` bind one exact ordinary item instance to a durable source/operation receipt. Consumption/cancellation serialize on that same receipt; callers must inspect returned `state` (`consumed` or `cancelled`), including on replay. `outcome_unknown` requires inspection/retry of the identical operation, never a replacement ID or refund inferred from absence. No client event or care effect is provided.
 
 `Config.TrustedConsumptionCallers` defaults to `{}`; enablement is per resource/purpose/established item name and requires a consumer recovery policy. See [authoritative contract and test gates](../feather-framework-docs/feather-inventory/FEATHER-INVENTORY-CONSUMPTION-RECEIPTS.md). Local Lua suite and controlled MariaDB concurrent/restart receipt proofs passed. Production feeding remains disabled. New service script requires server-console `refresh` before `restart feather-inventory` when deployed. Do not overwrite server-specific config during upload.
@@ -1462,3 +1479,22 @@ Development-only StablesCareProofFixture supports the fixed cross-resource care 
 ### 0.8.0 validation checkpoint — 2026-10-25
 
 The full Lua suite passes, including eleven receipt cases, fixture authorization gates and existing regression suites (79 production Lua files parse). Live MariaDB evidence covers separate-connection consume/cancel races, rollback, lost commit replies, replay across Inventory resource restart, real guarded item removal and exact disposable fixture cleanup. Stables' live cross-resource proof recovered a real disposable item's receipt, applied one local benefit and recovered cancellation; production allowlist remained unchanged. These are controlled development proofs, not production feeding, full-process crash or every session-interruption acceptance. Existing transaction, item-use and grant APIs remain unchanged. The version bump synchronizes manifest and web package metadata; pnpm lock has no project-version field. No UI source/build changes are introduced.
+
+Development grant metadata: the existing ACE-restricted, DevMode-only AddItems command accepts an optional JSON object, for example: AddItems horsebrush 1 {"condition":1,"display":"Last use"}. Invalid JSON is refused before granting. This creates a separate last-use brush for manual breakage acceptance; it does not change existing instances.
+
+### 0.9.0 validation checkpoint — 2026-10-27
+
+Adds server-only, receipt-backed ordinary-tool wear without changing the existing
+food-consumption contract or condition APIs. Wear, guarded final-use removal and
+the terminal receipt share one transaction. Existing `Config.Condition.Key/Max`
+controls the metadata field/range; unrelated metadata is preserved. Trusted
+callers remain opt-in through the existing resource/purpose/item allowlist.
+No new schema, migration, runtime file or UI behavior is introduced. The existing
+development `AddItems` command now parses optional bounded JSON-object metadata.
+
+Validation: full Lua regression suite, 79 runtime-file syntax checks and 20
+receipt cases pass. Controlled live brushing confirmed cancellation, mounted use,
+condition reduction and a final-use worn-out result; live concurrent-wear and
+restart/lost-reply fault injection remain pending. Manifest, web package and this
+README report 0.9.0; the pnpm lock contains no project-version field. No UI source
+changes require a rebuild for this server-only update.

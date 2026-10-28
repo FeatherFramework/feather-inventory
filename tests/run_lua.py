@@ -18,6 +18,10 @@ for folder in ('client', 'server', 'translations'):
 for file in files:
     lua.execute('assert(load(...))', file.read_text(encoding='utf-8-sig'), '@' + str(file))
 print(f'PASS Lua 5.4 syntax ({len(files)} files)', flush=True)
+
+commands_lua = LuaRuntime(unpack_returned_tuples=True)
+commands_lua.globals().arg = commands_lua.table_from({1: root.as_posix()})
+commands_lua.execute((root / 'tests/lua/add_items_metadata_spec.lua').read_text(encoding='utf-8'))
 guard_lua = LuaRuntime(unpack_returned_tuples=True)
 guard_lua.globals().arg = guard_lua.table_from({1: root.as_posix()})
 guard_lua.execute((root / 'tests/lua/instance_change_guard_spec.lua').read_text(encoding='utf-8'))
