@@ -18,7 +18,7 @@ exports('AwaitReady', function(timeoutMs)
 end)
 
 function StartAPI()
-  for name,method in pairs({GetCharacterCollection='Get',GetCharacterCollectionItem='Item',SetCharacterCollectionEquipment='Batch'}) do
+  for name,method in pairs({GetCharacterCollection='Get',GetCharacterCollectionItem='Item',SetCharacterCollectionEquipment='Batch',RetireCharacterCollectionItemsOnce='Retire',TransferCharacterCollectionItemsOnce='Transfer'}) do
     local operation=method
     exports(name,function(request)
       local ready=InventoryReadyResult();if not ready.ok then return ready end

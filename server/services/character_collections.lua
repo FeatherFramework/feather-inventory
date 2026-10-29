@@ -19,6 +19,16 @@ function C.Start()
         character_id CHAR(36) NOT NULL, inventory_id BIGINT UNSIGNED NOT NULL,
         PRIMARY KEY(source_resource,collection_key,character_id), UNIQUE KEY collection_inventory(inventory_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4]])
+    DB.exec([[CREATE TABLE IF NOT EXISTS inventory_collection_retirements (
+        source_resource VARCHAR(100) NOT NULL,operation_id VARCHAR(128) NOT NULL,
+        request_json LONGTEXT NOT NULL,result_json LONGTEXT NULL,
+        PRIMARY KEY(source_resource,operation_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4]])
+    DB.exec([[CREATE TABLE IF NOT EXISTS inventory_collection_transfers (
+        source_resource VARCHAR(100) NOT NULL,operation_id VARCHAR(128) NOT NULL,
+        request_json LONGTEXT NOT NULL,result_json LONGTEXT NULL,
+        PRIMARY KEY(source_resource,operation_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4]])
 end
 function C.Allowed(p,row)
     local m=type(row.metadata)=='table' and row.metadata or InventoryMetadata.Decode(row.metadata)
@@ -127,4 +137,201 @@ function C.Batch(request,resource)
         WHERE source_resource=? AND collection_key=? AND character_id=?]],p.resource,p.key,p.characterId)[1]
     if not row then return bad('not_found') end
     return EquipmentAPI.SetCollectionEquipmentBatch(p.characterId,request.changes,tonumber(row.inventory_id),p)
+end
+
+-- Durable exact-instance surrender. A committed receipt is historical even after
+-- deletion; replay never removes another item. Expected equipment is scoped to
+-- these exact instances, so a newly fitted/moved piece cannot be sold by stale UI.
+function C.Retire(request,resource)
+    local checked=policy(request,resource);if not checked.ok then return checked end
+    local p=checked.value
+    if type(request.operationId)~='string' or #request.operationId>128 or not request.operationId:match('^[%w._:%-]+$')
+        or type(request.items)~='table' or #request.items<1 or #request.items>16 or type(request.equipment)~='table' then return bad('invalid_input') end
+    local items,ids,slots={},{},{}
+    for _,item in ipairs(request.items) do
+        if type(item)~='table' or type(item.instanceId)~='number' or item.instanceId<1 or item.instanceId%1~=0
+            or ids[item.instanceId] or type(item.revision)~='number' or item.revision<0 or item.revision%1~=0 then return bad('invalid_input') end
+        ids[item.instanceId]=true;items[#items+1]={instanceId=item.instanceId,revision=item.revision}
+    end
+    table.sort(items,function(a,b) return a.instanceId<b.instanceId end)
+    for slot,id in pairs(request.equipment) do
+        if type(slot)~='string' or #slot<1 or #slot>50 or id~=0 and not ids[id] then return bad('invalid_input') end
+        slots[#slots+1]={slot=slot,id=id}
+    end
+    table.sort(slots,function(a,b) return a.slot<b.slot end)
+    if #slots>32 then return bad('invalid_input') end
+    local parts={p.characterId,p.key}
+    for _,item in ipairs(items) do parts[#parts+1]=('i:%d:%d'):format(item.instanceId,item.revision) end
+    for _,slot in ipairs(slots) do parts[#parts+1]='s:'..#slot.slot..':'..slot.slot..':'..slot.id end
+    local fingerprint=table.concat(parts,'|');local operationId=request.operationId
+    return TransactionAPI.Transaction({resource=resource,reason='collection_retirement',correlationId=operationId},function(tx)
+        tx.query([[INSERT IGNORE INTO inventory_collection_retirements(source_resource,operation_id,request_json)
+            VALUES(?,?,?)]],{resource,operationId,fingerprint})
+        local receipt=tx.query([[SELECT request_json,result_json FROM inventory_collection_retirements
+            WHERE source_resource=? AND operation_id=? FOR UPDATE]],{resource,operationId})[1]
+        if not receipt or receipt.request_json~=fingerprint then return bad('idempotency_conflict') end
+        if receipt.result_json then
+            local ok,value=pcall(json.decode,receipt.result_json)
+            if not ok or type(value)~='table' or value.retired~=true or value.operationId~=operationId
+                or value.characterId~=p.characterId then return bad('collection_corrupt') end
+            value.replayed=true;return Result.Ok(value)
+        end
+        local resolved=C.Resolve(tx,p);if not resolved.ok then return resolved end
+        local inventoryId=resolved.value.id
+        local locked={}
+        for _,item in ipairs(items) do
+            local read=tx:GetItemForUpdate(item.instanceId)
+            if not read.ok or read.value.inventoryId~=inventoryId or read.value.revision~=item.revision then return bad('collection_conflict') end
+            local i=read.value
+            if not C.Allowed(p,{name=i.definition.name,type=i.definition.type,instance_mode=i.definition.instanceMode,metadata=i.metadata}) then return bad('collection_conflict') end
+            locked[#locked+1]=i
+        end
+        local marks,params={},{p.characterId}
+        for _,item in ipairs(items) do marks[#marks+1]='?';params[#params+1]=item.instanceId end
+        local slotMarks,expected={},{}
+        local positive=0
+        for _,slot in ipairs(slots) do
+            slotMarks[#slotMarks+1]='?';params[#params+1]=slot.slot;expected[slot.slot]=slot.id
+            if slot.id>0 then positive=positive+1 end
+        end
+        local sql='SELECT slot,inventory_items_id FROM character_equipment WHERE character_id=? AND (inventory_items_id IN ('..table.concat(marks,',')..')'
+        if #slotMarks>0 then sql=sql..' OR slot IN ('..table.concat(slotMarks,',')..')' end
+        local equipment=tx.query(sql..') ORDER BY slot FOR UPDATE',params)
+        if #equipment~=positive then return bad('collection_conflict') end
+        for _,row in ipairs(equipment) do
+            if expected[row.slot]~=tonumber(row.inventory_items_id) then return bad('collection_conflict') end
+        end
+        local deleteParams={p.characterId};for _,item in ipairs(items) do deleteParams[#deleteParams+1]=item.instanceId end
+        for _,item in ipairs(items) do
+            local allowed,reason=GuardsAPI.CanChangeInstance(item.instanceId,{operation='equipment_write',resource=resource})
+            if allowed~=true then return bad('denied',reason) end
+        end
+        tx.query('DELETE FROM character_equipment WHERE character_id=? AND inventory_items_id IN ('..table.concat(marks,',')..')',deleteParams)
+        for _,item in ipairs(locked) do
+            local removed=tx:RemoveInstances(inventoryId,item.definition.id,{item.id})
+            if not removed.ok then return removed end
+        end
+        local value={operationId=operationId,characterId=p.characterId,retired=true,count=#items,replayed=false}
+        local saved=tx.query('UPDATE inventory_collection_retirements SET result_json=? WHERE source_resource=? AND operation_id=?',
+            {json.encode(value),resource,operationId})
+        if not saved or tonumber(saved.affectedRows or saved.affected_rows)~=1 then return bad() end
+        return Result.Ok(value)
+    end)
+end
+
+-- Atomic custody handover: preserve IDs, metadata and assembly assignments.
+function C.Transfer(request,resource)
+    local checked=policy(request,resource);if not checked.ok then return checked end
+    local p=checked.value
+    local target=policy({characterId=request.recipientCharacterId,collectionKey=request.collectionKey},resource)
+    if not target.ok then return target end
+    local recipient=target.value
+    if recipient.characterId==p.characterId then return bad('invalid_input') end
+    if type(request.operationId)~='string' or #request.operationId>128 or not request.operationId:match('^[%w._:%-]+$')
+        or type(request.items)~='table' or #request.items<1 or #request.items>16 or type(request.equipment)~='table' then return bad('invalid_input') end
+    local items,ids,slots={},{},{}
+    for _,item in ipairs(request.items) do
+        if type(item)~='table' or type(item.instanceId)~='number' or item.instanceId<1 or item.instanceId%1~=0
+            or ids[item.instanceId] or type(item.revision)~='number' or item.revision<0 or item.revision%1~=0 then return bad('invalid_input') end
+        ids[item.instanceId]=true;items[#items+1]={instanceId=item.instanceId,revision=item.revision}
+    end
+    table.sort(items,function(a,b) return a.instanceId<b.instanceId end)
+    for slot,id in pairs(request.equipment) do
+        if type(slot)~='string' or #slot<1 or #slot>50 or id~=0 and not ids[id] then return bad('invalid_input') end
+        slots[#slots+1]={slot=slot,id=id}
+    end
+    table.sort(slots,function(a,b) return a.slot<b.slot end)
+    if #slots>32 then return bad('invalid_input') end
+    local parts={p.characterId,recipient.characterId,p.key}
+    for _,item in ipairs(items) do parts[#parts+1]=('i:%d:%d'):format(item.instanceId,item.revision) end
+    for _,slot in ipairs(slots) do parts[#parts+1]='s:'..#slot.slot..':'..slot.slot..':'..slot.id end
+    local fingerprint=table.concat(parts,'|');local operationId=request.operationId
+    return TransactionAPI.Transaction({resource=resource,reason='collection_transfer',correlationId=operationId},function(tx)
+        tx.query([[INSERT IGNORE INTO inventory_collection_transfers(source_resource,operation_id,request_json)
+            VALUES(?,?,?)]],{resource,operationId,fingerprint})
+        local receipt=tx.query([[SELECT request_json,result_json FROM inventory_collection_transfers
+            WHERE source_resource=? AND operation_id=? FOR UPDATE]],{resource,operationId})[1]
+        if not receipt or receipt.request_json~=fingerprint then return bad('idempotency_conflict') end
+        if receipt.result_json then
+            local ok,value=pcall(json.decode,receipt.result_json)
+            if not ok or type(value)~='table' or value.transferred~=true or value.operationId~=operationId
+                or value.characterId~=p.characterId or value.recipientCharacterId~=recipient.characterId then return bad('collection_corrupt') end
+            value.replayed=true;return Result.Ok(value)
+        end
+        -- Lock the two collection containers in character order for opposite offers.
+        local scopes={p,recipient};table.sort(scopes,function(a,b) return a.characterId<b.characterId end)
+        local containers={}
+        for _,scope in ipairs(scopes) do
+            local resolved=C.Resolve(tx,scope);if not resolved.ok then return resolved end
+            containers[scope.characterId]=resolved.value.id
+        end
+        local inventoryId,targetId=containers[p.characterId],containers[recipient.characterId]
+        local occupied=tx.query('SELECT slot_index FROM inventory_items WHERE inventory_id=? ORDER BY id FOR UPDATE',{targetId})
+        if #occupied+#items>recipient.maxItems then return bad('collection_full') end
+        local used={};for _,row in ipairs(occupied) do used[tonumber(row.slot_index) or 0]=true end
+        local locked={}
+        for _,item in ipairs(items) do
+            local read=tx:GetItemForUpdate(item.instanceId)
+            if not read.ok or read.value.inventoryId~=inventoryId or read.value.revision~=item.revision then return bad('collection_conflict') end
+            local i=read.value
+            if not C.Allowed(p,{name=i.definition.name,type=i.definition.type,instance_mode=i.definition.instanceMode,metadata=i.metadata}) then return bad('collection_conflict') end
+            locked[#locked+1]=i
+        end
+        local marks={}
+        for _,item in ipairs(items) do marks[#marks+1]='?' end
+        local slotMarks,expected={},{}
+        local positive=0
+        for _,slot in ipairs(slots) do
+            slotMarks[#slotMarks+1]='?';expected[slot.slot]=slot.id
+            if slot.id>0 then positive=positive+1 end
+        end
+        -- Selected IDs must not be assigned to any other character either.
+        local params2={};for _,item in ipairs(items) do params2[#params2+1]=item.instanceId end
+        local sql='SELECT character_id,slot,inventory_items_id FROM character_equipment WHERE (inventory_items_id IN ('..table.concat(marks,',')..')'
+        if #slotMarks>0 then
+            sql=sql..' OR (character_id=? AND slot IN ('..table.concat(slotMarks,',')..'))'
+            params2[#params2+1]=p.characterId;for _,slot in ipairs(slots) do params2[#params2+1]=slot.slot end
+        end
+        local equipment=tx.query(sql..') ORDER BY character_id,slot FOR UPDATE',params2)
+        if #equipment~=positive then return bad('collection_conflict') end
+        for _,row in ipairs(equipment) do
+            if row.character_id~=p.characterId or expected[row.slot]~=tonumber(row.inventory_items_id) then return bad('collection_conflict') end
+        end
+        -- The owning resource attests transferable assembly anchors. Every selected
+        -- assignment is compared above; recipient slots must still be empty.
+        if #slots>0 then
+            local destination={recipient.characterId}
+            for _,slot in ipairs(slots) do destination[#destination+1]=slot.slot end
+            if #tx.query('SELECT inventory_items_id FROM character_equipment WHERE character_id=? AND slot IN ('..
+                table.concat(slotMarks,',')..') ORDER BY slot FOR UPDATE',destination)>0 then return bad('collection_conflict') end
+        end
+        local nextSlot=0
+        for _,item in ipairs(locked) do
+            local allowed,reason=GuardsAPI.CanChangeInstance(item.id,{operation='equipment_write',resource=resource})
+            if allowed~=true then return bad('denied',reason) end
+            item.equipmentSnapshot={equipped=false}
+            for _,slot in ipairs(slots) do if slot.id==item.id then item.equipmentSnapshot.equipped=true end end
+            allowed,reason=GuardsAPI.CanMoveInstanceSnapshot(item,{reason='collection_transfer',resource=resource,correlationId=operationId})
+            if allowed~=true then return bad('denied',reason) end
+            while used[nextSlot] do nextSlot=nextSlot+1 end
+            if nextSlot>=recipient.maxItems then return bad('collection_full') end
+            local moved=tx.query('UPDATE inventory_items SET inventory_id=?,slot_index=?,row_revision=row_revision+1 WHERE id=? AND inventory_id=? AND row_revision=?',
+                {targetId,nextSlot,item.id,inventoryId,item.revision})
+            if not moved or tonumber(moved.affectedRows or moved.affected_rows)~=1 then return bad('collection_conflict') end
+            tx.moved=tx.moved or {};tx.moved[#tx.moved+1]={instanceId=item.id,fromInventoryId=inventoryId,toInventoryId=targetId,
+                definitionId=item.definition.id,fromSlot=item.slot,toSlot=nextSlot,revision=item.revision+1}
+            used[nextSlot]=true
+        end
+        for _,slot in ipairs(slots) do if slot.id>0 then
+            local moved=tx.query('UPDATE character_equipment SET character_id=? WHERE character_id=? AND slot=? AND inventory_items_id=?',
+                {recipient.characterId,p.characterId,slot.slot,slot.id})
+            if not moved or tonumber(moved.affectedRows or moved.affected_rows)~=1 then return bad('collection_conflict') end
+        end end
+        local value={operationId=operationId,characterId=p.characterId,recipientCharacterId=recipient.characterId,
+            transferred=true,count=#items,replayed=false}
+        local saved=tx.query('UPDATE inventory_collection_transfers SET result_json=? WHERE source_resource=? AND operation_id=?',
+            {json.encode(value),resource,operationId})
+        if not saved or tonumber(saved.affectedRows or saved.affected_rows)~=1 then return bad() end
+        return Result.Ok(value)
+    end)
 end

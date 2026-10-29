@@ -28,6 +28,15 @@ Config.TrustedCharacterCollections = {
                 horse_saddlecloth = true,
                 horse_stirrups = true,
                 horse_saddle_horn = true,
+                horse_saddlebag = true,
+                horse_bedroll = true,
+                horse_bridle = true,
+                horse_holster = true,
+                horse_horseshoes = true,
+                horse_mask = true,
+                horse_mane = true,
+                horse_tail = true,
+                horse_mustache = true,
             }
         }
     },
