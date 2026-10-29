@@ -1,6 +1,6 @@
 # Feather Inventory
 
-Current alpha version: **0.9.0**. Access-backed delegation is opt-in per container;
+Current alpha version: **0.9.1**. Access-backed delegation is opt-in per container;
 existing legacy storage continues to work without an Access cutover. Native
 delegation requires the matching Inventory integration in feather-access and
 the exact feather-admin service policy. Weapons integration testing is deferred
@@ -1231,11 +1231,70 @@ This exists because equipped state cannot live only in a consumer's memory: it h
 ```lua
 Inventory.Equipment.GetEquippedForCharacter(characterUuid, slot?) -> Result
 Inventory.Equipment.SetEquippedForCharacter(characterUuid, slot, instanceId?) -> Result
+Inventory.SetEquipmentBatchForCharacter(characterUuid, changes) -> Result
 Inventory.Equipment.ClearEquippedInstance(instanceId) -> Result
 Inventory.Equipment.IsInstanceEquipped(instanceId) -> Result<boolean>
 ```
 
 `GetEquippedForCharacter` and `SetEquippedForCharacter` are also available at the top level.
+
+`SetEquipmentBatchForCharacter` is additive (also under `Equipment`). Pass 1-16
+unique slot changes `{slot='...', expected=oldIdOrZero, instanceId=newIdOrZero}`.
+Zero means empty. Declare every source and destination, including parking slots.
+It locks item ownership and equipment, compares every expected slot, runs existing
+instance-change guards, then deletes/inserts the whole batch in one transaction.
+It refuses foreign items, duplicate destinations, undeclared sources and stale state;
+any failure rolls back the entire batch. It changes neither items nor metadata.
+After a lost reply, read assignments before issuing a new operation. Existing
+single-slot methods retain their signatures and behavior. This does not extend
+character ownership to dedicated storage; use the scoped collection exports below.
+
+
+**Private character collections**
+
+Optional `Config.TrustedCharacterCollections[resource][collectionKey]` declares
+allowed unique ordinary item names, an optional metadata marker and maxItems (1-500).
+The Stables default is stables.tack.v1 and four horse tack definitions. Collections
+are separate private Inventory containers, not carried inventory and not generic
+player-openable storage. Scope is resource + purpose + character, shared across
+locations. Inventory creates the mapping table during startup.
+
+Data-only exports, using the actual invoking resource for authorization:
+
+```lua
+exports['feather-inventory']:GetCharacterCollection({characterId=uuid,collectionKey=key,adopt=true})
+exports['feather-inventory']:GetCharacterCollectionItem({characterId=uuid,collectionKey=key,instanceId=id})
+exports['feather-inventory']:SetCharacterCollectionEquipment({characterId=uuid,collectionKey=key,changes=changes})
+```
+
+Get returns `{id,maxItems}`. adopt transfers only matching marked carried unique
+items in bounded batches under one transaction, retaining metadata, item IDs and
+equipment; custody moves increment row_revision once and emit post-commit movement
+events. Repeated reads leave revisions unchanged. Collection slots/weight are
+independent of carried capacity. Items that do not match the policy remain carried.
+Item returns the normalized instance for the exact scoped collection. Equipment
+uses the batch contract above, with collection ownership checked under locks.
+Existing carried-only reads and equipment APIs are unchanged. After a lost reply,
+read the same collection/receipt; never recreate an item as compensation.
+
+GrantCharacterUniqueItemOnce optionally accepts collectionKey. The configured
+collection/item policy and original unique-grant trust must both permit it. New
+collection grants use the existing durable receipt namespace and bind collectionKey
+into the fingerprint; omitting it retains the original carried grant fingerprint
+and behavior. Historical receipts remain historical after adoption. Inventory adds no sale/trade/withdrawal UI; the owning resource authorizes it.
+
+`RetireCharacterCollectionItemsOnce` accepts `{characterId,collectionKey,operationId,
+items={{instanceId,revision},...},equipment={slot=expectedItemId,emptyAnchor=0}}`.
+It uses actual caller/purpose trust, locks exact instances and revisions, compares
+all assignments of those instances plus declared anchor slots, then removes the
+pieces and stores a durable receipt in one transaction. Consumer-owned guards still
+apply. Up to16 instances/32 expected slots are bounded. A lost reply is retried with
+identical terms; a historical receipt succeeds even after deletion, while changing
+the payload under the same key refuses. It never pays money or creates replacements.
+The existing Inventory startup creates the receipt table. Use a durable gameplay
+intent and idempotent payout after retirement; recovery remains the consumer's job.
+This destructive surrender API must not be used to implement identity-preserving
+player trading.
 
 **Example**
 
@@ -1498,3 +1557,17 @@ condition reduction and a final-use worn-out result; live concurrent-wear and
 restart/lost-reply fault injection remain pending. Manifest, web package and this
 README report 0.9.0; the pnpm lock contains no project-version field. No UI source
 changes require a rebuild for this server-only update.
+
+### Identity-preserving collection handover
+
+`TransferCharacterCollectionItemsOnce` is an additive trusted-resource export for
+an existing `TrustedCharacterCollections` scope. Request: characterId,
+recipientCharacterId, collectionKey, operationId, exact items [{instanceId,revision}]
+and expected equipment map (0 means an empty anchor). It atomically preserves IDs,
+metadata and assembly slots while moving custody to the recipient, incrementing
+item revisions once. Exact historical replay succeeds without moving again;
+changed terms, guards, stale revisions/equipment or full recipient storage refuse.
+The owning resource must authorize both characters and player consent; this API
+has no client event, price or payment logic. Table inventory_collection_transfers
+is auto-created at startup.30 transaction tests plus existing Lua suite pass;
+Stables free/paid live handover acceptance is pending. Version unchanged.

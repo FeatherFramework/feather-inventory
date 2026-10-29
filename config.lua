@@ -6,13 +6,57 @@ Config = {}
 -- for the first production release. The commands below are also ACE-restricted
 -- so enabling it for testing does not hand them to every player.
 Config.DevMode = true
+
 -- Durable ordinary-item fulfillment; callers supply a stable operation ID.
-Config.TrustedIdempotentGrantCallers = { ['feather-shops'] = true }
+Config.TrustedIdempotentGrantCallers = {
+    ['feather-shops'] = true,
+}
+
 -- Non-weapon unique issuers; separate from stack grants and Weapons issuance.
-Config.TrustedUniqueGrantCallers = { ['bcc-stables'] = true }
--- Opt-in per caller, purpose and established item name. No care consumer yet.
--- Example shape only: { ['consumer'] = { ['care.v1'] = { existing_item = true } } }
-Config.TrustedConsumptionCallers = {}
+Config.TrustedUniqueGrantCallers = {
+    ['bcc-stables'] = true,
+}
+
+-- Private storage managed by the named resource, separate from carried capacity.
+Config.TrustedCharacterCollections = {
+    ['bcc-stables'] = {
+        ['stables.tack.v1'] = {
+            maxItems = 500,
+            marker = 'stablesTackOrder',
+            items = {
+                horse_saddle = true,
+                horse_saddlecloth = true,
+                horse_stirrups = true,
+                horse_saddle_horn = true,
+                horse_saddlebag = true,
+                horse_bedroll = true,
+                horse_bridle = true,
+                horse_holster = true,
+                horse_horseshoes = true,
+                horse_mask = true,
+                horse_mane = true,
+                horse_tail = true,
+                horse_mustache = true,
+            }
+        }
+    },
+}
+
+-- Trusted item use by caller, purpose and established item name.
+-- Keep food consumption and brush durability in separate purpose scopes.
+Config.TrustedConsumptionCallers = {
+    ['bcc-stables'] = {
+        ['stables.care.v1'] = {
+            consumable_haycube = true,
+            consumable_carrots = true,
+            consumable_apple = true,
+        },
+        ['stables.brush.v1'] = {
+            horsebrush = true,
+        },
+    },
+}
+
 -- Migration gate: never enable until Weapons enrollment/runtime is implemented.
 Config.CharacterAmmunitionEnabled = false
 
@@ -25,6 +69,7 @@ Config.Debug = false
 
 -- Item-record updates stay in one transaction; records per UPDATE (1-200).
 Config.UpdateBatchSize = 100
+
 -- Debug flag for server/client/browser mutation timings (no item metadata).
 -- Enable only while diagnosing performance; restart inventory after changing.
 Config.MutationTiming = false
@@ -65,6 +110,7 @@ Config.Hotbar = {
 -- never scroll -- fine, but it leaves the scrolling path untested in normal
 -- play, and makes the default book smaller than the design now supports.)
 Config.maxItemSlots = 40 -- default inventory slots, overridable per inventory
+
 -- Ground/Dropped item settings
 Config.Dropped = {
     GroupingRadius = 10,
@@ -136,6 +182,7 @@ Config.Condition = {
         { at = 0,  label = 'ui_condition_ruined' },
     }
 }
+
 -- (INV-11/INV-12/INV-23) Access control for opening an inventory that isn't
 -- your own -- see server/services/access.lua.
 Config.Access = {

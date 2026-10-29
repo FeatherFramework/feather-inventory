@@ -18,6 +18,14 @@ exports('AwaitReady', function(timeoutMs)
 end)
 
 function StartAPI()
+  for name,method in pairs({GetCharacterCollection='Get',GetCharacterCollectionItem='Item',SetCharacterCollectionEquipment='Batch',RetireCharacterCollectionItemsOnce='Retire',TransferCharacterCollectionItemsOnce='Transfer'}) do
+    local operation=method
+    exports(name,function(request)
+      local ready=InventoryReadyResult();if not ready.ok then return ready end
+      return CharacterCollectionAPI[operation](request,GetInvokingResource())
+    end)
+  end
+
   exports('GetConsumptionContract', function()
     local contract=ConsumptionOnceAPI.Contract()
     if InventoryReadiness.state~='ready' then contract.ready=false; contract.durableConsumption=0;contract.durableWear=0 end
@@ -129,6 +137,7 @@ function StartAPI()
   inventoryServerAPI.GetItemForCharacter = InstancesAPI.GetItemForCharacter
   inventoryServerAPI.GetEquippedForCharacter = EquipmentAPI.GetEquippedForCharacter
   inventoryServerAPI.SetEquippedForCharacter = EquipmentAPI.SetEquippedForCharacter
+  inventoryServerAPI.SetEquipmentBatchForCharacter = EquipmentAPI.SetEquipmentBatchForCharacter
   inventoryServerAPI.PromoteEquippedSlot = EquipmentAPI.PromoteEquippedSlot
   -- Consumer-safe UUID Character inventory lookup. Keep a top-level alias
   -- because Cfx resource boundaries do not reliably preserve newly-added
@@ -216,6 +225,7 @@ function StartAPI()
       return Result.Err('startup_failed', 'Inventory delegation schema did not become ready.')
     end
   end
+  CharacterCollectionAPI.Start()
   GrantOnceAPI.Start()
   ConsumptionOnceAPI.Start()
   RegisterCharacterStart(inventoryServerAPI)

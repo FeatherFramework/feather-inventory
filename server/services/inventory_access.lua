@@ -440,6 +440,11 @@ InventoryAPI.CanAccessInventory = function(src, inventoryId, action, context, qu
             nil, context.correlationId)
     end
 
+    local location=InventoryControllers.GetInventoryLocationById(inventoryId,query)
+    if location=='character_collection' then
+        return Result.Err(Result.Codes.DENIED,'Use the owning resource to manage this collection.')
+    end
+
     -- MANAGE is the one mode that genuinely differs: it is owner/admin only,
     -- and is never granted by proximity, a share, or public visibility. A
     -- ground pile is readable and lootable by anyone near it, and manageable
@@ -473,7 +478,7 @@ InventoryAPI.CanAccessInventory = function(src, inventoryId, action, context, qu
     -- -- the "revalidate inside the mutation" point. READ is exempt: seeing
     -- a pile you walked away from is harmless.
     if action ~= InventoryAPI.AccessModes.READ
-        and InventoryControllers.GetInventoryLocationById(inventoryId, query) == 'ground'
+        and location == 'ground'
         and not IsWithinGroundPickupDistance(src, inventoryId, query) then
         return Result.Err(Result.Codes.DENIED, 'You are too far away.',
             { action = action }, context.correlationId)
@@ -483,6 +488,7 @@ InventoryAPI.CanAccessInventory = function(src, inventoryId, action, context, qu
 end
 
 function IsAuthorizedForOwnedInventory(src, callerCharacterId, inventoryId)
+    if InventoryControllers.GetInventoryLocationById(inventoryId)=='character_collection' then return false end
     if InventoryDelegation then
         local native = InventoryDelegation.Read(src, inventoryId, 'read')
         if native ~= nil then return native end
