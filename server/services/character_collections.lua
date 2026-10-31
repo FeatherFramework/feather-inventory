@@ -184,6 +184,10 @@ function C.Retire(request,resource)
             if not read.ok or read.value.inventoryId~=inventoryId or read.value.revision~=item.revision then return bad('collection_conflict') end
             local i=read.value
             if not C.Allowed(p,{name=i.definition.name,type=i.definition.type,instance_mode=i.definition.instanceMode,metadata=i.metadata}) then return bad('collection_conflict') end
+            if CollectionStorageAPI then
+                local denied=CollectionStorageAPI.RequireEmpty(tx,item.instanceId)
+                if denied then return denied end
+            end
             locked[#locked+1]=i
         end
         local marks,params={},{p.characterId}

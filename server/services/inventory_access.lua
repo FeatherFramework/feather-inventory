@@ -440,6 +440,9 @@ InventoryAPI.CanAccessInventory = function(src, inventoryId, action, context, qu
             nil, context.correlationId)
     end
 
+    if CollectionStorageAPI and CollectionStorageAPI.IsManaged(inventoryId) then
+        return CollectionStorageAPI.Access(src,inventoryId,action,query) and Result.Ok(true) or Result.Err(Result.Codes.DENIED,'Item storage access ended.')
+    end
     local location=InventoryControllers.GetInventoryLocationById(inventoryId,query)
     if location=='character_collection' then
         return Result.Err(Result.Codes.DENIED,'Use the owning resource to manage this collection.')
@@ -488,6 +491,7 @@ InventoryAPI.CanAccessInventory = function(src, inventoryId, action, context, qu
 end
 
 function IsAuthorizedForOwnedInventory(src, callerCharacterId, inventoryId)
+    if CollectionStorageAPI and CollectionStorageAPI.IsManaged(inventoryId) then return CollectionStorageAPI.Access(src,inventoryId,'read') end
     if InventoryControllers.GetInventoryLocationById(inventoryId)=='character_collection' then return false end
     if InventoryDelegation then
         local native = InventoryDelegation.Read(src, inventoryId, 'read')

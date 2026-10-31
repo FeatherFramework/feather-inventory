@@ -23,6 +23,9 @@ Config.TrustedCharacterCollections = {
         ['stables.tack.v1'] = {
             maxItems = 500,
             marker = 'stablesTackOrder',
+            storageItems = {
+                horse_saddlebag = true
+            },
             items = {
                 horse_saddle = true,
                 horse_saddlecloth = true,
@@ -53,6 +56,9 @@ Config.TrustedConsumptionCallers = {
         },
         ['stables.brush.v1'] = {
             horsebrush = true,
+        },
+        ['stables.revive.v1'] = {
+            consumable_horse_reviver = true,
         },
     },
 }

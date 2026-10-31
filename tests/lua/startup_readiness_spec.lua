@@ -1,4 +1,5 @@
 CharacterCollectionAPI={Start=function() end}
+CollectionStorageAPI={Start=function() end}
 local root = arg and arg[1] or '.'
 Config = {}
 Result = {Ok = function(value) return {ok = true, value = value} end}
