@@ -26,6 +26,14 @@ function StartAPI()
     end)
   end
 
+  for name,method in pairs({RegisterCollectionStorage='Register',GetCollectionStorage='Get',OpenCollectionStorage='Open'}) do
+    local operation=method
+    exports(name,function(request)
+      local ready=InventoryReadyResult();if not ready.ok then return ready end
+      return CollectionStorageAPI[operation](request,GetInvokingResource())
+    end)
+  end
+
   exports('GetConsumptionContract', function()
     local contract=ConsumptionOnceAPI.Contract()
     if InventoryReadiness.state~='ready' then contract.ready=false; contract.durableConsumption=0;contract.durableWear=0 end
@@ -226,6 +234,7 @@ function StartAPI()
     end
   end
   CharacterCollectionAPI.Start()
+  CollectionStorageAPI.Start()
   GrantOnceAPI.Start()
   ConsumptionOnceAPI.Start()
   RegisterCharacterStart(inventoryServerAPI)

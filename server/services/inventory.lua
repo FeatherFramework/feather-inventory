@@ -837,6 +837,9 @@ end
 -- @return True if src may read/write this inventory right now
 --
 InventoryAPI.IsInventoryAccessibleBySrc = function(src, inventoryId, query, action)
+  if CollectionStorageAPI and CollectionStorageAPI.IsManaged(inventoryId) then
+    return Result.Ok(CollectionStorageAPI.Access(src,inventoryId,action or 'read',query))
+  end
   -- Predicate returning an envelope (contract 2): `ok` says whether the
   -- question could be answered, `value` is the answer. Callers MUST fail
   -- closed on `ok == false` -- a failure envelope is truthy, so testing the
@@ -984,4 +987,20 @@ end
 AddEventHandler('playerDropped', function()
   local src = source
   InventoryAPI.InternalCloseInventory(src)
+end)
+
+-- Revoke the displayed view as well as per-mutation access when its live horse
+-- predicate ends. This loop only checks actively opened item containers.
+CreateThread(function()
+  while true do
+    Wait(1000)
+    if CollectionStorageAPI then
+      for id,opened in pairs(OpenInventories) do
+        if CollectionStorageAPI.IsManaged(id) and not CollectionStorageAPI.Access(tonumber(opened.src),tonumber(id),'read') then
+          OpenInventories[id]=nil
+          InventoryAPI.CloseInventory(tonumber(opened.src))
+        end
+      end
+    end
+  end
 end)

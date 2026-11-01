@@ -1,6 +1,6 @@
 # Feather Inventory
 
-Current alpha version: **0.9.1**. Access-backed delegation is opt-in per container;
+Current alpha version: **0.10.0**. Adds item-attached saddlebag storage and the scoped Stables reviver policy. Access-backed delegation is opt-in per container;
 existing legacy storage continues to work without an Access cutover. Native
 delegation requires the matching Inventory integration in feather-access and
 the exact feather-admin service policy. Weapons integration testing is deferred
@@ -1571,3 +1571,7 @@ The owning resource must authorize both characters and player consent; this API
 has no client event, price or payment logic. Table inventory_collection_transfers
 is auto-created at startup.30 transaction tests plus existing Lua suite pass;
 Stables free/paid live handover acceptance is pending. Version unchanged.
+
+### Item-attached collection storage
+
+RegisterCollectionStorage registers a trusted collection item type, capacity and live access predicate. GetCollectionStorage lazily creates/inspects a normal container bound to the exact unique instance; OpenCollectionStorage uses the existing UI and rechecks current character custody and live access on reads/mutations. Configure storageItems={horse_saddlebag=true} under the Stables collection policy. Provider startup adds inventory_collection_storage; no manual SQL. Collection retirement refuses nonempty attached storage; transfer preserves the original mapping and contents. No per-character container ownership is copied during transfer. Offline tests pass. Stables live acceptance confirmed opening, capacity, persistence across recall, moving bags between horses, filled-bag trading and nonempty sale refusal. Live fault injection remains pending.
