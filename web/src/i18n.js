@@ -1,4 +1,5 @@
 import { reactive } from 'vue';
+import { equipmentDefaults } from './equipmentPresentation.js';
 
 // (§10.2 locale migration) The ledger's labels come from Lua -- translations/
 // is the single source of truth for every user-facing string in this
@@ -11,6 +12,7 @@ import { reactive } from 'vue';
 // there's no Lua side at all. Without them a missing key renders as an empty
 // label, which is worse than untranslated English.
 const DEFAULTS = {
+  ...equipmentDefaults,
   ui_personal_effects: 'PERSONAL EFFECTS',
   ui_storage: 'STORAGE',
   ui_carrying: 'CARRYING',
@@ -52,6 +54,7 @@ const strings = reactive({ ...DEFAULTS });
 // Reset to defaults before applying, so reopening the inventory after a
 // language change can't leave a stale string from the previous bundle.
 export function setStrings(incoming) {
+  for (const key of Object.keys(strings)) delete strings[key];
   Object.assign(strings, DEFAULTS);
   if (!incoming || typeof incoming !== 'object') return;
 

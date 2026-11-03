@@ -70,6 +70,20 @@ lua.execute((root / 'tests/lua/character_ammo_runtime_snapshot_spec.lua').read_t
 
 # New native UI/equipment and dedicated-alpha regressions run in isolated VMs.
 for name in (
+    'native_move_contention_probe_spec.lua',
+    'native_move_contention_command_spec.lua',
+    'native_move_ack_probe_spec.lua',
+    'native_transaction_outcome_spec.lua',
+    'native_recovery_batch_spec.lua',
+    'native_recovery_locale_spec.lua',
+    'native_acceptance_audit_spec.lua',
+    'move_recovery_spec.lua',
+    'move_outbox_spec.lua',
+    'move_maintenance_spec.lua',
+    'restart_audit_spec.lua',
+    'move_recovery_runtime_spec.lua',
+    'native_recovery_batch_command_spec.lua',
+    'native_move_nui_outcome_spec.lua',
     'unique_grants_spec.lua',
     'split_preflight_spec.lua',
     'character_ammo_jane_readscope_spec.lua', 'character_ammo_jane_spec.lua',
@@ -85,6 +99,7 @@ for name in (
     'native_reinforced_lasso_equipment_spec.lua',
     'native_utility_equipment_commit_spec.lua',
     'native_utility_export_spec.lua',
+    'native_equipment_locale_spec.lua',
     'native_utility_projection_composition_spec.lua',
     'native_melee_equipment_spec.lua',
     'native_throwable_equipment_spec.lua',

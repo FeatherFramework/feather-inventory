@@ -8,8 +8,9 @@ local function equal(a,b)
  for k in pairs(b) do if a[k]==nil then return false end end; return true
 end
 InventoryMetadata={DocumentsEqual=equal}
-local gate,davy,binoculars,camera=1,0,0,0
-GetConvarInt=function(name) return name=='feather_native_lasso_reinforced' and gate or name=='feather_native_davy_lantern' and davy or name=='feather_native_binoculars' and binoculars or name=='feather_native_camera' and camera or 0 end
+local gate,davy,binoculars,camera,advancedCamera,improved=1,0,0,0,0,0
+local metalDetector,fishingRod=0,0
+GetConvarInt=function(name) return name=='feather_native_metal_detector' and metalDetector or name=='feather_native_fishing_rod' and fishingRod or name=='feather_native_lasso_reinforced' and gate or name=='feather_native_davy_lantern' and davy or name=='feather_native_binoculars' and binoculars or name=='feather_native_camera' and camera or name=='feather_native_camera_advanced' and advancedCamera or name=='feather_native_binoculars_improved' and improved or 0 end
 dofile('server/services/conditional_equipment.lua')
 local U=dofile('server/internal/native_utility_equipment.lua')
 local assigned,writes={weapon=155},0
@@ -121,3 +122,64 @@ items[204].itemName='weapon_kit_camera_advanced'
 assert(not U.Read(tx,'john',function() return true end).ok)
 items[204].itemName='weapon_kit_camera'
 print('Camera Inventory four-child read/commit PASS: slot/CAS/sibling preservation/gate/Advanced refusal; no photography')
+advancedCamera=1
+items[205]={id=205,row_revision=0,itemName='weapon_kit_camera_advanced',
+ metadata={schemaVersion=2,weaponDefinitionId='utility_camera_advanced',serialNumber='A205',condition=100,flags={disabled=false,evidence=false}}}
+assert(run(intent('equip','weapon_utility_quinary',205)).ok)
+snapshot=assert(U.Read(tx,'john',function() return true end).value)
+assert(snapshot.equipment.utility_quinary.id==205 and snapshot.equipment.utility_quaternary.id==204,'both cameras coexist')
+before=writes
+local staleFifth=intent('unequip','weapon_utility_quinary',205); staleFifth.expected.weapon_utility_quaternary.revision=1
+assert(not run(staleFifth).ok and writes==before)
+assert(run(intent('unequip','weapon_utility_quinary',205)).ok)
+assert(assigned.weapon_utility_quaternary==204 and assigned.weapon_utility_tertiary==203 and assigned.weapon_utility==202 and assigned.weapon_utility_secondary==201)
+assert(not run(intent('equip','weapon_utility_quaternary',205)).ok)
+assert(run(intent('equip','weapon_utility_quinary',205)).ok)
+advancedCamera=0
+assert(not U.Read(tx,'john',function() return true end).ok,'saved disabled fifth assignment cannot disappear')
+advancedCamera=1
+items[205].itemName='weapon_kit_camera'
+assert(not U.Read(tx,'john',function() return true end).ok,'Standard cannot masquerade as Advanced')
+items[205].itemName='weapon_kit_camera_advanced'
+print('Advanced Camera Inventory five-child read/commit PASS: distinct camera groups, fifth CAS/cleanup/gate/model refusal')
+improved=1
+items[206]={id=206,row_revision=0,itemName='weapon_kit_binoculars_improved',
+ metadata={schemaVersion=2,weaponDefinitionId='utility_binoculars_improved',serialNumber='I206',condition=100,flags={disabled=false,evidence=false}}}
+assert(run(intent('equip','weapon_utility_senary',206)).ok)
+snapshot=assert(U.Read(tx,'john',function() return true end).value)
+assert(snapshot.equipment.utility_senary.id==206 and snapshot.equipment.utility_tertiary.id==203)
+before=writes
+local staleSixth=intent('unequip','weapon_utility_senary',206); staleSixth.expected.weapon_utility_tertiary.revision=1
+assert(not run(staleSixth).ok and writes==before)
+assert(run(intent('unequip','weapon_utility_senary',206)).ok)
+assert(assigned.weapon_utility_tertiary==203 and assigned.weapon_utility_quaternary==204 and assigned.weapon_utility_quinary==205)
+assert(not run(intent('equip','weapon_utility_tertiary',206)).ok)
+assert(run(intent('equip','weapon_utility_senary',206)).ok)
+improved=0
+assert(not U.Read(tx,'john',function() return true end).ok)
+improved=1; items[206].itemName='weapon_kit_binoculars'
+assert(not U.Read(tx,'john',function() return true end).ok)
+items[206].itemName='weapon_kit_binoculars_improved'
+print('Improved Binoculars Inventory sixth-slot PASS: paired Binoculars, sibling CAS/cleanup and gate/model refusal')
+-- Each new tool is independently admitted and preserves the full sibling CAS.
+for _,tool in ipairs({{207,'utility_metal_detector','weapon_kit_metal_detector','weapon_utility_septenary'},
+ {208,'utility_fishing_rod','weapon_fishingrod','weapon_utility_octonary'}}) do
+ local id,definition,name,slot=table.unpack(tool)
+ items[id]={id=id,row_revision=0,itemName=name,metadata={schemaVersion=2,weaponDefinitionId=definition,
+  serialNumber='T'..id,condition=100,flags={disabled=false,evidence=false}}}
+ before=writes; assert(not run(intent('equip',slot,id)).ok and writes==before)
+ if id==207 then metalDetector=1 else fishingRod=1 end
+ assert(run(intent('equip',slot,id)).ok)
+ local stale=intent('unequip',slot,id); stale.expected.weapon_utility_senary.revision=9
+ before=writes; assert(not run(stale).ok and writes==before)
+ assert(run(intent('unequip',slot,id)).ok)
+ assert(assigned.weapon_utility_senary==206 and assigned.weapon_utility_tertiary==203)
+ assert(not run(intent('equip','weapon_utility_senary',id)).ok)
+ assert(run(intent('equip',slot,id)).ok)
+ if id==207 then metalDetector=0 else fishingRod=0 end
+ before=writes; assert(not U.Read(tx,'john',function() return true end).ok and writes==before)
+ if id==207 then metalDetector=1 else fishingRod=1 end
+ items[id].itemName='weapon_kit_camera'; assert(not U.Read(tx,'john',function() return true end).ok)
+ items[id].itemName=name
+end
+assert(U.Read(tx,'john',function() return true end).value.equipment.utility_octonary.id==208)

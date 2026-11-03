@@ -29,6 +29,36 @@ local UI_STRING_KEYS = {
   'ui_condition', 'ui_condition_pristine', 'ui_condition_worn',
   'ui_condition_damaged', 'ui_condition_ruined',
   'ui_paired_hint',
+  'ui_equipment_title',
+  'ui_equipment_help',
+  'ui_equipment_slots',
+  'ui_equipment_selected',
+  'ui_equipment_occupied',
+  'ui_equipment_open',
+  'ui_equipment_item',
+  'ui_equipment_hint',
+  'ui_equipment_attachment_hint',
+  'ui_equipment_repair_hint',
+  'ui_equipment_equip',
+  'ui_equipment_unequip',
+  'ui_equipment_install',
+  'ui_equipment_remove',
+  'ui_equipment_repair',
+  'ui_equipment_close',
+  'ui_equipment_primary',
+  'ui_equipment_offhand',
+  'ui_equipment_shoulder',
+  'ui_equipment_back',
+  'ui_equipment_melee',
+  'ui_equipment_melee_number',
+  'ui_equipment_throwable',
+  'ui_equipment_utility',
+  'ui_equipment_utility_number',
+  'ui_equipment_checking',
+  'ui_equipment_none',
+  'ui_equipment_unavailable',
+  'ui_equipment_updated',
+  'ui_equipment_uncertain',
 }
 
 -- (§10.3) Condition wear stages, thresholds from Config and labels resolved
@@ -56,6 +86,12 @@ local function BuildUIStrings()
   end
   return strings
 end
+
+-- Core is the supported locale cache used by feather-settings. Refresh labels
+-- only: do not reopen the ledger or invalidate its scoped equipment operation.
+AddEventHandler('feather-core:locale:changed', function()
+  SendNUIMessage({type='localeStrings', strings=BuildUIStrings()})
+end)
 
 function CanOpenInventory()
   if InventoryCharacterActive ~= true then return false end

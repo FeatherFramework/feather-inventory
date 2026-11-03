@@ -1,29 +1,31 @@
 <script setup>
+import { t } from '@/i18n';
+import { equipmentSlotLabel, equipmentOptionLabel } from '../equipmentPresentation.js';
 defineProps({ options: { type: Array, required: true }, slots: { type: Array, default: () => [] }, busy: Boolean, message: String });
 const emit = defineEmits(['change', 'close']);
 </script>
 
 <template>
   <div class="equipment-backdrop">
-    <section class="equipment-panel" role="dialog" aria-modal="true" aria-label="Equipment">
-      <p>Equipment</p>
-      <p>Choose where to carry this weapon. Ammunition stays in your shared carried pools.</p>
+    <section class="equipment-panel" role="dialog" aria-modal="true" :aria-label="t('ui_equipment_title')">
+      <p>{{ t('ui_equipment_title') }}</p>
+      <p>{{ t('ui_equipment_help') }}</p>
       <template v-if="slots.length">
-        <ul class="slot-overview" aria-label="Equipment slot occupancy">
+        <ul class="slot-overview" :aria-label="t('ui_equipment_slots')">
           <li v-for="slot in slots" :key="slot.slot" :class="'slot-' + slot.state">
-            <span>{{ slot.label }}</span>
-            <strong>{{ slot.state === 'selected' ? 'This item' : slot.state === 'occupied' ? 'Occupied' : 'Open' }}</strong>
-            <small v-if="slot.itemId">Item #{{ slot.itemId }}</small>
+            <span>{{ equipmentSlotLabel(slot, t) }}</span>
+            <strong>{{ t('ui_equipment_' + (slot.state === 'selected' ? 'selected' : slot.state === 'occupied' ? 'occupied' : 'open')) }}</strong>
+            <small v-if="slot.itemId">{{ t('ui_equipment_item', slot.itemId) }}</small>
           </li>
         </ul>
-        <p class="slot-hint">Open means empty, not necessarily compatible. Only permitted actions appear below. Only one lasso can be equipped.</p>
+        <p class="slot-hint">{{ t('ui_equipment_hint') }}</p>
       </template>
-      <p v-if="options.some(option => option.kind === 'attachment')">Installing an attachment uses one matching item. Removal returns it to your inventory.</p>
-      <p v-if="options.some(option => option.kind === 'repair')">Cleaning uses the listed material. Permanent wear cannot be repaired away.</p>
+      <p v-if="options.some(option => option.kind === 'attachment')">{{ t('ui_equipment_attachment_hint') }}</p>
+      <p v-if="options.some(option => option.kind === 'repair')">{{ t('ui_equipment_repair_hint') }}</p>
       <button v-for="option in options" :key="`${option.kind || 'equipment'}:${option.action}:${option.slot}:${option.attachmentId || ''}`" :disabled="busy"
-        @click="emit('change', option)">{{ option.label }}</button>
-      <p v-if="message" role="status">{{ message }}</p>
-      <button :disabled="busy" @click="emit('close')">Close</button>
+        @click="emit('change', option)">{{ equipmentOptionLabel(option, t) }}</button>
+      <p v-if="message" role="status">{{ t(message) }}</p>
+      <button :disabled="busy" @click="emit('close')">{{ t('ui_equipment_close') }}</button>
     </section>
   </div>
 </template>

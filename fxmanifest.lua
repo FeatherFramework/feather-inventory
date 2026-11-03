@@ -6,7 +6,7 @@ lua54 'yes'
 description 'The Inventory API for the Feather Framework'
 author 'BCC Scripts'
 name 'feather-inventory'
-version '0.10.0'
+version '0.11.0'
 
 shared_scripts {
   'config.lua'
@@ -26,6 +26,9 @@ server_scripts {
   '/server/internal/native_utility_equipment.lua',
   '/server/internal/native_utility_exports.lua',
   '/server/internal/native_equipment_snapshot.lua',
+  '/server/internal/native_move_contention_probe.lua',
+  '/server/internal/native_recovery_batch.lua',
+  '/server/internal/move_recovery.lua',
   '/server/services/*.lua',
   '/server/main.lua',
 }

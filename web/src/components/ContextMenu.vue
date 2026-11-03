@@ -36,7 +36,7 @@ const style = computed(() => {
   <div class="ctx-menu" :style="style">
     <div v-if="canUse" class="ctx-item" @click="(event) => emit('use', event)">{{ t('ui_use') }}</div>
     <div v-if="canAmmo" class="ctx-item" @click="emit('ammo')">Ammunition</div>
-    <div v-if="canEquipment" class="ctx-item" @click="emit('equipment')">Equipment</div>
+    <div v-if="canEquipment" class="ctx-item" @click="emit('equipment')">{{ t('ui_equipment_title') }}</div>
     <div class="ctx-item" @click="(event) => emit('give', event)">{{ t('ui_give') }}</div>
     <div class="ctx-item" @click="(event) => emit('drop', event)">{{ t('ui_drop') }}</div>
     <div v-if="canSplit" class="ctx-item" @click="(event) => emit('split', event)">{{ t('ui_split') }}</div>

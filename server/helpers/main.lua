@@ -64,13 +64,14 @@ end
 -- @param fallback Text to use if the key isn't registered
 -- @return Localized string, or fallback
 --
-function Translate(src, key, fallback)
+function Translate(src, key, fallback, ...)
   if not key then
     return fallback
   end
 
-  local ok, translated = pcall(Feather.Locale.translate, src, key)
-  if not ok or type(translated) ~= 'string' or translated:find('does not exist', 1, true) then
+  local ok, translated = pcall(Feather.Locale.translate, src, key, ...)
+  if not ok or type(translated) ~= 'string' or translated:find('does not exist', 1, true)
+    or (translated:find('Translation [',1,true)==1 and translated:find('] is unavailable',1,true)) then
     return fallback
   end
   return translated
@@ -105,8 +106,32 @@ function TranslateResult(src, result, fallbackKey)
     result = (result.ok and result.value) or result.error or {}
   end
 
+  if type(result)=='table' and (tonumber(result.skippedCount) or 0)>0 then
+    local reason
+    if result.skipReason=='native_recovery_audit_pending' then
+      reason=Translate(src,'err_native_recovery_audit_pending',
+        'This item is held for recovery verification. Ask an administrator to inspect it.')
+    else
+      reason=Translate(src,'err_move_restrictions',result.skipReason or
+        'Some items could not be moved because of inventory restrictions or capacity.')
+    end
+    local moved=math.max(0,math.floor(tonumber(result.movedCount) or 0))
+    local skipped=math.max(0,math.floor(tonumber(result.skippedCount) or 0))
+    -- Core formats translations itself. Supply arguments at that boundary,
+    -- with a fully formatted English fallback if the provider/key is missing.
+    local fallback=string.format('Moved %d; skipped %d. %s',moved,skipped,reason)
+    return Translate(src,'msg_move_partial',fallback,moved,skipped,reason)
+  end
+
   local message = result and result.message
   local code = result and result.code
+
+  -- Guards return stable reasons without querying a locale provider while SQL
+  -- locks are held. Resolve the recipient's current language at this RPC seam.
+  if message=='native_recovery_audit_pending' then
+    code='native_recovery_audit_pending'
+    message='This item is held for recovery verification. Ask an administrator to inspect it.'
+  end
 
   if code then
     return Translate(src, 'err_' .. code, message or Translate(src, fallbackKey, message))

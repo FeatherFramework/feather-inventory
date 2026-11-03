@@ -237,6 +237,7 @@ function StartAPI()
   CollectionStorageAPI.Start()
   GrantOnceAPI.Start()
   ConsumptionOnceAPI.Start()
+  InventoryMoveRecovery.Start()
   RegisterCharacterStart(inventoryServerAPI)
   RegisterGroundInventory()
   InventoryReadiness.state = 'ready'

@@ -2,7 +2,8 @@ Result={Ok=function(v) return {ok=true,value=v} end,Err=function(c) return {ok=f
 Config={DevMode=true,CharacterAmmunitionEnabled=true}
 local gate,caller,session,reserved,transactions,wears,commits,lose=1,'feather-weapons',true,true,0,0,0,false
 local registered={}
-local reinforcedGate,davyGate,binocularsGate,cameraGate=0,0,0,0
+local reinforcedGate,davyGate,binocularsGate,cameraGate,advancedCameraGate,improvedGate=0,0,0,0,0,0
+local metalDetectorGate,fishingRodGate=0,0
 GetInvokingResource=function() return caller end
 GetConvarInt=function(name,default)
  assert(default==0)
@@ -10,6 +11,10 @@ GetConvarInt=function(name,default)
  if name=='feather_native_davy_lantern' then return davyGate end
  if name=='feather_native_binoculars' then return binocularsGate end
  if name=='feather_native_camera' then return cameraGate end
+ if name=='feather_native_camera_advanced' then return advancedCameraGate end
+ if name=='feather_native_binoculars_improved' then return improvedGate end
+ if name=='feather_native_metal_detector' then return metalDetectorGate end
+ if name=='feather_native_fishing_rod' then return fishingRodGate end
  assert(name=='feather_native_utility'); return gate
 end
 GetResourceState=function() return 'started' end
@@ -66,3 +71,27 @@ cameraGate=1
 assert(registered.CommitNativeUtilityEquipment(c,s).ok)
 cameraGate=0
 assert(not registered.CommitNativeUtilityEquipment(c,s).ok,'Camera reservation requires independent fourth-slot admission')
+cameraGate=1; s.advancedCameraFamily=true; s.slot='weapon_utility_quinary'
+local beforeAdvanced=transactions
+assert(not registered.CommitNativeUtilityEquipment(c,s).ok and transactions==beforeAdvanced)
+advancedCameraGate=1
+assert(registered.CommitNativeUtilityEquipment(c,s).ok)
+advancedCameraGate=0
+assert(not registered.CommitNativeUtilityEquipment(c,s).ok,'Advanced Camera reservation requires independent fifth-slot admission')
+advancedCameraGate=1; s.improvedBinocularsFamily=true; s.slot='weapon_utility_senary'
+local beforeImproved=transactions
+assert(not registered.CommitNativeUtilityEquipment(c,s).ok and transactions==beforeImproved)
+improvedGate=1
+assert(registered.CommitNativeUtilityEquipment(c,s).ok)
+improvedGate=0
+assert(not registered.CommitNativeUtilityEquipment(c,s).ok,'sixth reserved mode requires own gate')
+improvedGate=1
+for _,tool in ipairs({{'weapon_utility_septenary','metalDetectorFamily'}, {'weapon_utility_octonary','fishingRodFamily'}}) do
+ s.slot=tool[1];s[tool[2]]=true
+ local before=transactions;assert(not registered.CommitNativeUtilityEquipment(c,s).ok and transactions==before)
+ if tool[2]=='metalDetectorFamily' then metalDetectorGate=1 else fishingRodGate=1 end
+ assert(registered.CommitNativeUtilityEquipment(c,s).ok)
+ if tool[2]=='metalDetectorFamily' then metalDetectorGate=0 else fishingRodGate=0 end
+ assert(not registered.CommitNativeUtilityEquipment(c,s).ok)
+ s[tool[2]]=nil
+end

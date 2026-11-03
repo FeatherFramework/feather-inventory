@@ -144,6 +144,8 @@ RegisterNUICallback('Feather:Inventory:UpdateInventory', function(args, cb)
   cb({
     error = result and result.error or false,
     code = result and result.code,
+    outcome = result and result.outcome,
+    retrySafe = result and result.retrySafe,
     message = result and result.message,
     sourceItems = result and result.sourceItems,
     targetItems = result and result.targetItems,
@@ -183,7 +185,8 @@ RegisterNUICallback('Feather:Inventory:GiveItem', function(args, cb)
   -- something to show.
   local result = CallTimedMutation('Feather:Inventory:GiveItem', data)
   if not result or result.error then
-    cb({ error = true, message = (result and result.message) or 'Unable to give item.' })
+    cb({ error = true, message = (result and result.message) or 'Unable to give item.',
+      code=result and result.code,outcome=result and result.outcome,retrySafe=result and result.retrySafe })
   else
     cb({ error = false, sourceItems = result.sourceItems, movedCount = result.movedCount,
       skippedCount = result.skippedCount, mutationTiming = result.mutationTiming })
