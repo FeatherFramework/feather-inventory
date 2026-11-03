@@ -793,6 +793,8 @@ test('Give uses one transaction and transfers only recipient capacity', function
   InventoryIdentity = { GetCharacter = function(src) return {char = {id = src}} end }
   InventoryControllers.GetInventoryByCharacter = function(id) return id end
   IsWithinGiveDistance = function() return true end
+  Feather.Locale={translate=function(_,key) return 'Translation ['..key..'] is unavailable' end}
+  dofile(root .. '/server/helpers/main.lua')
   dofile(root .. '/server/services/callbacks.lua')
   add(20, 1, 0, 1, 1); policies[2].max_weight = 7
   local response
@@ -879,3 +881,68 @@ test('bulk grant uses every compatible partial stack when no empty slots remain'
   assert(Result.IsOk(result) and count(1, 0) == 3 and count(1, 1) == 3 and writes == 1)
 end)
 print(('PASS %d inventory update / transaction tests'):format(total))
+
+-- Real controller + real transaction adapter: simulate a lost provider finish
+-- reply after the deterministic SQL model has actually committed.
+for _,operation in ipairs({'list','drag','split'}) do
+ test('unknown provider finish is not a retryable '..operation..' refusal',function()
+  add(operation=='split' and 3 or 1,1,0,1,1,'same-metadata')
+  local original=DB.transaction
+  local readPair=InventoryControllers.GetInventoryItemsPair
+  InventoryControllers.GetInventoryItemsPair=function() error('unknown must not return a fresh pair as resolved') end
+  DB.transaction=function(body)
+   local committed=original(body)
+   assert(committed);error({code='BRIDGE_ERROR',outcome='unknown'})
+  end
+  if operation=='list' then
+   local result=InventoryControllers.MoveInventoryItems(1,2,{1})
+   assert(result.error and result.code=='transaction_outcome_unknown' and result.outcome=='unknown' and result.retrySafe==false)
+  elseif operation=='drag' then
+   local moved,code=InventoryControllers.MoveSlotItems(1,0,2,0,{expectedItemId=1})
+   assert(not moved and code=='transaction_outcome_unknown')
+  else
+   local amount,code=InventoryControllers.SplitSlotItems(1,0,1,1)
+   assert(amount==0 and code=='transaction_outcome_unknown')
+  end
+  DB.transaction=original;InventoryControllers.GetInventoryItemsPair=readPair
+  assert(#events==0,'unknown completion must not emit an invented commit fact')
+  if operation=='split' then assert(count(1,1)==1) else assert(rows[1].inventory_id==2) end
+  assert(rows[1].metadata=='same-metadata')
+ end)
+end
+test('explicit provider rollback retains ordinary failure classification',function()
+ add(1,1,0,1,1)
+ local original=DB.transaction;local before=copy(rows)
+ DB.transaction=function() error({code='ER_LOCK_DEADLOCK',outcome='rolled_back'}) end
+ local result=InventoryControllers.MoveInventoryItems(1,2,{1})
+ DB.transaction=original
+ assert(result.error and result.code~='transaction_outcome_unknown');unchanged(before)
+end)
+
+dofile(root..'/server/internal/move_recovery.lua')
+for _,operation in ipairs({'list','drag','split'}) do
+ test('durable recovery resolves actual '..operation..' commit reply loss without repeating item writes',function()
+  add(operation=='split' and 3 or 1,1,0,1,1,'preserved')
+  local original=DB.transaction;local calls=0;local state='pending';local receipt
+  DB.transaction=function(callback)
+   calls=calls+1;local committed=original(callback);assert(committed)
+   error({code='BRIDGE_ERROR',outcome='unknown'})
+  end
+  local engine=InventoryMoveRecoveryEngine.New({
+   reserve=function(scope)
+    assert(scope.sourceInventory==1 and scope.targetInventory==(operation=='split' and 1 or 2));return 'operation'
+   end,
+   transaction=RunLegacyStyleTransaction,lock=function() return true end,
+   commitReceipt=function(_,_,result) receipt=result;state='committed' end,
+   resolve=function() return state end,changed=function() end})
+  InventoryMoveRecovery={Run=engine.Run}
+  if operation=='list' then
+   local result=InventoryControllers.MoveInventoryItems(1,2,{1})
+   assert(not result.error and result.movedCount==1)
+  elseif operation=='drag' then assert(InventoryControllers.MoveSlotItems(1,0,2,0,{expectedItemId=1}))
+  else assert(InventoryControllers.SplitSlotItems(1,0,1,1)==1) end
+  DB.transaction=original;InventoryMoveRecovery=nil
+  assert(receipt and calls==1 and #events==1 and writes==1)
+  assert(rows[1].metadata=='preserved')
+ end)
+end

@@ -122,7 +122,7 @@ async function onContextEquipment() {
   const ticket = equipmentLifetime.capture();
   equipmentBusy.value = true;
   equipmentPanel.value = [];
-  equipmentMessage.value = 'Checking equipment…';
+  equipmentMessage.value = 'ui_equipment_checking';
   try {
     const { data } = await api.post('Feather:Inventory:NativeEquipmentOptions', { itemId: item.id });
     if (!equipmentLifetime.current(ticket)) return;
@@ -131,9 +131,9 @@ async function onContextEquipment() {
       equipmentSlots.value = Array.isArray(data.value.slots) ? data.value.slots : [];
       equipmentScope.value = data.value.identity;
       equipmentItem.value = item.id;
-      equipmentMessage.value = data.value.options.length ? '' : 'No supported equipment action for this firearm.';
-    } else equipmentMessage.value = data?.error?.code || 'Equipment controls unavailable.';
-  } catch { if (equipmentLifetime.current(ticket)) equipmentMessage.value = 'Equipment controls unavailable.'; }
+      equipmentMessage.value = data.value.options.length ? '' : 'ui_equipment_none';
+    } else equipmentMessage.value = 'ui_equipment_unavailable';
+  } catch { if (equipmentLifetime.current(ticket)) equipmentMessage.value = 'ui_equipment_unavailable'; }
   finally { equipmentBusy.value = false; }
 }
 async function changeEquipment(option) {
@@ -150,14 +150,13 @@ async function changeEquipment(option) {
     equipmentPanel.value = []; // never leave old-epoch buttons actionable
     equipmentSlots.value = [];
     equipmentScope.value = null;
-    equipmentMessage.value = data?.ok ? 'Equipment updated. Reopen Equipment for another action.'
-      : `${data?.error?.code || 'Equipment result uncertain'}. Do not retry an uncertain change.`;
+    equipmentMessage.value = data?.ok ? 'ui_equipment_updated' : 'ui_equipment_uncertain';
   } catch {
     if (equipmentLifetime.current(ticket)) {
       equipmentPanel.value = [];
       equipmentSlots.value = [];
       equipmentScope.value = null;
-      equipmentMessage.value = 'Equipment result uncertain. Do not retry; check Weapons status.';
+      equipmentMessage.value = 'ui_equipment_uncertain';
     }
   } finally { equipmentBusy.value = false; }
 }
@@ -250,6 +249,10 @@ function dragArmedFor(bookKey) {
 
 const onMessage = (event) => {
   const data = event.data;
+  if (data.type === 'localeStrings') {
+    setStrings(data.strings);
+    return;
+  }
   if (data.type === 'ammoPanelInvalidated') {
     closeAmmoPanel();
     return;

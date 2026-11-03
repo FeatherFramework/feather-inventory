@@ -33,7 +33,8 @@ function Translate(key, fallback)
   end
 
   local ok, translated = pcall(Feather.Locale.translate, 0, key)
-  if not ok or type(translated) ~= 'string' or translated:find('does not exist', 1, true) then
+  if not ok or type(translated) ~= 'string' or translated:find('does not exist', 1, true)
+    or (translated:find('Translation [',1,true)==1 and translated:find('] is unavailable',1,true)) then
     return fallback
   end
   return translated

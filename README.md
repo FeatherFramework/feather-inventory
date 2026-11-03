@@ -1,10 +1,11 @@
 # Feather Inventory
 
-Current alpha version: **0.10.0**. Adds item-attached saddlebag storage and the scoped Stables reviver policy. Access-backed delegation is opt-in per container;
+Current alpha version: **0.11.0-alpha.1**. Adds item-attached saddlebag storage and the scoped Stables reviver policy. Access-backed delegation is opt-in per container;
 existing legacy storage continues to work without an Access cutover. Native
 delegation requires the matching Inventory integration in feather-access and
-the exact feather-admin service policy. Weapons integration testing is deferred
-until its runtime is stable; the ammunition gate remains disabled by default.
+the exact feather-admin service policy. Weapons integration remains a controlled native alpha: utility equipment, durable
+move recovery and prepared restart checks have passed for the enrolled test
+characters. The ammunition gate remains disabled by default.
 
 ## Access-backed storage delegation (alpha)
 
@@ -63,7 +64,7 @@ remains enabled by default for testing; native ammo mode remains disabled.
 ### Requirements
 
 - A RedM server using a current Cfx.re artifact
-- MariaDB/MySQL with `oxmysql`
+- MariaDB/MySQL with `feather-mysql`
 - `feather-core`
 - `feather-notify` for client notifications
 - `feather-settings` if players should control hotbar visibility and opacity
@@ -78,7 +79,7 @@ Download a packaged release from [GitHub Releases](https://github.com/FeatherFra
 4. Add the resources to `server.cfg` in this order:
 
    ```cfg
-   ensure oxmysql
+   ensure feather-mysql
    ensure feather-core
    ensure feather-notify
    ensure feather-settings
@@ -109,7 +110,7 @@ python scripts/verify_release.py .artifacts/feather-inventory.zip
 
 After each UI change, run `pnpm build` from `web/`. It replaces `ui/` with the current compiled files. For in-game testing, replace the deployed resource's entire `ui/` directory with this local `ui/`; merging can leave old bundles behind. Keep `fxmanifest.lua` pointing at `ui/index.html` and refresh/restart `feather-inventory` before testing.
 
-The release workflow runs on pushes to `main`, builds and verifies the UI, and publishes `feather-inventory.zip` plus its SHA-256 checksum. The archive contains runtime Lua, configuration, translations, database SQL, documentation/license and built `ui/` files directly at its root; it excludes `web/`, dependencies and development tooling. Versions in `web/package.json` and `fxmanifest.lua` must match. Existing version-tag naming is retained.
+The release workflow runs on pushes to `main`, builds and verifies the UI, and publishes `feather-inventory.zip` plus its SHA-256 checksum. The archive contains runtime Lua, configuration, translations, database SQL, documentation/license and built `ui/` files directly at its root; it excludes `web/`, build dependencies, standalone tests and saved diagnostic reports. Guarded developer diagnostic handlers remain in runtime Lua. Versions in `web/package.json` and `fxmanifest.lua` must match. Existing version-tag naming is retained.
 
 Inventory updates default to `Config.UpdateBatchSize = 100`; no convars are required. Set `Config.MutationTiming = true` in `config.lua` and restart Inventory to enable diagnostic timings. Leave it false for normal operation.
 
@@ -135,7 +136,7 @@ All common settings are in `config.lua`. The defaults are playable, but review e
 
 | Setting | What it controls | Production guidance |
 |---|---|---|
-| `Config.DevMode` | Development and item-spawn test commands | Set to `false` on a live server |
+| `Config.DevMode` | Development and item-spawn test commands | Ordinary production Inventory: `false`. The current native Weapons alpha requires `true` and explicit enrollment; it is not a general production rollout. |
 | `Config.Debug` | Extra access and ground-resolution logging | Leave `false`; enable temporarily while diagnosing |
 | `Config.hotkey` | Opens the player's inventory | Default: `I` |
 | `Config.maxItemSlots` | Default number of compartments | Default: `40`; custom inventories may override it |
@@ -151,12 +152,38 @@ Ground piles are temporary world state. With `Config.Dropped.ClearOnStart = true
 
 ### Production checklist
 
-- Set `Config.DevMode = false`.
+- For ordinary production Inventory, set `Config.DevMode = false`. The current native Weapons alpha instead requires developer gates and explicit enrollment; do not treat this checklist as approval to enable it for all players.
 - Confirm dependencies and Inventory start without errors.
 - Confirm a player can open the ledger, move and use an item, and reconnect without losing it.
 - Confirm the inventory key and hotbar chord do not conflict with other resources.
 - Confirm the database backup and restore process works.
 - Run the release smoke and integrity checks in staging before an upgrade.
+
+## Move recovery and health
+
+Ordinary item moves use durable outcome receipts and queued provenance delivery.
+Inventory checks uncertain outcomes automatically without replaying gameplay
+writes. Players should wait when a transfer is pending rather than repeat it.
+Server owners can run `InvMoveHealth` in the server console: healthy means no
+action is needed, waiting means recovery is in progress, and attention or
+unavailable reports should be retained for support.
+
+Completed Inventory outcome/delivery records are eligible for automatic cleanup
+after at least 30 days, in bounded batches. Pending moves, unacknowledged
+deliveries, active reservations and required Weapons deduplication/provenance
+remain protected. Recovery tables and compatible columns initialize on startup;
+the database account needs the normal schema creation/alter permissions. Do not
+clear receipt tables or diagnostic reports to bypass an unresolved operation.
+
+Deploy matching Inventory and Weapons changes together using the prepared
+shutdown procedure in the Weapons guide. Mixing the old observer with the new
+outbox producer can create duplicate provenance during a later upgrade. The
+current native host remains scoped alpha software; ordinary Inventory storage
+and the native Weapons enrollment gates are separate concerns.
+
+Player labels and messages follow the language selected through feather-settings
+and Core's account-locale contract. Missing resource translations fall back to
+English. No resource-wide `Config.locale` selection is required.
 
 ## Features
 
@@ -270,7 +297,7 @@ The client export exposes only `Action`.
 { ok = false, error = { code = 'stable_code', message = '...', details = {} }, correlationId = <id?> }
 ```
 
-The API contract version is `2`. Read it from `GetCapabilities().value.contractVersion` and refuse to start against anything lower — a key-existence check cannot detect a changed return shape.
+The API contract version is `4`. Read it from `GetCapabilities().value.contractVersion` and refuse to start against anything lower — a key-existence check cannot detect a changed return shape.
 
 `code` is stable and machine-readable; `message` is developer-facing English. Player-facing text is resolved separately from `translations/` via the matching `err_<code>` key.
 

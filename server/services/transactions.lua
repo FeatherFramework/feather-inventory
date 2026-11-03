@@ -55,6 +55,7 @@ local Metrics = {
     rolledBack = 0,
     conflicts = 0,
     bodyErrors = 0,
+    unknown = 0,
     idempotentHits = 0,
 }
 
@@ -64,6 +65,13 @@ function TransactionAPI.GetMetrics()
         snapshot[key] = value
     end
     return snapshot
+end
+
+-- Only explicit provider evidence establishes rollback/non-execution. Legacy
+-- movement controllers use this too; do not convert a missing reply to conflict.
+function TransactionAPI.IsUnknownProviderFailure(value)
+    local outcome=type(value)=='table' and value.outcome or nil
+    return outcome~='rolled_back' and outcome~='not_executed'
 end
 
 ------------------------------------------------------------------
@@ -233,9 +241,9 @@ local function RunInTransaction(body, context)
     end)
 
     if not executed then
-        -- DB.transaction itself failed (connection lost, deadlock retries
-        -- exhausted, etc). Nothing committed.
-        return false, nil, tostring(committed)
+        -- A provider exception does not establish rollback. Preserve its
+        -- structured outcome; a missing classification is conservatively unknown.
+        return false, nil, tostring(committed), committed
     end
 
     return committed == true, bodyResult, bodyError
@@ -863,10 +871,22 @@ function TransactionAPI.Transaction(context, fn)
     Metrics.started = Metrics.started + 1
 
     local handle
-    local committed, bodyResult, bodyError = RunInTransaction(function(query)
+    local committed, bodyResult, bodyError, providerError = RunInTransaction(function(query)
         handle = NewTx(query, context)
         return fn(handle)
     end, context)
+
+    if providerError~=nil then
+        if TransactionAPI.IsUnknownProviderFailure(providerError) then
+            Metrics.unknown=Metrics.unknown+1
+            local code=type(providerError)=='table' and providerError.code or nil
+            local result=Result.Err('transaction_outcome_unknown',
+                'Transaction outcome is unknown; independent readback is required.',
+                {outcome='unknown',retrySafe=false,providerCode=type(code)=='string' and code:sub(1,128) or nil},context.correlationId)
+            result.outcome='unknown'; result.retrySafe=false
+            return result -- no rollback claim, success events or idempotency success cache
+        end
+    end
 
     if bodyError then
         Metrics.bodyErrors = Metrics.bodyErrors + 1

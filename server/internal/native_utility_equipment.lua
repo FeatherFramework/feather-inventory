@@ -21,8 +21,24 @@ end
 local function cameraEnabled()
     return binocularsEnabled() and GetConvarInt('feather_native_camera',0)==1
 end
+local function advancedCameraEnabled()
+    return cameraEnabled() and GetConvarInt('feather_native_camera_advanced',0)==1
+end
+local function improvedBinocularsEnabled()
+    return advancedCameraEnabled() and GetConvarInt('feather_native_binoculars_improved',0)==1
+end
+local function metalDetectorEnabled()
+    return improvedBinocularsEnabled() and GetConvarInt('feather_native_metal_detector',0)==1
+end
+local function fishingRodEnabled()
+    return improvedBinocularsEnabled() and GetConvarInt('feather_native_fishing_rod',0)==1
+end
 local function family(metadata)
-    return metadata.weaponDefinitionId=='utility_camera' and 'camera'
+    return metadata.weaponDefinitionId=='utility_fishing_rod' and 'fishing_rod'
+        or metadata.weaponDefinitionId=='utility_metal_detector' and 'metal_detector'
+        or metadata.weaponDefinitionId=='utility_binoculars_improved' and 'binoculars_improved'
+        or metadata.weaponDefinitionId=='utility_camera_advanced' and 'camera_advanced'
+        or metadata.weaponDefinitionId=='utility_camera' and 'camera'
         or metadata.weaponDefinitionId=='utility_binoculars' and 'binoculars'
         or metadata.weaponDefinitionId=='utility_davy_lantern' and 'lantern' or 'lasso'
 end
@@ -32,13 +48,21 @@ local function model(metadata,itemName,reinforced)
             or (reinforced and metadata.weaponDefinitionId=='utility_lasso_reinforced' and itemName=='weapon_lasso_reinforced')
             or (davyEnabled() and metadata.weaponDefinitionId=='utility_davy_lantern' and itemName=='weapon_melee_davy_lantern')
             or (binocularsEnabled() and metadata.weaponDefinitionId=='utility_binoculars' and itemName=='weapon_kit_binoculars')
-            or (cameraEnabled() and metadata.weaponDefinitionId=='utility_camera' and itemName=='weapon_kit_camera'))
+            or (cameraEnabled() and metadata.weaponDefinitionId=='utility_camera' and itemName=='weapon_kit_camera')
+            or (advancedCameraEnabled() and metadata.weaponDefinitionId=='utility_camera_advanced' and itemName=='weapon_kit_camera_advanced')
+            or (improvedBinocularsEnabled() and metadata.weaponDefinitionId=='utility_binoculars_improved' and itemName=='weapon_kit_binoculars_improved')
+            or (metalDetectorEnabled() and metadata.weaponDefinitionId=='utility_metal_detector' and itemName=='weapon_kit_metal_detector')
+            or (fishingRodEnabled() and metadata.weaponDefinitionId=='utility_fishing_rod' and itemName=='weapon_fishingrod'))
 end
 function U.Read(tx,characterId,authority,locked)
     local reinforced=reinforcedEnabled()
     local davy=davyEnabled()
     local binoculars=binocularsEnabled()
     local camera=cameraEnabled()
+    local advancedCamera=advancedCameraEnabled()
+    local improvedBinoculars=improvedBinocularsEnabled()
+    local fishingRod=fishingRodEnabled()
+    local metalDetector=metalDetectorEnabled()
     if not InventoryIdentity.NormalizeCharacterId(characterId) or not current(authority) then return denied() end
     if not locked then
     local headers=tx.query('SELECT id FROM inventory WHERE character_id=? LIMIT 1 FOR UPDATE',{characterId})
@@ -62,6 +86,10 @@ function U.Read(tx,characterId,authority,locked)
     local slots=(reinforced or davy) and {'weapon_utility','weapon_utility_secondary'} or {'weapon_utility'}
     if binoculars then slots[#slots+1]='weapon_utility_tertiary' end
     if camera then slots[#slots+1]='weapon_utility_quaternary' end
+    if advancedCamera then slots[#slots+1]='weapon_utility_quinary' end
+    if improvedBinoculars then slots[#slots+1]='weapon_utility_senary' end
+    if metalDetector then slots[#slots+1]='weapon_utility_septenary' end
+    if fishingRod then slots[#slots+1]='weapon_utility_octonary' end
     local admitted={}
     for _,slot in ipairs(slots) do admitted[slot]=true end
     for slot in pairs(expected) do
@@ -85,12 +113,17 @@ function U.Read(tx,characterId,authority,locked)
         local itemFamily=family(m)
         if (slot=='weapon_utility_tertiary')~=(itemFamily=='binoculars') or families[itemFamily] then return denied() end
         if (slot=='weapon_utility_quaternary')~=(itemFamily=='camera') then return denied() end
+        if (slot=='weapon_utility_quinary')~=(itemFamily=='camera_advanced') then return denied() end
+        if (slot=='weapon_utility_senary')~=(itemFamily=='binoculars_improved') then return denied() end
+        if (slot=='weapon_utility_octonary')~=(itemFamily=='fishing_rod') then return denied() end
+        if (slot=='weapon_utility_septenary')~=(itemFamily=='metal_detector') then return denied() end
         families[itemFamily]=true
         equipment[slot:sub(8)]={id=assigned.itemId,revision=assigned.revision,itemName=r.itemName,metadata=copy(m)}
       end
     end
     if reinforcedEnabled()~=reinforced or davyEnabled()~=davy or binocularsEnabled()~=binoculars
-        or cameraEnabled()~=camera or not current(authority) then return denied() end
+        or cameraEnabled()~=camera or advancedCameraEnabled()~=advancedCamera
+        or metalDetectorEnabled()~=metalDetector or fishingRodEnabled()~=fishingRod or improvedBinocularsEnabled()~=improvedBinoculars or not current(authority) then return denied() end
     return Result.Ok({characterId=characterId,expected=expected,equipment=equipment})
 end
 function U.Apply(tx,spec,authority)
@@ -98,8 +131,13 @@ function U.Apply(tx,spec,authority)
     local davy=davyEnabled()
     local binoculars=binocularsEnabled()
     local camera=cameraEnabled()
+    local advancedCamera=advancedCameraEnabled()
+    local improvedBinoculars=improvedBinocularsEnabled()
+    local fishingRod=fishingRodEnabled()
+    local metalDetector=metalDetectorEnabled()
     if type(spec)~='table' or (spec.slot~='weapon_utility' and not ((reinforced or davy) and spec.slot=='weapon_utility_secondary')
-        and not (binoculars and spec.slot=='weapon_utility_tertiary') and not (camera and spec.slot=='weapon_utility_quaternary'))
+        and not (binoculars and spec.slot=='weapon_utility_tertiary') and not (camera and spec.slot=='weapon_utility_quaternary')
+        and not (advancedCamera and spec.slot=='weapon_utility_quinary') and not (metalDetector and spec.slot=='weapon_utility_septenary') and not (fishingRod and spec.slot=='weapon_utility_octonary') and not (improvedBinoculars and spec.slot=='weapon_utility_senary'))
         or (spec.action~='equip' and spec.action~='unequip')
         or not int(spec.utilityId,1) or not int(spec.utilityRevision,0)
         or type(spec.before)~='table' or type(spec.expected)~='table'
@@ -126,6 +164,10 @@ function U.Apply(tx,spec,authority)
             or type(m.flags)~='table' or m.flags.disabled~=false or m.flags.evidence~=false then return denied() end
         if (spec.slot=='weapon_utility_tertiary')~=(family(m)=='binoculars') then return denied() end
         if (spec.slot=='weapon_utility_quaternary')~=(family(m)=='camera') then return denied() end
+        if (spec.slot=='weapon_utility_quinary')~=(family(m)=='camera_advanced') then return denied() end
+        if (spec.slot=='weapon_utility_senary')~=(family(m)=='binoculars_improved') then return denied() end
+        if (spec.slot=='weapon_utility_octonary')~=(family(m)=='fishing_rod') then return denied() end
+        if (spec.slot=='weapon_utility_septenary')~=(family(m)=='metal_detector') then return denied() end
         for _,existing in pairs(snapshot.equipment) do
             local a,b=family(m),family(existing.metadata)
             if a==b then return denied() end
@@ -139,7 +181,8 @@ function U.Apply(tx,spec,authority)
     -- Local wrapper preserves CFX callable-table support; never forward arbitrary
     -- client guard context or bypass the registered native instance hold.
     return ConditionalEquipment.Apply(tx,intent,function() return reinforcedEnabled()==reinforced and davyEnabled()==davy
-        and binocularsEnabled()==binoculars and cameraEnabled()==camera and current(authority) end)
+        and binocularsEnabled()==binoculars and cameraEnabled()==camera
+        and advancedCameraEnabled()==advancedCamera and metalDetectorEnabled()==metalDetector and fishingRodEnabled()==fishingRod and improvedBinocularsEnabled()==improvedBinoculars and current(authority) end)
 end
 NativeUtilityEquipment=U
 return U

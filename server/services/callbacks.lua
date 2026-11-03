@@ -132,7 +132,8 @@ Feather.RPC.Register('Feather:Inventory:UpdateInventory', function(params, res, 
     resource = 'feather-inventory'
   })
   if result and result.error then
-    Feather.Notify.RightNotify(src, TranslateResult(src, result, 'err_move_failed'), 3000)
+    result.message=TranslateResult(src,result,'err_move_failed')
+    Feather.Notify.RightNotify(src,result.message,3000)
   end
   res(result)
 end)
@@ -202,9 +203,10 @@ Feather.RPC.Register('Feather:Inventory:GiveItem', function(params, res, src)
     allowTargetInsert = true
   })
   if giveResult and giveResult.error then
-    Feather.Notify.RightNotify(src, TranslateResult(src, giveResult, 'err_give_failed'), 3000)
+    giveResult.message=TranslateResult(src,giveResult,'err_give_failed')
+    Feather.Notify.RightNotify(src,giveResult.message,3000)
   elseif giveResult and (tonumber(giveResult.skippedCount) or 0) > 0 then
-    Feather.Notify.RightNotify(src, giveResult.message or 'Some selected items could not be given.', 5000)
+    Feather.Notify.RightNotify(src, TranslateResult(src,giveResult,'err_give_failed'), 5000)
   end
   return res(giveResult)
 end)
@@ -268,7 +270,9 @@ Feather.RPC.Register('Feather:Inventory:MoveItem', function(params, res, src)
   })
   if not moved then
     local failure = { error = true, code = code or 'conflict', message = message or 'The inventory changed; try again.' }
-    Feather.Notify.RightNotify(src, TranslateResult(src, failure, 'err_move_failed'), 3000)
+    if code=='transaction_outcome_unknown' or code=='move_recovery_pending' or code=='move_recovery_unavailable' then failure.outcome='unknown';failure.retrySafe=false end
+    failure.message=TranslateResult(src,failure,'err_move_failed')
+    Feather.Notify.RightNotify(src,failure.message,3000)
     return res(failure)
   end
 
@@ -330,7 +334,7 @@ Feather.RPC.Register('Feather:Inventory:SplitStack', function(params, res, src)
 
   local session = InventoryIdentity.GetSession(src)
   if not Result.IsOk(session) then return res({error = true, message = 'A current character session is required.'}) end
-  local moved = InventoryControllers.SplitSlotItems(inventory, fromSlot, freeSlot, quantity, {
+  local moved, failureCode = InventoryControllers.SplitSlotItems(inventory, fromSlot, freeSlot, quantity, {
     _timing = metrics,
     correlationId = metrics and metrics.id,
     actorSource = src,
@@ -339,6 +343,13 @@ Feather.RPC.Register('Feather:Inventory:SplitStack', function(params, res, src)
     resource = 'feather-inventory'
   })
   if moved ~= quantity then
+    if failureCode=='transaction_outcome_unknown' or failureCode=='move_recovery_pending' or failureCode=='move_recovery_unavailable' then
+      local failure={error=true,code=failureCode,outcome='unknown',retrySafe=false,
+        message='Transfer outcome is unknown; do not retry until independently verified.'}
+      failure.message=TranslateResult(src,failure,'err_move_failed')
+      Feather.Notify.RightNotify(src,failure.message,3000)
+      return res(failure)
+    end
     Feather.Notify.RightNotify(src, Translate(src, 'err_move_failed', 'The inventory changed; try again.'), 3000)
     return res({ error = true, code = 'conflict', message = 'The inventory changed; try again.' })
   end
@@ -411,7 +422,11 @@ Feather.RPC.Register('Feather:Inventory:TakeAll', function(params, res, src)
   for _, item in ipairs(sourceItems) do instanceIds[#instanceIds + 1] = item.id end
   if #instanceIds > 0 then
     local result = InventoryControllers.MoveInventoryItems(fromInventory, targetInventory, instanceIds, context)
-    if result and result.error then return res(result) end
+    if result and result.error then
+      result.message=TranslateResult(src,result,'err_move_failed')
+      Feather.Notify.RightNotify(src,result.message,3000)
+      return res(result)
+    end
     moved, skipped = result.movedCount, result.skippedCount
   end
 

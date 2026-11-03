@@ -1,5 +1,17 @@
 InventoryControllers = {}
 
+local function RunMoveTransaction(body,metrics,context,scope)
+  -- The runtime service is mandatory at StartAPI readiness. Legacy-only unit
+  -- fixtures load this controller independently of the service graph.
+  if InventoryMoveRecovery then return InventoryMoveRecovery.Run(body,metrics,context,scope) end
+  return RunLegacyStyleTransaction(body,metrics,context)
+end
+local function RecoveryFailure(value)
+  local code=type(value)=='table' and value.code
+  if code=='move_recovery_pending' then return code,'Inventory is checking this transfer automatically. Please wait before trying again.' end
+  if code=='move_recovery_unavailable' then return code,'Inventory is reconnecting. Please wait a moment.' end
+end
+
 local function NormalizeLockedItem(row)
   local metadata = {}
   if row.metadata and row.metadata ~= '' then
@@ -456,8 +468,8 @@ function InventoryControllers.MoveSlotItemsPartial(fromInventory, fromSlot, toIn
   if wanted < 1 then return 0, {} end
   context = MutationContext(context, 'slot_merge')
   context.mergeOnly, context.mergeQuantity = true, wanted
-  local moved, _, _, ids = InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory, toSlot, context)
-  return moved and #ids or 0, moved and ids or {}
+  local moved, code, _, ids = InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory, toSlot, context)
+  return moved and #ids or 0, moved and ids or {}, not moved and code or nil
 end
 
 -- (Capacity model) Number of distinct compartments in use, regardless of what
@@ -505,7 +517,7 @@ function InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory
   local movedFacts, occupantFacts = {}, {}
   local failureCode, failureMessage
 
-  local executed, committed = RunLegacyStyleTransaction(function(query)
+  local executed, committed = RunMoveTransaction(function(query)
     if not ContextCanAccess(context, fromInventory, InventoryAPI.AccessModes.REMOVE, query)
       or (crossInventory and not ContextCanAccess(context, toInventory, InventoryAPI.AccessModes.INSERT, query)) then
       return false
@@ -537,7 +549,7 @@ function InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory
         if not allowed then return false end
       end
       movedFacts[tonumber(row.id)] = {
-        definitionId = tonumber(row.item_id), revision = (tonumber(row.row_revision) or 0) + 1,
+        definitionId = tonumber(row.item_id), revision = (tonumber(row.row_revision) or 0) + 1, metadata=row.metadata,
         fromSlot = tonumber(fromSlot), toSlot = tonumber(toSlot) }
     end
     local swapContext = MutationContext(context, 'slot_swap')
@@ -548,7 +560,7 @@ function InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory
         if not allowed then return false end
       end
       occupantFacts[tonumber(row.id)] = {
-        definitionId = tonumber(row.item_id), revision = (tonumber(row.row_revision) or 0) + 1,
+        definitionId = tonumber(row.item_id), revision = (tonumber(row.row_revision) or 0) + 1, metadata=row.metadata,
         fromSlot = tonumber(toSlot), toSlot = tonumber(fromSlot) }
     end
 
@@ -566,9 +578,16 @@ function InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory
     end
 
     return true
-  end, context._timing, context)
+  end, context._timing, context,{sourceInventory=fromInventory,targetInventory=toInventory,result=function()
+    return {kind='slot_move',movedIds=movedRows,swappedIds=occupantRows,facts=movedFacts,swapFacts=occupantFacts}
+  end})
 
   if not executed or committed ~= true then
+    local code,message=RecoveryFailure(committed)
+    if code then return false,code,message end
+    if not executed and TransactionAPI.IsUnknownProviderFailure(committed) then
+      return false,'transaction_outcome_unknown','Transfer outcome is unknown; do not retry until independently verified.'
+    end
     return false, failureCode or 'conflict', failureMessage or 'The inventory changed; try again.'
   end
 
@@ -601,7 +620,7 @@ function InventoryControllers.SplitSlotItems(inventory, fromSlot, toSlot, quanti
   local moved = 0
   local movedFacts = {}
 
-  local executed, committed = RunLegacyStyleTransaction(function(query)
+  local executed, committed = RunMoveTransaction(function(query)
     if not ContextCanAccess(context, inventory, InventoryAPI.AccessModes.REMOVE, query) then return false end
     if not LockSlotPolicies(query, inventory, fromSlot, inventory, toSlot) then return false end
     local source = query(
@@ -632,9 +651,16 @@ function InventoryControllers.SplitSlotItems(inventory, fromSlot, toSlot, quanti
       }
     end
     return true
-  end, context._timing, context)
+  end, context._timing, context,{sourceInventory=inventory,targetInventory=inventory,result=function()
+    return {kind='slot_split',movedCount=moved,facts=movedFacts}
+  end})
 
-  if not executed or committed ~= true then return 0 end
+  if not executed or committed ~= true then
+    local code=RecoveryFailure(committed)
+    if code then return 0,code end
+    if not executed and TransactionAPI.IsUnknownProviderFailure(committed) then return 0,'transaction_outcome_unknown' end
+    return 0
+  end
   local eventStarted = context._timing and GetGameTimer()
   for _, fact in ipairs(movedFacts) do
     GuardsAPI.EmitItemMoved(fact.instanceId, inventory, inventory, context, fact)
@@ -887,7 +913,7 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
   local skippedMessage
   local deletedContainer
 
-  local executed, committed = RunLegacyStyleTransaction(function(query)
+  local executed, committed = RunMoveTransaction(function(query)
     -- Match slot moves' policy-before-item lock order, including both sides.
     -- Grants into either inventory cannot reserve capacity while this move
     -- is planning/writing its groups.
@@ -996,7 +1022,7 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
     if metrics then metrics.skippedRows = skippedCount; metrics.skipReasons = plan.skipReasons end
     for _, id in ipairs(acceptedIds) do
       local row = rowsById[id]
-      moved[id] = { definitionId = tonumber(row.item_id), revision = (tonumber(row.row_revision) or 0) + 1 }
+      moved[id] = { definitionId = tonumber(row.item_id), revision = (tonumber(row.row_revision) or 0) + 1, metadata=row.metadata }
     end
 
     local plannedSlots = {}
@@ -1039,9 +1065,18 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
     end
 
     return true
-  end, metrics, context)
+  end, metrics, context,{sourceInventory=sourceInventory,targetInventory=targetInventory,result=function()
+    return {kind='item_move',movedIds=acceptedIds,facts=moved,skippedCount=skippedCount,
+      sourceDeleted=context.deleteSource~=nil,deletedContainer=deletedContainer,deleteReason=context.deleteSource and context.deleteSource.reason,reason=context.reason}
+  end})
 
   if not executed or committed ~= true then
+    local code,message=RecoveryFailure(committed)
+    if code then return respond({error=true,code=code,outcome=committed.outcome,retrySafe=false,message=message}) end
+    if not executed and TransactionAPI.IsUnknownProviderFailure(committed) then
+      return respond({error=true,code='transaction_outcome_unknown',outcome='unknown',retrySafe=false,
+        message='Transfer outcome is unknown; do not retry until independently verified.'})
+    end
     local payload = readPair()
     payload.error, payload.code = true, failureCode or 'internal'
     payload.message = failureMessage or 'Items could not be moved.'
@@ -1069,6 +1104,7 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
   local payload = readPair()
   payload.movedCount, payload.skippedCount = #acceptedIds, skippedCount
   if skippedCount > 0 then
+    payload.skipReason=skippedMessage
     -- Greedy moves may commit zero rows without being transaction errors.
     -- Preserve the guard's actionable reason instead of presenting silent success.
     payload.message = ('Moved %d; skipped %d. %s'):format(#acceptedIds, skippedCount,

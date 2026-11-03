@@ -30,7 +30,21 @@ local function install(component)
                 and not (spec.slot=='weapon_utility_tertiary' and GetConvarInt('feather_native_davy_lantern',0)==1
                     and GetConvarInt('feather_native_binoculars',0)==1)
                 and not (spec.slot=='weapon_utility_quaternary' and GetConvarInt('feather_native_davy_lantern',0)==1
-                    and GetConvarInt('feather_native_binoculars',0)==1 and GetConvarInt('feather_native_camera',0)==1))
+                    and GetConvarInt('feather_native_binoculars',0)==1 and GetConvarInt('feather_native_camera',0)==1)
+                and not (spec.slot=='weapon_utility_quinary' and GetConvarInt('feather_native_davy_lantern',0)==1
+                    and GetConvarInt('feather_native_binoculars',0)==1 and GetConvarInt('feather_native_camera',0)==1
+                    and GetConvarInt('feather_native_camera_advanced',0)==1)
+                and not (spec.slot=='weapon_utility_senary' and GetConvarInt('feather_native_davy_lantern',0)==1
+                    and GetConvarInt('feather_native_binoculars',0)==1 and GetConvarInt('feather_native_camera',0)==1
+                    and GetConvarInt('feather_native_camera_advanced',0)==1 and GetConvarInt('feather_native_binoculars_improved',0)==1)
+                and not (spec.slot=='weapon_utility_septenary' and GetConvarInt('feather_native_davy_lantern',0)==1
+                    and GetConvarInt('feather_native_binoculars',0)==1 and GetConvarInt('feather_native_camera',0)==1
+                    and GetConvarInt('feather_native_camera_advanced',0)==1 and GetConvarInt('feather_native_binoculars_improved',0)==1
+                    and GetConvarInt('feather_native_metal_detector',0)==1)
+                and not (spec.slot=='weapon_utility_octonary' and GetConvarInt('feather_native_davy_lantern',0)==1
+                    and GetConvarInt('feather_native_binoculars',0)==1 and GetConvarInt('feather_native_camera',0)==1
+                    and GetConvarInt('feather_native_camera_advanced',0)==1 and GetConvarInt('feather_native_binoculars_improved',0)==1
+                    and GetConvarInt('feather_native_fishing_rod',0)==1))
             or (spec.action~='equip' and spec.action~='unequip')
             or type(context.epoch)~='string' or type(context.ticket)~='string'
             or type(spec.lifecycleSnapshot)~='table' or type(spec.lifecycleWear)~='table' then return denied() end
@@ -42,6 +56,10 @@ local function install(component)
                 or (spec.davyFamily and GetConvarInt('feather_native_davy_lantern',0)~=1)
                 or (spec.binocularsFamily and GetConvarInt('feather_native_binoculars',0)~=1)
                 or (spec.cameraFamily and GetConvarInt('feather_native_camera',0)~=1)
+                or (spec.advancedCameraFamily and GetConvarInt('feather_native_camera_advanced',0)~=1)
+                or (spec.metalDetectorFamily and GetConvarInt('feather_native_metal_detector',0)~=1)
+                or (spec.fishingRodFamily and GetConvarInt('feather_native_fishing_rod',0)~=1)
+                or (spec.improvedBinocularsFamily and GetConvarInt('feather_native_binoculars_improved',0)~=1)
                 or GetResourceState('feather-weapons')~='started' then return false end
             local ok,v=pcall(function()
                 return exports['feather-core']:IsSessionCurrent(context.actorSource,context.sessionId,context.characterId)==true

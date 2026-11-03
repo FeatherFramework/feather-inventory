@@ -285,6 +285,7 @@ end
 local function MutationFact(operation, context)
     return {
         operation = operation,
+        durableMoveOperationId = context and context.durableMoveOperationId,
         outcome = 'committed',
         quantity = 1,
         actorSource = context and context.actorSource,
