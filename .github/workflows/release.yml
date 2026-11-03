@@ -1,14 +1,51 @@
-name: release
+name: Inventory checks and release
 
 on:
+  pull_request:
   push:
     branches: [main]
+    tags: ['[0-9]*', 'v[0-9]*']
+
+permissions:
+  contents: read
 
 jobs:
   package:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: feather-inventory
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: feather-inventory
+          fetch-depth: 0
+      - name: Verify versions and release ancestry
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          set -euo pipefail
+          if [ -n "$RELEASE_TAG" ]; then
+            python3 scripts/verify_version.py --tag "$RELEASE_TAG"
+            git fetch origin main
+            git merge-base --is-ancestor HEAD origin/main
+          else
+            python3 scripts/verify_version.py
+          fi
+      # Real cross-resource composition tests require these sibling sources.
+      - uses: actions/checkout@v4
+        with:
+          repository: FeatherFramework/feather-access
+          ref: f5c24d9f42dd24f3e6f287db8bd0b29493506d41
+          path: feather-access
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: FeatherFramework/feather-weapons
+          ref: 93b3f4321408eb28bfb0d74b9f38de12210136ed
+          path: feather-weapons
+          persist-credentials: false
       - uses: pnpm/action-setup@v4
         with:
           version: 9.15.0
@@ -16,20 +53,22 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
-      - name: Verify Lua slot updates and rollback
+          cache-dependency-path: feather-inventory/web/pnpm-lock.yaml
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify full Lua regression suite and runtime syntax
         run: |
-          sudo apt-get update
-          sudo apt-get install -y lua5.4
-          lua5.4 tests/lua/slot_updates_spec.lua .
-          lua5.4 tests/lua/guard_equipment_spec.lua .
-          lua5.4 tests/lua/access_reads_spec.lua .
-          lua5.4 tests/lua/startup_readiness_spec.lua .
+          python -m pip install lupa==2.8
+          python tests/run_lua.py
+          python -m unittest discover -s tests -p 'test_*.py'
       - name: Install and verify UI
-        working-directory: web
+        working-directory: feather-inventory/web
         run: |
           pnpm install --frozen-lockfile
           pnpm check
+      - name: Verify UI contracts
+        run: node --test web/tests/*.test.mjs
       - name: Stage and verify install archive
         shell: bash
         run: |
@@ -42,10 +81,11 @@ jobs:
         with:
           name: feather-inventory-install
           path: |
-            feather-inventory.zip
-            feather-inventory.zip.sha256
+            feather-inventory/feather-inventory.zip
+            feather-inventory/feather-inventory.zip.sha256
 
   publish:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     needs: package
     runs-on: ubuntu-latest
     permissions:
@@ -55,25 +95,22 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: feather-inventory-install
-      - name: Read package version
-        id: package-version
-        uses: martinbeentjes/npm-get-version-action@main
-        with:
-          path: web
       - name: Verify release version and checksum
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 scripts/verify_version.py --tag "$RELEASE_TAG"
+          sha256sum -c feather-inventory.zip.sha256
+      - name: Create versioned release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
         shell: bash
         run: |
           set -euo pipefail
-          version=$(node -p "require('./web/package.json').version")
-          grep -Fq "version '$version'" fxmanifest.lua
-          sha256sum -c feather-inventory.zip.sha256
-      - name: Publish automatic release
-        uses: marvinpinto/action-automatic-releases@latest
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          automatic_release_tag: ${{ steps.package-version.outputs.current-version }}
-          prerelease: ${{ contains(steps.package-version.outputs.current-version, '-') }}
-          title: Feather Inventory ${{ steps.package-version.outputs.current-version }}
-          files: |
-            feather-inventory.zip
-            feather-inventory.zip.sha256
+          args=(--verify-tag --generate-notes --title "Feather Inventory $RELEASE_TAG")
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            args+=(--prerelease)
+          fi
+          # gh release create refuses an existing release; never overwrite assets.
+          gh release create "$RELEASE_TAG" "${args[@]}" feather-inventory.zip feather-inventory.zip.sha256

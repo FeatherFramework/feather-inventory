@@ -1,5 +1,16 @@
 # Feather Inventory
 
+## Automated development checks
+
+Pull requests and pushes to main run the full Lua regression runner and runtime
+syntax checks, Python collection/equipment tests, UI contract tests, lint/build,
+and install archive verification. Tests use Lupa 2.8 (Lua 5.4), Node 22 and pnpm
+9.15.0. Pull requests and main pushes never publish. An explicit version-tag push
+reruns the checks and publishes only when the tag matches both version files and
+the tagged commit is on main. Existing releases are never overwritten. These
+checks need no running game server and do not replace native in-game acceptance.
+See [the release process](docs/release-process.md) for developer instructions.
+
 Current alpha version: **0.11.0-alpha.1**. Adds item-attached saddlebag storage and the scoped Stables reviver policy. Access-backed delegation is opt-in per container;
 existing legacy storage continues to work without an Access cutover. Native
 delegation requires the matching Inventory integration in feather-access and
