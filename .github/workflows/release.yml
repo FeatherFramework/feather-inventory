@@ -1,12 +1,17 @@
 name: release
 
 on:
+  pull_request:
   push:
     branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
   package:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -17,14 +22,16 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
-      - name: Verify Lua slot updates and rollback
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify full Lua regression suite and runtime syntax
         run: |
-          sudo apt-get update
-          sudo apt-get install -y lua5.4
-          lua5.4 tests/lua/slot_updates_spec.lua .
-          lua5.4 tests/lua/guard_equipment_spec.lua .
-          lua5.4 tests/lua/access_reads_spec.lua .
-          lua5.4 tests/lua/startup_readiness_spec.lua .
+          python -m pip install lupa==2.8
+          python tests/run_lua.py
+          python -m unittest discover -s tests -p 'test_*.py'
+      - name: Verify UI contracts
+        run: node --test web/tests/*.test.mjs
       - name: Install and verify UI
         working-directory: web
         run: |
@@ -46,6 +53,7 @@ jobs:
             feather-inventory.zip.sha256
 
   publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: package
     runs-on: ubuntu-latest
     permissions:
