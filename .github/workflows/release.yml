@@ -48,13 +48,13 @@ jobs:
           python -m pip install lupa==2.8
           python tests/run_lua.py
           python -m unittest discover -s tests -p 'test_*.py'
-      - name: Verify UI contracts
-        run: node --test web/tests/*.test.mjs
       - name: Install and verify UI
         working-directory: feather-inventory/web
         run: |
           pnpm install --frozen-lockfile
           pnpm check
+      - name: Verify UI contracts
+        run: node --test web/tests/*.test.mjs
       - name: Stage and verify install archive
         shell: bash
         run: |
