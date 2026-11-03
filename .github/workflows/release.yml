@@ -12,8 +12,26 @@ jobs:
   package:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: feather-inventory
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: feather-inventory
+      # Real cross-resource composition tests require these sibling sources.
+      - uses: actions/checkout@v4
+        with:
+          repository: FeatherFramework/feather-access
+          ref: f5c24d9f42dd24f3e6f287db8bd0b29493506d41
+          path: feather-access
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: FeatherFramework/feather-weapons
+          ref: 93b3f4321408eb28bfb0d74b9f38de12210136ed
+          path: feather-weapons
+          persist-credentials: false
       - uses: pnpm/action-setup@v4
         with:
           version: 9.15.0
@@ -21,7 +39,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
+          cache-dependency-path: feather-inventory/web/pnpm-lock.yaml
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -33,7 +51,7 @@ jobs:
       - name: Verify UI contracts
         run: node --test web/tests/*.test.mjs
       - name: Install and verify UI
-        working-directory: web
+        working-directory: feather-inventory/web
         run: |
           pnpm install --frozen-lockfile
           pnpm check
@@ -49,8 +67,8 @@ jobs:
         with:
           name: feather-inventory-install
           path: |
-            feather-inventory.zip
-            feather-inventory.zip.sha256
+            feather-inventory/feather-inventory.zip
+            feather-inventory/feather-inventory.zip.sha256
 
   publish:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
