@@ -12,36 +12,48 @@
    required independent review, and merge. Main runs the checks again without
    publishing. Coordinate Inventory/Weapons deployment when their contracts change.
 
-## Publish intentionally
+## Publish through GitHub
 
-After the merged main checks pass, a maintainer pushes a NEW version tag to the
-FeatherFramework repository. For example, if both version files now say 0.11.1,
-run these in a local terminal from the Inventory repository:
+After the merged main checks pass:
 
-```sh
-git fetch upstream
-git switch main
-git pull --ff-only upstream main
-git tag 0.11.1
-git push upstream refs/tags/0.11.1
-```
+1. Open FeatherFramework/feather-inventory, then Releases > Draft a new release.
+2. Select/create the new version tag (for example 0.12.1) and target main. The
+   tag must match both version files. Do not reuse established release tags.
+3. Enter the title and release notes; Generate release notes is optional.
+   Mark prerelease versions as prereleases when appropriate.
+4. Click Publish release. Do not manually upload build files.
+5. Wait for Inventory checks and release in Actions to finish. Confirm the release
+   contains feather-inventory.zip and feather-inventory.zip.sha256 before
+   announcing it as ready for installation.
 
-Use the actual new version, not the example. Inspect local changes before switching
-branches. Never move/reuse a tag or force-push it. A v prefix is also accepted, but
-keep the repository's established bare-version convention. Do not manually create
-the GitHub release first: the tag workflow creates it after validation.
+The published-release event runs matching-version and main-ancestry guards,
+all tests, the UI build and archive verification against the tagged commit.
+Only a successful package job allows upload to the existing release. It does
+not create another release or overwrite existing assets. PR/main checks remain
+unchanged; pushing a tag alone no longer publishes or builds a release.
 
-The tag run checks matching semantic versions, main ancestry, the full regression
-suite, UI build and archive integrity. Only then does it create the GitHub release
-and attach feather-inventory.zip and its SHA-256 checksum. Hyphenated prerelease
-versions are marked prerelease. A failed run does not automatically retry or
-overwrite an existing release; inspect the error before taking further action.
-This changes Inventory's publication process only; other resources retain their
-own release triggers.
+A published release is visible while checks/build run. If they fail, it has not
+produced an accepted installer; inspect the failed step. Do not delete or move
+established tags to bypass failures. Editing a release alone does not rerun the
+workflow. This process expects releases that allow assets to be attached after
+publication; immutable releases are not supported.
 
-Version equality checks cannot decide whether a developer intended a resource
-change to ship. Reviewers still verify the bump. A forgotten bump does not trigger
-an automatic main release, and an already-existing tag cannot publish a new one.
+These workflow changes need no resource version bump, server copy, refresh,
+database work or restart. Other resources retain their own release workflows.
 
-Installers use the resulting release archive, not the source checkout. These CI
-changes themselves require no server deployment, refresh, database work or restart.
+## One-time recovery of the empty 0.12.0 release
+
+The original 0.12.0 was published before the tag-triggered workflow tried to
+create it. Package verification passed but release creation failed; no installer
+assets were attached. Its code is already merged/live tested. Do not revert code
+or change its version to repair publication.
+
+After this workflow fix is merged and main checks pass, remove only the empty
+0.12.0 GitHub release and its tag. Recreate 0.12.0 through the release page with
+target main. This one-time correction ensures the tagged source contains the
+published-release workflow. Preserve the failed run as evidence. Confirm there
+are still no assets before removing it; stop and reassess if contents changed.
+Do not use this tag-recreation procedure for established releases in consumer use.
+
+Reviewers still check whether resource changes deserve a version bump. Installers
+use the generated archive, not a source snapshot or development test bundle.

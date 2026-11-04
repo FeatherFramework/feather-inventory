@@ -5,10 +5,12 @@
 Pull requests and pushes to main run the full Lua regression runner and runtime
 syntax checks, Python collection/equipment tests, UI contract tests, lint/build,
 and install archive verification. Tests use Lupa 2.8 (Lua 5.4), Node 22 and pnpm
-9.15.0. Pull requests and main pushes never publish. An explicit version-tag push
-reruns the checks and publishes only when the tag matches both version files and
-the tagged commit is on main. Existing releases are never overwritten. These
-checks need no running game server and do not replace native in-game acceptance.
+9.15.0. Pull requests and main pushes never publish. Use GitHub's **Publish release**
+page to publish the version already merged into main. The release workflow checks
+that the tag matches both version files, verifies main ancestry, reruns the full
+checks and attaches the installer ZIP/checksum to that release. Tag pushes alone
+do not publish. Existing assets are never overwritten. These checks need no
+running game server and do not replace native in-game acceptance.
 See [the release process](docs/release-process.md) for developer instructions.
 
 Current version: **0.12.0**. Adds item-attached saddlebag storage and the scoped Stables reviver policy. Access-backed delegation is opt-in per container;
