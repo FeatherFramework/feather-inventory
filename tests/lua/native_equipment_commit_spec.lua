@@ -1,7 +1,7 @@
 local registered={}
 local authority,session=true,true
 local invoking='feather-weapons'
-Config={DevMode=true,CharacterAmmunitionEnabled=true}
+Config={DevMode=false,CharacterAmmunitionEnabled=true}
 GetInvokingResource=function() return invoking end
 GetResourceState=function() return 'started' end
 Result={Err=function(code,message) return {ok=false,error={code=code,message=message}} end,

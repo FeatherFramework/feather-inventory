@@ -1,5 +1,5 @@
 Result={Ok=function(v) return {ok=true,value=v} end,Err=function(c) return {ok=false,error={code=c}} end}
-Config={DevMode=true,CharacterAmmunitionEnabled=true}
+Config={DevMode=false,CharacterAmmunitionEnabled=true}
 local gate,caller,session,reserved,transactions,wears,commits,lose=1,'feather-weapons',true,true,0,0,0,false
 local registered={}
 local reinforcedGate,davyGate,binocularsGate,cameraGate,advancedCameraGate,improvedGate=0,0,0,0,0,0

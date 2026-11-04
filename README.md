@@ -11,12 +11,26 @@ the tagged commit is on main. Existing releases are never overwritten. These
 checks need no running game server and do not replace native in-game acceptance.
 See [the release process](docs/release-process.md) for developer instructions.
 
-Current alpha version: **0.11.0-alpha.1**. Adds item-attached saddlebag storage and the scoped Stables reviver policy. Access-backed delegation is opt-in per container;
+Current version: **0.12.0**. Adds item-attached saddlebag storage and the scoped Stables reviver policy. Access-backed delegation is opt-in per container;
 existing legacy storage continues to work without an Access cutover. Native
 delegation requires the matching Inventory integration in feather-access and
 the exact feather-admin service policy. Weapons integration remains a controlled native alpha: utility equipment, durable
 move recovery and prepared restart checks have passed for the enrolled test
 characters. The ammunition gate remains disabled by default.
+
+## Weapons startup integration
+
+Version 0.12.0 pairs with Weapons 0.19.0 for normal native equipment operations
+with DevMode disabled. Trusted runtime startup initializes eligible fresh
+characters with a revision-zero, zero-ammunition ledger and an initialization
+receipt in one transaction. Existing balances are preserved. Existing weapon,
+ammunition, equipment or operation history requiring migration is refused rather
+than converted automatically. Ordinary read-only snapshots never initialize data.
+
+Live checks confirmed Jane/John loadout, ammunition and wear preservation, plus a
+fresh character's automatic first login and reconnect with zero balances. Deploy
+the paired resource updates together; broader migration/scale/clean-install
+acceptance remains separate. Diagnostic and fault-injection tools remain gated.
 
 ## Access-backed storage delegation (alpha)
 

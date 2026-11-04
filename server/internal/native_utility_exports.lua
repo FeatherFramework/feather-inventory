@@ -6,7 +6,7 @@ local function install(component)
         if GetInvokingResource()~='feather-weapons' or type(context)~='table' then return denied() end
         context=copy(context)
         local function current()
-            if Config.DevMode~=true or Config.CharacterAmmunitionEnabled~=true
+            if Config.CharacterAmmunitionEnabled~=true
                 or GetConvarInt('feather_native_utility',0)~=1
                 or GetResourceState('feather-weapons')~='started' then return false end
             local ok,v=pcall(function()
@@ -50,7 +50,7 @@ local function install(component)
             or type(spec.lifecycleSnapshot)~='table' or type(spec.lifecycleWear)~='table' then return denied() end
         context,spec=copy(context),copy(spec)
         local function current()
-            if Config.DevMode~=true or Config.CharacterAmmunitionEnabled~=true
+            if Config.CharacterAmmunitionEnabled~=true
                 or GetConvarInt('feather_native_utility',0)~=1
                 or (spec.lassoFamily and GetConvarInt('feather_native_lasso_reinforced',0)~=1)
                 or (spec.davyFamily and GetConvarInt('feather_native_davy_lantern',0)~=1)

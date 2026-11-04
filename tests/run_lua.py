@@ -71,6 +71,7 @@ lua.execute((root / 'tests/lua/character_ammo_runtime_snapshot_spec.lua').read_t
 # New native UI/equipment and dedicated-alpha regressions run in isolated VMs.
 for name in (
     'native_move_contention_probe_spec.lua',
+    'native_fresh_character_spec.lua',
     'native_move_contention_command_spec.lua',
     'native_move_ack_probe_spec.lua',
     'native_transaction_outcome_spec.lua',

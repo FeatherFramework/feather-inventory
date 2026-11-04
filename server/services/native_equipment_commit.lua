@@ -14,7 +14,7 @@ exports('ReadNative'..name..'Equipment',function(context,itemId)
     end
     local bound={actorSource=context.actorSource,characterId=context.characterId,sessionId=context.sessionId}
     local function current()
-        return Config.DevMode==true and Config.CharacterAmmunitionEnabled==true
+        return Config.CharacterAmmunitionEnabled==true
             and type(GetConvarInt)=='function' and GetConvarInt(convar,0)==1
             and exports['feather-core']:IsSessionCurrent(bound.actorSource,bound.sessionId,bound.characterId)==true
     end
@@ -34,7 +34,7 @@ exports('CommitNative'..name..'Equipment',function(context,spec)
     local bound={actorSource=context.actorSource,characterId=context.characterId,sessionId=context.sessionId,
         epoch=context.epoch,ticket=context.ticket}
     local function current()
-        if Config.DevMode~=true or Config.CharacterAmmunitionEnabled~=true
+        if Config.CharacterAmmunitionEnabled~=true
             or type(GetConvarInt)~='function' or GetConvarInt(convar,0)~=1
             or GetResourceState('feather-weapons')~='started' then return false end
         local ok,value=pcall(function()
@@ -72,7 +72,7 @@ exports('CommitNativeThrowableFunding',function(context,spec)
     end
     context,spec=copy(context),copy(spec)
     local function current()
-        if Config.DevMode~=true or Config.CharacterAmmunitionEnabled~=true
+        if Config.CharacterAmmunitionEnabled~=true
             or GetConvarInt('feather_native_throwable',0)~=1 or GetResourceState('feather-weapons')~='started' then return false end
         local ok,allowed=pcall(function()
             return exports['feather-core']:IsSessionCurrent(context.actorSource,context.sessionId,context.characterId)==true
@@ -93,14 +93,14 @@ exports('CommitNativeThrowableFunding',function(context,spec)
     end)
 end)
 exports('ReadNativeEquipmentTransition',function(context,itemId,limits)
-    if GetInvokingResource()~='feather-weapons' or Config.DevMode~=true
+    if GetInvokingResource()~='feather-weapons'
         or Config.CharacterAmmunitionEnabled~=true or type(context)~='table'
         or (itemId~=nil and (type(itemId)~='number' or itemId<1 or itemId%1~=0 or itemId==math.huge)) then
         return Result.Err('equipment_preflight_denied','Current native equipment reader required.')
     end
     context=copy(context); limits=copy(limits)
     local function current()
-        return Config.DevMode==true and Config.CharacterAmmunitionEnabled==true
+        return Config.CharacterAmmunitionEnabled==true
             and exports['feather-core']:IsSessionCurrent(context.actorSource,context.sessionId,context.characterId)==true
     end
     if not current() then return Result.Err('equipment_preflight_denied','Current session required.') end
@@ -175,7 +175,7 @@ exports('ReadNativeEquipmentTransition',function(context,itemId,limits)
             local read=NativeMeleeEquipment.Read(tx,context.characterId,nil,meleeCurrent,locked)
             if not read.ok then return read end
             value.meleeEquipment=read.value
-        elseif Config.DevMode==true and type(GetConvarInt)=='function' and GetConvarInt('feather_native_knife',0)==1 then
+        elseif type(GetConvarInt)=='function' and GetConvarInt('feather_native_knife',0)==1 then
             if not NativeKnifeEquipment then return Result.Err('equipment_preflight_denied','Knife reader unavailable.') end
             local read=NativeKnifeEquipment.Read(tx,context.characterId,nil,current,locked)
             if not read.ok then return read end
@@ -188,14 +188,14 @@ exports('ReadNativeEquipmentTransition',function(context,itemId,limits)
     end)
 end)
 exports('ReadNativeRepairMaterial',function(context,itemName)
-    if GetInvokingResource()~='feather-weapons' or Config.DevMode~=true
+    if GetInvokingResource()~='feather-weapons'
         or Config.CharacterAmmunitionEnabled~=true or type(context)~='table'
         or type(itemName)~='string' or #itemName<1 or #itemName>100 then
         return Result.Err('repair_preflight_denied','Scoped repair reader required.')
     end
     context=copy(context)
     local function current()
-        return Config.DevMode==true and Config.CharacterAmmunitionEnabled==true
+        return Config.CharacterAmmunitionEnabled==true
             and exports['feather-core']:IsSessionCurrent(context.actorSource,context.sessionId,context.characterId)==true
     end
     if not current() then return Result.Err('repair_preflight_denied','Current session required.') end
@@ -218,14 +218,14 @@ exports('ReadNativeRepairMaterial',function(context,itemName)
     end)
 end)
 exports('CommitNativeRepairTransition',function(context,spec)
-    if GetInvokingResource()~='feather-weapons' or Config.DevMode~=true
+    if GetInvokingResource()~='feather-weapons'
         or Config.CharacterAmmunitionEnabled~=true or type(context)~='table' or type(spec)~='table'
         or (spec.action~='repair' and spec.action~='maintenance') or context.characterId~=spec.characterId then
         return Result.Err('repair_commit_denied','Reserved native repair required.')
     end
     context,spec=copy(context),copy(spec)
     local function current()
-        if Config.DevMode~=true or Config.CharacterAmmunitionEnabled~=true
+        if Config.CharacterAmmunitionEnabled~=true
             or GetResourceState('feather-weapons')~='started' then return false end
         local called,allowed=pcall(function()
             return exports['feather-core']:IsSessionCurrent(context.actorSource,context.sessionId,context.characterId)==true
@@ -250,11 +250,11 @@ exports('CommitNativeRepairTransition',function(context,spec)
 end)
 exports('ReadNativeAttachmentMaterial',function(context,itemName)
     itemName=itemName or 'carbine_wide_sight' -- backwards-compatible console gate
-    if GetInvokingResource()~='feather-weapons' or Config.DevMode~=true or Config.CharacterAmmunitionEnabled~=true
+    if GetInvokingResource()~='feather-weapons' or Config.CharacterAmmunitionEnabled~=true
         or type(context)~='table' or type(itemName)~='string' or #itemName<1 or #itemName>100 then return Result.Err('attachment_preflight_denied','Current attachment reader required.') end
     context=copy(context)
     local function current()
-        return Config.DevMode==true and Config.CharacterAmmunitionEnabled==true
+        return Config.CharacterAmmunitionEnabled==true
             and GetConvarInt('feather_native_attachment_transactions',0)==1
             and exports['feather-core']:IsSessionCurrent(context.actorSource,context.sessionId,context.characterId)==true
     end
@@ -275,14 +275,14 @@ exports('ReadNativeAttachmentMaterial',function(context,itemName)
     end)
 end)
 exports('CommitNativeAttachmentTransition',function(context,spec)
-    if GetInvokingResource()~='feather-weapons' or Config.DevMode~=true or Config.CharacterAmmunitionEnabled~=true
+    if GetInvokingResource()~='feather-weapons' or Config.CharacterAmmunitionEnabled~=true
         or type(context)~='table' or type(spec)~='table' or context.characterId~=spec.characterId
         or (spec.action~='attachment-install' and spec.action~='attachment-remove') then
         return Result.Err('attachment_commit_denied','Reserved native attachment intent required.')
     end
     context,spec=copy(context),copy(spec)
     local function current()
-        if Config.DevMode~=true or Config.CharacterAmmunitionEnabled~=true or GetResourceState('feather-weapons')~='started'
+        if Config.CharacterAmmunitionEnabled~=true or GetResourceState('feather-weapons')~='started'
             or GetConvarInt('feather_native_attachment_transactions',0)~=1 then return false end
         local called,allowed=pcall(function()
             return exports['feather-core']:IsSessionCurrent(context.actorSource,context.sessionId,context.characterId)==true
@@ -314,7 +314,7 @@ exports('CommitNativeAttachmentTransition',function(context,spec)
     end)
 end)
 exports('CommitNativeEquipmentTransition',function(context,spec)
-    if GetInvokingResource()~='feather-weapons' or Config.DevMode~=true
+    if GetInvokingResource()~='feather-weapons'
         or Config.CharacterAmmunitionEnabled~=true or type(context)~='table' or type(spec)~='table'
         or (spec.action~='equip' and spec.action~='unequip'
             and not (spec.action=='shutdown' and type(spec.lifecycleWear)=='table'))
@@ -323,7 +323,7 @@ exports('CommitNativeEquipmentTransition',function(context,spec)
     end
     context,spec=copy(context),copy(spec)
     local function current()
-        if Config.DevMode~=true or Config.CharacterAmmunitionEnabled~=true
+        if Config.CharacterAmmunitionEnabled~=true
             or GetResourceState('feather-weapons')~='started' then return false end
         local called,allowed=pcall(function()
             return exports['feather-core']:IsSessionCurrent(context.actorSource,context.sessionId,context.characterId)==true
