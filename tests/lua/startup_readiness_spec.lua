@@ -6,24 +6,25 @@ Result = {Ok = function(value) return {ok = true, value = value} end}
 exports = function() end
 ItemsAPI = {RegisterInternalUseGuard = function() end}
 TransactionAPI, InstancesAPI, EquipmentAPI, DiagnosticsAPI = {}, {}, {}, {}
-local initialized, reachable = 0, true
+local initialized, checkoutInitialized, reachable = 0, 0, true
 DB = {awaitReady = function(timeout) assert(timeout == 60000); coroutine.yield('waiting'); return reachable end}
 GrantOnceAPI = {Start = function() initialized = initialized + 1 end}
+ShopCheckoutAPI = {Start = function() checkoutInitialized=checkoutInitialized+1 end}
 ConsumptionOnceAPI = {Start = function() end}
 InventoryMoveRecovery = {Start = function() end}
 RegisterCharacterStart, RegisterGroundInventory = function() end, function() end
 
 dofile(root .. '/server/helpers/main.lua')
 for _, result in ipairs({true, false}) do
-  reachable, initialized = result, 0
+  reachable, initialized, checkoutInitialized = result, 0, 0
   dofile(root .. '/server/services/api.lua')
   local thread = coroutine.create(function() dofile(root .. '/server/main.lua') end)
   local ok, state = coroutine.resume(thread)
-  assert(ok and state == 'waiting' and initialized == 0 and InventoryReadiness.state == 'starting')
+  assert(ok and state == 'waiting' and initialized == 0 and checkoutInitialized==0 and InventoryReadiness.state == 'starting')
   ok = coroutine.resume(thread)
   assert(ok)
-  if result then assert(initialized == 1 and InventoryReadiness.state == 'ready')
-  else assert(initialized == 0 and InventoryReadiness.state == 'failed' and InventoryReadiness.failure:find('database_unavailable')) end
+  if result then assert(initialized == 1 and checkoutInitialized==1 and InventoryReadiness.state == 'ready')
+  else assert(initialized == 0 and checkoutInitialized==0 and InventoryReadiness.state == 'failed' and InventoryReadiness.failure:find('database_unavailable')) end
 end
 local tasks, statements = {}, 0
 CreateThread = function(callback) tasks[#tasks + 1] = callback end
