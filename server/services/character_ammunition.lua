@@ -307,12 +307,19 @@ function A.ReadRuntimeEquipment(tx,characterId,locked)
     return Result.Ok(result)
 end
 -- Internal transaction reader, never exported. Caller owns the transaction and
--- session checks; this function grants nothing and never enrolls missing rows.
-function A.ReadSnapshot(tx,characterId,limits,withEquipment)
+-- session checks. Only an internal authenticated runtime callback can initialize
+-- a missing fresh ledger; ordinary snapshots remain read-only.
+function A.ReadSnapshot(tx,characterId,limits,withEquipment,initializeFresh)
     local headers=tx.query('SELECT id FROM inventory WHERE character_id = ? LIMIT 1 FOR UPDATE',{characterId})
     if not headers or not headers[1] then return err(Result.Codes.NOT_FOUND,'Character inventory missing.') end
     local rows=tx.query('SELECT revision, pools FROM feather_character_ammunition WHERE character_id = ? FOR UPDATE',{characterId})
     local row=rows and rows[1]
+    if not row and initializeFresh then
+        local prepared=A.PrepareFreshCharacter(tx,characterId,limits,initializeFresh)
+        if not prepared.ok then return prepared end
+        rows=tx.query('SELECT revision, pools FROM feather_character_ammunition WHERE character_id = ? FOR UPDATE',{characterId})
+        row=rows and rows[1]
+    end
     if not row then return err(Result.Codes.NOT_FOUND,'Character ammunition is not enrolled.') end
     local decoded,document=pcall(json.decode,row.pools)
     local accepted=decoded and pools(document,limits)
@@ -325,6 +332,54 @@ function A.ReadSnapshot(tx,characterId,limits,withEquipment)
         equipment=read.value
     end
     return Result.Ok({characterId=characterId,revision=revision,pools=accepted,equipment=equipment})
+end
+-- Trusted runtime startup only; this is not legacy ammunition migration.
+-- Header/ledger locks serialize first login with all character economic work.
+function A.PrepareFreshCharacter(tx,characterId,limits,isCurrent)
+    if type(isCurrent)~='function' or not isCurrent() then return err(Result.Codes.DENIED,'Current setup authority required.') end
+    local accepted=pools({},limits)
+    if not accepted or next(accepted)==nil then return err(Result.Codes.INVALID_INPUT,'Valid ammunition limits required.') end
+    local headers=tx.query('SELECT id FROM inventory WHERE character_id = ? LIMIT 1 FOR UPDATE',{characterId})
+    if not headers or not headers[1] then return err(Result.Codes.NOT_FOUND,'Character inventory missing.') end
+    local ledger=tx.query('SELECT revision, pools FROM feather_character_ammunition WHERE character_id = ? FOR UPDATE',{characterId})
+    if type(ledger)~='table' then return err(Result.Codes.CONFLICT,'Ammunition setup read unavailable.') end
+    if next(ledger)~=nil then return Result.Ok({created=false}) end
+    local receipts=tx.query('SELECT operation_id FROM feather_ammunition_operations WHERE character_id = ? FOR UPDATE',{characterId})
+    if type(receipts)~='table' or next(receipts)~=nil then return err(Result.Codes.CONFLICT,'Ammunition history requires recovery; automatic setup refused.') end
+    local equipment=tx.query('SELECT slot FROM character_equipment WHERE character_id=? FOR UPDATE',{characterId})
+    if type(equipment)~='table' or next(equipment)~=nil then return err(Result.Codes.CONFLICT,'Existing equipment requires migration; automatic setup refused.') end
+    local items=tx.query([[SELECT ii.metadata, i.name, i.type FROM inventory_items ii
+        LEFT JOIN items i ON i.id=ii.item_id WHERE ii.inventory_id=? FOR UPDATE]],{tonumber(headers[1].id)})
+    if type(items)~='table' then return err(Result.Codes.CONFLICT,'Inventory setup read unavailable.') end
+    for _,item in ipairs(items) do
+        local name=type(item.name)=='string' and item.name:lower() or ''
+        if name=='' then return err(Result.Codes.CONFLICT,'Invalid item identity; automatic setup refused.') end
+        if item.type=='item_weapon' or item.type=='item_ammo' or name:match('^weapon_') or name:match('^ammo_') then
+            return err(Result.Codes.CONFLICT,'Existing weapon or ammunition data requires migration; automatic setup refused.')
+        end
+        local document=item.metadata
+        if document~=nil and type(document)~='table' and type(document)~='string' and type(document)~='userdata' then
+            return err(Result.Codes.CONFLICT,'Invalid item metadata; automatic setup refused.')
+        end
+        if type(document)=='string' and document~='' then
+            local ok,value=pcall(json.decode,document)
+            if not ok or type(value)~='table' then return err(Result.Codes.CONFLICT,'Invalid item metadata; automatic setup refused.') end
+            document=value
+        end
+        if type(document)=='table' and (document.weaponDefinitionId~=nil or document.ammo~=nil
+            or document.ammunition~=nil or document.clip~=nil or document.reserve~=nil) then
+            return err(Result.Codes.CONFLICT,'Existing ammunition metadata requires migration; automatic setup refused.')
+        end
+    end
+    if not isCurrent() then return err(Result.Codes.DENIED,'Setup session changed.') end
+    local inserted=tx.query('INSERT INTO feather_character_ammunition (character_id, revision, pools) VALUES (?, 0, ?)',{characterId,json.encode(accepted)})
+    if not inserted or tonumber(inserted.affectedRows)~=1 then return err(Result.Codes.CONFLICT,'Ammunition setup insert failed.') end
+    local operation='native-character-ammo-initialization-v1'
+    local receipt=tx.query('INSERT INTO feather_ammunition_operations (character_id, operation_id, result) VALUES (?, ?, ?)',
+        {characterId,operation,json.encode({fingerprint=operation,value={characterId=characterId,revision=0,pools=accepted}})})
+    if not receipt or tonumber(receipt.affectedRows)~=1 then return err(Result.Codes.CONFLICT,'Ammunition setup receipt failed.') end
+    if not isCurrent() then return err(Result.Codes.DENIED,'Setup session changed before commit.') end
+    return Result.Ok({created=true})
 end
 local function snapshot(context,limits,invokingResource,withEquipment)
     local function snapshotEnabled(value)
@@ -347,7 +402,11 @@ local function snapshot(context,limits,invokingResource,withEquipment)
         resource='feather-weapons',reason='character_ammunition_snapshot'}
     return TransactionAPI.Transaction(safeContext,function(tx)
         if not snapshotEnabled(safeContext) or not current(safeContext) then return err(Result.Codes.DENIED,'Gate or session changed.') end
-        local result=A.ReadSnapshot(tx,safeContext.characterId,limits,withEquipment and not NativeEquipmentSnapshot)
+        local initializeFresh
+        if withEquipment and Config.CharacterAmmunitionEnabled==true then
+            initializeFresh=function() return Config.CharacterAmmunitionEnabled==true and current(safeContext) end
+        end
+        local result=A.ReadSnapshot(tx,safeContext.characterId,limits,withEquipment and not NativeEquipmentSnapshot,initializeFresh)
         if not result.ok then return result end
         local function finish(locked)
         if locked then
@@ -355,35 +414,35 @@ local function snapshot(context,limits,invokingResource,withEquipment)
             if not equipment.ok then return equipment end
             result.value.equipment=equipment.value
         end
-        if withEquipment and Config.DevMode==true and Config.CharacterAmmunitionEnabled==true
+        if withEquipment and Config.CharacterAmmunitionEnabled==true
             and type(GetConvarInt)=='function' and GetConvarInt('feather_native_utility',0)==1 then
             if not NativeUtilityEquipment then return err(Result.Codes.CONFLICT,'Utility reader not installed.') end
             local read=NativeUtilityEquipment.Read(tx,safeContext.characterId,function()
-                return Config.DevMode==true and Config.CharacterAmmunitionEnabled==true
+                return Config.CharacterAmmunitionEnabled==true
                     and GetConvarInt('feather_native_utility',0)==1 and current(safeContext)
             end,locked)
             if not read.ok then return read end
             result.value.utilityEquipment=read.value
         end
-        if withEquipment and Config.DevMode==true and Config.CharacterAmmunitionEnabled==true
+        if withEquipment and Config.CharacterAmmunitionEnabled==true
             and type(GetConvarInt)=='function' and GetConvarInt('feather_native_throwable',0)==1 then
             if not NativeThrowableEquipment or limits.ammo_tomahawk_regular~=1 then return err(Result.Codes.CONFLICT,'Throwable reader/policy not installed.') end
             local read=NativeThrowableEquipment.Read(tx,safeContext.characterId,nil,function()
-                return Config.DevMode==true and Config.CharacterAmmunitionEnabled==true
+                return Config.CharacterAmmunitionEnabled==true
                     and GetConvarInt('feather_native_throwable',0)==1 and current(safeContext)
             end,locked)
             if not read.ok then return read end
             read.value.revision=result.value.revision; read.value.pools=copy(result.value.pools)
             result.value.throwableEquipment=read.value
         end
-        local knifeEnabled=withEquipment and Config.DevMode==true and Config.CharacterAmmunitionEnabled==true
+        local knifeEnabled=withEquipment and Config.CharacterAmmunitionEnabled==true
             and type(GetConvarInt)=='function' and GetConvarInt('feather_native_knife',0)==1
-        local meleeEnabled=withEquipment and Config.DevMode==true and Config.CharacterAmmunitionEnabled==true
+        local meleeEnabled=withEquipment and Config.CharacterAmmunitionEnabled==true
             and type(GetConvarInt)=='function' and GetConvarInt('feather_native_melee',0)==1
         if meleeEnabled then
             if not NativeMeleeEquipment then return err(Result.Codes.CONFLICT,'Melee reader not installed.') end
             local read=NativeMeleeEquipment.Read(tx,safeContext.characterId,nil,function()
-                return Config.DevMode==true and Config.CharacterAmmunitionEnabled==true
+                return Config.CharacterAmmunitionEnabled==true
                     and GetConvarInt('feather_native_melee',0)==1 and current(safeContext)
             end,locked)
             if not read.ok then return read end
@@ -391,7 +450,7 @@ local function snapshot(context,limits,invokingResource,withEquipment)
         elseif knifeEnabled then
             if not NativeKnifeEquipment then return err(Result.Codes.CONFLICT,'Knife reader not installed.') end
             local read=NativeKnifeEquipment.Read(tx,safeContext.characterId,nil,function()
-                return Config.DevMode==true and Config.CharacterAmmunitionEnabled==true
+                return Config.CharacterAmmunitionEnabled==true
                     and GetConvarInt('feather_native_knife',0)==1 and current(safeContext)
             end,locked)
             if not read.ok then return read end
