@@ -461,7 +461,7 @@ end
 -- unique item is never briefly visible without its state -- the atomic
 -- creation the review asks for.
 --
-function Tx:AddQuantity(inventoryId, definitionId, quantity, metadata)
+function Tx:AddQuantity(inventoryId, definitionId, quantity, metadata, expectedDefinition)
     local wanted = math.floor(tonumber(quantity) or 0)
     if wanted < 1 then
         return Result.Err(Result.Codes.INVALID_INPUT, 'Quantity must be at least 1.')
@@ -470,8 +470,13 @@ function Tx:AddQuantity(inventoryId, definitionId, quantity, metadata)
     local denied = self:RequireAccess(inventoryId, InventoryAPI.AccessModes.INSERT)
     if denied then return denied end
 
-    local defRows = self.query(
-        'SELECT `name`, `max_stack_size`, `instance_mode`, `archived_at` FROM `items` WHERE `id`=? LIMIT 1 FOR UPDATE;', { definitionId })
+    -- Checkout needs the item policy locked, but never edits the shared catalog
+    -- row. A shared lock lets unrelated buyers read the same definition together
+    -- while catalog edits still wait. Inventory/header capacity locks remain exclusive.
+    local definitionSql = expectedDefinition
+        and 'SELECT `name`, `type`, `max_stack_size`, `instance_mode`, `archived_at` FROM `items` WHERE `id`=? LIMIT 1 LOCK IN SHARE MODE;'
+        or 'SELECT `name`, `max_stack_size`, `instance_mode`, `archived_at` FROM `items` WHERE `id`=? LIMIT 1 FOR UPDATE;'
+    local defRows = self.query(definitionSql, { definitionId })
     local def = defRows and defRows[1]
     if not def then
         return Result.Err(Result.Codes.NOT_FOUND, 'Item definition does not exist.')
@@ -479,6 +484,13 @@ function Tx:AddQuantity(inventoryId, definitionId, quantity, metadata)
     if def.archived_at ~= nil then
         return Result.Err(Result.Codes.DENIED, 'Item definition is archived and cannot create new instances.',
             { definitionId = definitionId, itemName = def.name })
+    end
+
+    if expectedDefinition and (def.name ~= expectedDefinition.name
+        or (expectedDefinition.weapon and (def.type ~= 'item_weapon' or def.instance_mode ~= 'unique'))
+        or (not expectedDefinition.weapon and (def.type == 'item_weapon' or def.type == 'weapon'
+            or def.instance_mode ~= 'stack'))) then
+        return Result.Err(Result.Codes.DENIED, 'Checkout item definition changed.')
     end
 
     local stackSize = math.max(tonumber(def.max_stack_size) or 1, 1)

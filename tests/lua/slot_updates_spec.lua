@@ -946,3 +946,224 @@ for _,operation in ipairs({'list','drag','split'}) do
   assert(rows[1].metadata=='preserved')
  end)
 end
+
+
+-- Checkout composition uses the real Inventory transaction and capacity code.
+-- SQL is modeled, so shared-lock concurrency and live CFX exports remain gates.
+dofile(root .. '/server/services/shop_checkout.lua')
+InventoryIdentity = {NormalizeCharacterId=function(value) return type(value)=='string' and value end}
+local commerce, checkoutOrder, paymentFailed, provenanceFailed, checkoutCurrent, paidCalls, provenanceCalls, definitionShared
+local baseQuery, baseTransaction = query, DB.transaction
+local documents, documentSequence = {}, 0
+local originalJson = json
+json = {
+ encode=function(value) documentSequence=documentSequence+1;local key='checkout:'..documentSequence
+    documents[key]=copy(value);return key end,
+ decode=function(key) if documents[key] then return copy(documents[key]) end;return originalJson.decode(key) end
+}
+query = function(sql,params)
+ if sql:find('FROM shop_orders',1,true) then return {copy(checkoutOrder)} end
+ if sql:find('INSERT INTO inventory_shop_checkout_receipts',1,true) then
+    assert(commerce.receipt==nil,'duplicate receipt')
+    commerce.receipt={request_fingerprint=params[2],result_json=params[3]};return {affectedRows=1}
+ end
+ if sql:find('INSERT IGNORE INTO inventory_shop_checkout_receipts',1,true) then
+    commerce.receipt=commerce.receipt or {request_fingerprint=params[2]};return {affectedRows=1}
+ end
+ if sql:find('SELECT request_fingerprint,result_json FROM inventory_shop_checkout_receipts',1,true) then
+    return commerce.receipt and {copy(commerce.receipt)} or {}
+ end
+ if sql:find('UPDATE inventory_shop_checkout_receipts SET result_json',1,true) then
+    commerce.receipt.result_json=params[1];return {affectedRows=1}
+ end
+ if sql:find('SELECT id FROM inventory WHERE character_id',1,true) then return {{id=1}} end
+ if sql:find('FROM feather_character_ammunition',1,true) then return {{revision=0}} end
+ if sql=='UPDATE checkout_test_wallets SET amount=?' then commerce.balance=commerce.balance-params[1];return {affectedRows=1} end
+ if sql=='INSERT checkout_test_provenance' then commerce.provenance=commerce.provenance+1;return {affectedRows=1} end
+ if sql:find('FROM `items` WHERE `id`',1,true) and sql:find('LOCK IN SHARE MODE',1,true) then
+    definitionShared=true
+ end
+ return baseQuery(sql,params)
+end
+DB.transaction=function(body)
+ local snapshot=copy(commerce)
+ local ok,committed=pcall(baseTransaction,body)
+ if not ok or committed~=true then commerce=snapshot end
+ if not ok then error(committed) end
+ return committed
+end
+local function checkoutSetup(weapon)
+ reset()
+ add(1,1,0,1,1)
+ definitions[1].type=weapon and 'item_weapon' or 'item_standard'
+ definitions[1].instance_mode=weapon and 'unique' or 'stack'
+ commerce={balance=1000,provenance=0};checkoutCurrent=true
+ paymentFailed=false;provenanceFailed=false;paidCalls=0;provenanceCalls=0;definitionShared=false
+ checkoutOrder={order_id='10000000-0000-4000-8000-000000000001',source_resource='feather-shops',
+  quote_id='20000000-0000-4000-8000-000000000002',buyer_account_id='30000000-0000-4000-8000-000000000003',
+  buyer_character_id='40000000-0000-4000-8000-000000000004',buyer_session_id='50000000-0000-4000-8000-000000000005',
+  shop_id='60000000-0000-4000-8000-000000000006',offer_id='70000000-0000-4000-8000-000000000007',
+  item_name='item1',definition_id=1,quantity=weapon and 1 or 3,currency_code='dollars',unit_price=25,
+  total_amount=weapon and 25 or 75,catalog_revision='catalog:one'}
+ local participants={
+  current=function() return checkoutCurrent end,
+  payment=function(q,order)
+    paidCalls=paidCalls+1
+    assert(#rows==1+order.quantity,'delivery must precede treasury locks')
+    q('UPDATE checkout_test_wallets SET amount=?',{order.total_amount})
+    if paymentFailed then return Result.Err('insufficient_funds','Insufficient funds.') end
+    return {ok=true,value={transactionId='80000000-0000-4000-8000-000000000008',amount=order.total_amount,currency=order.currency_code},meta={pendingCommit=true}}
+  end,
+  provenance=function(q)
+    provenanceCalls=provenanceCalls+1;q('INSERT checkout_test_provenance',{})
+    if provenanceFailed then return Result.Err('provenance_failed','Failed.') end
+    return Result.Ok(true)
+  end
+ }
+ if weapon then participants.weapon={itemName='item1',requestId=checkoutOrder.order_id,
+    metadata={serialNumber='canonical-serial',condition=100}} end
+ return participants
+end
+local function checkout(participants,order)
+ return ShopCheckoutAPI.Execute({resource='feather-shops'},order or copy(checkoutOrder),participants)
+end
+
+test('checkout item delivery and payment commit together with shared catalog lock',function()
+ local participants=checkoutSetup()
+ local result=checkout(participants)
+ assert(result.ok, result.error and result.error.message or result.message or result.code);assert(result.value.state=='fulfilled' and #result.value.itemInstanceIds==3)
+ assert(commerce.balance==925 and #rows==4 and paidCalls==1 and #events==3 and definitionShared)
+ assert(commerce.receipt.result_json)
+end)
+test('checkout receipt replay does not recreate transferred items or charge again',function()
+ local participants=checkoutSetup();local result=checkout(participants);assert(result.ok)
+ for i=2,#rows do rows[i].inventory_id=2 end
+ local countEvents=#events
+ result=checkout(participants)
+ assert(result.ok and result.value.replayed and paidCalls==1 and #rows==4 and #events==countEvents)
+ assert(commerce.balance==925)
+end)
+test('checkout capacity rejection never reaches payment',function()
+ local participants=checkoutSetup();policies[1].max_weight=1
+ assert(not checkout(participants).ok)
+ assert(#rows==1 and commerce.balance==1000 and paidCalls==0 and commerce.receipt==nil and #events==0)
+end)
+test('checkout payment failure rolls back staged items and receipt',function()
+ local participants=checkoutSetup();paymentFailed=true
+ assert(not checkout(participants).ok)
+ assert(#rows==1 and commerce.balance==1000 and commerce.receipt==nil and #events==0)
+end)
+test('checkout weapon creation and provenance roll back together on payment failure',function()
+ local participants=checkoutSetup(true);paymentFailed=true
+ assert(not checkout(participants).ok)
+ assert(#rows==1 and commerce.balance==1000 and commerce.provenance==0 and #events==0)
+ assert(provenanceCalls==1 and paidCalls==1)
+end)
+test('checkout provenance failure never reaches payment',function()
+ local participants=checkoutSetup(true);provenanceFailed=true
+ assert(not checkout(participants).ok)
+ assert(#rows==1 and commerce.provenance==0 and paidCalls==0 and commerce.receipt==nil)
+end)
+test('checkout canonical weapon commits its complete metadata and provenance',function()
+ local participants=checkoutSetup(true);local result=checkout(participants)
+ assert(result.ok and #result.value.itemInstanceIds==1 and commerce.provenance==1 and commerce.balance==975)
+ assert(documents[rows[2].metadata].serialNumber=='canonical-serial' and definitionShared)
+ assert(checkout(participants).value.replayed and provenanceCalls==1 and paidCalls==1)
+end)
+test('checkout catalog substitution cannot grant a weapon through ordinary delivery',function()
+ for _,kind in ipairs({'item_weapon','weapon'}) do
+    local participants=checkoutSetup();definitions[1].type=kind
+    assert(not checkout(participants).ok and paidCalls==0 and #rows==1 and commerce.receipt==nil)
+ end
+end)
+test('checkout quote or buyer loss after staged payment rolls back every write',function()
+ local participants=checkoutSetup();local payment=participants.payment
+ participants.payment=function(...) local value=payment(...);checkoutCurrent=false;return value end
+ assert(not checkout(participants).ok)
+ assert(commerce.balance==1000 and #rows==1 and #events==0 and commerce.receipt==nil)
+end)
+test('checkout does not accept a separately committed public transfer result',function()
+ local participants=checkoutSetup();local payment=participants.payment
+ participants.payment=function(...) local value=payment(...);value.meta=nil;return value end
+ assert(not checkout(participants).ok and commerce.balance==1000 and #rows==1 and #events==0)
+end)
+test('checkout rejects a staged acknowledgement for a different payment amount',function()
+ local participants=checkoutSetup();local payment=participants.payment
+ participants.payment=function(...) local result=payment(...);result.value.amount=1;return result end
+ assert(not checkout(participants).ok and commerce.balance==1000 and #rows==1 and #events==0)
+end)
+test('checkout changed order and corrupt receipt refuse replacement',function()
+ local participants=checkoutSetup();local changed=copy(checkoutOrder);changed.total_amount=100;changed.unit_price=100/3
+ assert(not checkout(participants,changed).ok and paidCalls==0)
+ assert(checkout(participants).ok);commerce.receipt.result_json='corrupt'
+ assert(not checkout(participants).ok and paidCalls==1 and #rows==4)
+end)
+test('checkout lost commit acknowledgement preserves receipt and never retries mutation',function()
+ local participants=checkoutSetup();local owner=DB.transaction;local calls=0
+ DB.transaction=function(body)
+    calls=calls+1;assert(owner(body)==true)
+    error({code='BRIDGE_TIMEOUT',outcome='unknown'})
+ end
+ local result=checkout(participants)
+ DB.transaction=owner
+ assert(not result.ok and result.error.code=='transaction_outcome_unknown' and calls==1)
+ assert(#rows==4 and commerce.balance==925 and commerce.receipt.result_json and #events==0)
+ -- An explicit independent readback can recover the receipt. This does not
+ -- implement the still-required durable pending-attempt fence/public retry flow.
+ result=checkout(participants)
+ assert(result.ok and result.value.replayed and paidCalls==1 and #rows==4 and commerce.balance==925)
+end)
+test('checkout recovery fences a late original before any money or item writes',function()
+ local participants=checkoutSetup()
+ local resolved=ShopCheckoutAPI.Resolve(copy(checkoutOrder))
+ assert(not resolved.ok and resolved.error.code=='checkout_not_committed' and resolved.error.details.safeToClear)
+ assert(commerce.receipt.result_json and paidCalls==0 and #rows==1 and commerce.balance==1000)
+ local original=checkout(participants)
+ assert(not original.ok and original.error.code=='checkout_not_committed' and paidCalls==0 and #rows==1)
+ local repeated=ShopCheckoutAPI.Resolve(copy(checkoutOrder))
+ assert(not repeated.ok and repeated.error.details.safeToClear and paidCalls==0)
+end)
+test('checkout recovery reads committed receipt without invoking participants',function()
+ local participants=checkoutSetup();local committed=checkout(participants);assert(committed.ok)
+ local resolved=ShopCheckoutAPI.Resolve(copy(checkoutOrder))
+ assert(resolved.ok and resolved.value.replayed and resolved.value.transactionId==committed.value.transactionId)
+ assert(paidCalls==1 and #rows==4 and commerce.balance==925)
+end)
+test('checkout recovery after lost commit acknowledgement independently finds committed result',function()
+ local participants=checkoutSetup();local owner=DB.transaction
+ DB.transaction=function(body) assert(owner(body));error({outcome='unknown'}) end
+ assert(not checkout(participants).ok)
+ DB.transaction=owner
+ local resolved=ShopCheckoutAPI.Resolve(copy(checkoutOrder))
+ assert(resolved.ok and resolved.value.state=='fulfilled' and paidCalls==1 and commerce.balance==925)
+end)
+test('checkout lost fence acknowledgement never announces an unconfirmed rollback',function()
+ local participants=checkoutSetup();local owner=DB.transaction
+ DB.transaction=function(body) assert(owner(body));error({outcome='unknown'}) end
+ local resolved=ShopCheckoutAPI.Resolve(copy(checkoutOrder))
+ DB.transaction=owner
+ assert(not resolved.ok and resolved.error.code=='transaction_outcome_unknown')
+ assert(not resolved.error.details.safeToClear and paidCalls==0 and commerce.balance==1000)
+ assert(ShopCheckoutAPI.Resolve(copy(checkoutOrder)).error.details.safeToClear)
+ assert(not checkout(participants).ok and paidCalls==0)
+end)
+test('checkout readback refuses a changed order without inventing a terminal receipt',function()
+ checkoutSetup();local changed=copy(checkoutOrder);changed.quantity=2
+ assert(not ShopCheckoutAPI.Resolve(changed).ok and commerce.receipt==nil and paidCalls==0)
+end)
+test('checkout corrupt committed identities cannot authorize a replacement or safe clear',function()
+ local participants=checkoutSetup();assert(checkout(participants).ok)
+ local value=documents[commerce.receipt.result_json];value.itemInstanceIds[2]=value.itemInstanceIds[1]
+ local resolved=ShopCheckoutAPI.Resolve(copy(checkoutOrder))
+ assert(not resolved.ok and resolved.error.code=='shop_checkout_refused' and not resolved.error.details.safeToClear)
+ assert(not checkout(participants).ok and paidCalls==1 and #rows==4)
+end)
+if arg and arg[2] then
+ local composition=assert(loadfile(arg[2]..'/tests/atomic_composition_spec.lua'))()
+ ShopCheckoutCompositionCases=composition({setup=checkoutSetup,order=function() return checkoutOrder end,
+   setOrder=function(value) checkoutOrder=value end,definitions=function() return definitions end,
+   commerce=function() return commerce end,rows=function() return rows end,
+   query=query,setQuery=function(value) query=value end,copy=copy,test=test,owner=DB.transaction,
+   events=function() return events end})
+end
+query=baseQuery;DB.transaction=baseTransaction;json=originalJson
