@@ -11,6 +11,10 @@ export const equipmentDefaults = {
   "ui_equipment_attachment_hint": "Installing an attachment uses one matching item. Removal returns it to your inventory.",
   "ui_equipment_repair_hint": "Cleaning uses the listed material. Permanent wear cannot be repaired away.",
   "ui_equipment_equip": "Equip",
+  "ui_equipment_replace": "Replace",
+  "ui_equipment_swap": "Swap hands",
+  "ui_equipment_promote_hint": "Your Offhand weapon will move to Primary.",
+  "ui_equipment_primary_needed": "Offhand needs a sidearm in Primary.",
   "ui_equipment_unequip": "Unequip",
   "ui_equipment_install": "Install",
   "ui_equipment_remove": "Remove",
@@ -26,7 +30,7 @@ export const equipmentDefaults = {
   "ui_equipment_utility": "Utility",
   "ui_equipment_utility_number": "Utility {n}",
   "ui_equipment_checking": "Checking equipment…",
-  "ui_equipment_none": "No supported equipment action for this weapon.",
+  "ui_equipment_none": "No changes are available for this item right now.",
   "ui_equipment_unavailable": "Equipment controls unavailable.",
   "ui_equipment_updated": "Equipment updated. Reopen Equipment for another action.",
   "ui_equipment_uncertain": "Equipment result uncertain. Do not retry; check Weapons status."
@@ -48,8 +52,15 @@ export function equipmentSlotLabel(slot, t) {
   const entry = slots[slot.slot];
   return entry ? t('ui_equipment_' + entry[0], ...(entry.length > 1 ? [entry[1]] : [])) : slot.label;
 }
-export function equipmentOptionLabel(option, t) {
+export function equipmentOptionLabel(option, t, targeted = false) {
+  if (!option.kind && option.action === 'move') return t('ui_equipment_swap');
+  if (!option.kind && option.action === 'unequip_primary') return equipmentSlotLabel(option, t) + ' — ' + t('ui_equipment_unequip');
   if (!option.kind && ['equip', 'unequip'].includes(option.action) && slots[option.slot]) {
+    if (targeted) {
+      const action = option.replacing ? t('ui_equipment_replace') : t('ui_equipment_' + option.action);
+      return equipmentSlotLabel(option, t) + ' — ' + action
+        + (option.replacing && option.occupantLabel ? ' ' + option.occupantLabel : '');
+    }
     return t('ui_equipment_' + option.action) + ' — ' + equipmentSlotLabel(option, t);
   }
   if (option.kind === 'repair') return t('ui_equipment_repair') + (option.label?.includes(' — ') ? ' — ' + option.label.split(' — ').slice(1).join(' — ') : '');

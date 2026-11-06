@@ -8,19 +8,29 @@ function ConditionalEquipment.Apply(tx,spec,current,guardContext)
     if type(spec)~='table' or type(current)~='function' or current()~=true
         or not InventoryIdentity.NormalizeCharacterId(spec.characterId)
         or type(spec.slot)~='string' or #spec.slot>50 or not spec.slot:match('^[a-z][a-z0-9_]*$')
-        or type(spec.expected)~='table' or (spec.action~='equip' and spec.action~='unequip') then
+        or type(spec.expected)~='table' or (spec.action~='equip' and spec.action~='unequip'
+            and spec.action~='move' and spec.action~='unequip_primary') then
         return denied('Current identity and explicit conditional equipment intent required.')
     end
-    if spec.action=='equip' and (not integer(spec.itemId) or not revision(spec.itemRevision)) then
+    if (spec.action=='equip' or spec.action=='move') and (not integer(spec.itemId) or not revision(spec.itemRevision)) then
         return denied('Expected owned item revision required.')
     end
-    if spec.action=='unequip' and (spec.itemId~=nil or spec.itemRevision~=nil) then return denied('Unequip cannot replace an item.') end
+    if (spec.action=='unequip' or spec.action=='unequip_primary') and (spec.itemId~=nil or spec.itemRevision~=nil) then return denied('Unequip cannot replace an item.') end
+    if spec.action=='move' then
+        local sidearms={weapon=true,weapon_offhand=true}
+        local origin=spec.expected[spec.fromSlot]
+        if not sidearms[spec.fromSlot] or not sidearms[spec.slot] or spec.fromSlot==spec.slot
+            or type(origin)~='table' or origin.itemId~=spec.itemId or origin.revision~=spec.itemRevision
+            or type(spec.expected[spec.slot])~='table' then return denied('Two equipped sidearms required to swap hands.') end
+    elseif spec.fromSlot~=nil then return denied('Unexpected source slot.') end
+    if spec.action=='unequip_primary' and (spec.slot~='weapon'
+        or not spec.expected.weapon or not spec.expected.weapon_offhand) then return denied('Two equipped sidearms required.') end
     for slot,item in pairs(spec.expected) do
         if type(slot)~='string' or #slot>50 or type(item)~='table'
             or not integer(item.itemId) or not revision(item.revision) then return denied('Invalid expected equipment snapshot.') end
     end
     local safe={characterId=spec.characterId,slot=spec.slot,action=spec.action,itemId=spec.itemId,
-        itemRevision=spec.itemRevision,expected={}}
+        itemRevision=spec.itemRevision,fromSlot=spec.fromSlot,expected={}}
     for slot,item in pairs(spec.expected) do safe.expected[slot]={itemId=item.itemId,revision=item.revision} end
     spec=safe -- caller data must not change while Inventory SQL yields
     local header=tx.query('SELECT id FROM inventory WHERE character_id=? LIMIT 1 FOR UPDATE',{spec.characterId})
@@ -42,7 +52,7 @@ function ConditionalEquipment.Apply(tx,spec,current,guardContext)
         end
     end
     for slot in pairs(spec.expected) do if not seen[slot] then return denied('Equipment changed before commit.') end end
-    if spec.action=='equip' then
+    if spec.action=='equip' or spec.action=='move' then
         local owned=tx.query([[SELECT ii.id, ii.row_revision FROM inventory_items ii
             INNER JOIN inventory inv ON inv.id=ii.inventory_id
             WHERE ii.id=? AND inv.character_id=? FOR UPDATE]],{spec.itemId,spec.characterId})
@@ -67,7 +77,21 @@ function ConditionalEquipment.Apply(tx,spec,current,guardContext)
         if allowed~=true then return denied(reason or 'Equipment is still held by its native owner.') end
     end
     if current()~=true then return denied('Session/release authority changed during validation.') end
-    tx.query('DELETE FROM character_equipment WHERE character_id=? AND slot=?',{spec.characterId,spec.slot})
+    if spec.action=='move' or spec.action=='unequip_primary' then
+        tx.query('DELETE FROM character_equipment WHERE character_id=? AND slot IN (?,?)',
+            {spec.characterId,'weapon','weapon_offhand'})
+        if spec.action=='move' then
+            tx.query('INSERT INTO character_equipment (character_id,slot,inventory_items_id) VALUES (?,?,?),(?,?,?)',
+                {spec.characterId,spec.slot,spec.itemId,spec.characterId,spec.fromSlot,spec.expected[spec.slot].itemId})
+        else
+            -- Retire only the selected Primary; its companion keeps its exact
+            -- instance and metadata, with one assignment promoted to Primary.
+            tx.query('INSERT INTO character_equipment (character_id,slot,inventory_items_id) VALUES (?,?,?)',
+                {spec.characterId,'weapon',spec.expected.weapon_offhand.itemId})
+        end
+    else
+        tx.query('DELETE FROM character_equipment WHERE character_id=? AND slot=?',{spec.characterId,spec.slot})
+    end
     if spec.action=='equip' then
         tx.query('INSERT INTO character_equipment (character_id,slot,inventory_items_id) VALUES (?,?,?)',
             {spec.characterId,spec.slot,spec.itemId})

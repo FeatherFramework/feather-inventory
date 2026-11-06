@@ -131,7 +131,8 @@ async function onContextEquipment() {
       equipmentSlots.value = Array.isArray(data.value.slots) ? data.value.slots : [];
       equipmentScope.value = data.value.identity;
       equipmentItem.value = item.id;
-      equipmentMessage.value = data.value.options.length ? '' : 'ui_equipment_none';
+      equipmentMessage.value = ['ui_equipment_primary_needed', 'ui_equipment_promote_hint'].includes(data.value.explanation)
+        ? data.value.explanation : data.value.options.length ? '' : 'ui_equipment_none';
     } else equipmentMessage.value = 'ui_equipment_unavailable';
   } catch { if (equipmentLifetime.current(ticket)) equipmentMessage.value = 'ui_equipment_unavailable'; }
   finally { equipmentBusy.value = false; }
@@ -147,10 +148,14 @@ async function changeEquipment(option) {
       itemId: equipmentItem.value, action: option.action, slot: option.slot, scope: equipmentScope.value, attachmentId: option.attachmentId,
     });
     if (!equipmentLifetime.current(ticket)) return;
+    if (data?.ok) {
+      closeEquipmentPanel();
+      return;
+    }
     equipmentPanel.value = []; // never leave old-epoch buttons actionable
     equipmentSlots.value = [];
     equipmentScope.value = null;
-    equipmentMessage.value = data?.ok ? 'ui_equipment_updated' : 'ui_equipment_uncertain';
+    equipmentMessage.value = 'ui_equipment_uncertain';
   } catch {
     if (equipmentLifetime.current(ticket)) {
       equipmentPanel.value = [];

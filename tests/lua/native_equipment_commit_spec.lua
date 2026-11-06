@@ -69,3 +69,36 @@ assert(not commit(context,spec).ok and writes==oldWrites+2,'failed equipment wri
 spec.action='shutdown'; oldWrites=writes
 assert(commit(context,spec).ok and writes==oldWrites+1,'orderly stop commits wear without equipment write')
 print('atomic lifecycle wear export PASS (same transaction wear/equipment rollback and shutdown metadata-only commit)')
+spec.action='move'; spec.fromSlot='weapon'; spec.slot='weapon_offhand'
+spec.expected={weapon={itemId=112,revision=1},weapon_offhand={itemId=231,revision=4}}
+local detach=false
+NativeLifecycleWear.Apply=function(_,intent,current)
+ assert(current()); writes=writes+1
+ local working={}; for k,v in pairs(intent) do working[k]=v end
+ working.expected={weapon={itemId=112,revision=2},weapon_offhand={itemId=231,revision=5}}
+ if detach then working.expected.weapon=nil end
+ return Result.Ok(working)
+end
+ConditionalEquipment.Apply=function(_,intent,current)
+ assert(current() and intent.itemRevision==2 and intent.expected.weapon_offhand.revision==5)
+ writes=writes+1; return Result.Ok({})
+end
+oldWrites=writes
+assert(commit(context,spec).ok and writes==oldWrites+2 and spec.itemRevision==1,'swap rebases final wear revision without changing signed caller intent')
+detach=true; oldWrites=writes
+assert(not commit(context,spec).ok and writes==oldWrites,'final wear detachment rolls back rather than swapping a promoted replacement')
+print('sidearm swap wear composition PASS (exact instance rebasing and rollback on broken assignment)')
+spec.action='unequip_primary'; spec.slot='weapon'; spec.fromSlot=nil; spec.itemId=nil; spec.itemRevision=nil
+exports['feather-weapons'].ValidateNativeEquipmentCommit=function(_,ctx,intent)
+ return authority and ctx.ticket=='ticket' and intent.action=='unequip_primary'
+end
+ConditionalEquipment.Apply=function(_,intent,current)
+ assert(current() and intent.action=='unequip_primary' and not intent.itemId
+  and intent.expected.weapon.revision==2 and intent.expected.weapon_offhand.revision==5)
+ writes=writes+1; return Result.Ok({})
+end
+detach=false; oldWrites=writes
+assert(commit(context,spec).ok and writes==oldWrites+2,'Primary removal and promotion use updated wear revisions in same transaction')
+detach=true; oldWrites=writes
+assert(not commit(context,spec).ok and writes==oldWrites,'broken assignment refuses promotion and rolls back wear')
+print('Primary removal wear composition PASS (atomic final wear/promotion and no implicit broken replacement)')
