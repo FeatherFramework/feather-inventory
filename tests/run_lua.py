@@ -19,6 +19,10 @@ for file in files:
     lua.execute('assert(load(...))', file.read_text(encoding='utf-8-sig'), '@' + str(file))
 print(f'PASS Lua 5.4 syntax ({len(files)} files)', flush=True)
 
+defaults_lua = LuaRuntime(unpack_returned_tuples=True)
+defaults_lua.globals().arg = defaults_lua.table_from({1: root.as_posix()})
+defaults_lua.execute((root / 'tests/lua/shipped_defaults_spec.lua').read_text(encoding='utf-8'))
+
 commands_lua = LuaRuntime(unpack_returned_tuples=True)
 commands_lua.globals().arg = commands_lua.table_from({1: root.as_posix()})
 commands_lua.execute((root / 'tests/lua/add_items_metadata_spec.lua').read_text(encoding='utf-8'))

@@ -17,6 +17,10 @@ assert.equal(equipmentSlotLabel({ slot: 'weapon_utility_octonary' }, jane.t), 'E
 assert.equal(equipmentOptionLabel({action:'equip',slot:'weapon_utility_octonary'}, john.t), 'Equiper — Utilitaire 8');
 assert.equal(equipmentOptionLabel({action:'equip',slot:'weapon_utility_senary'}, john.t), 'Equiper — Utilitaire 6');
 const before = JSON.stringify(option);
+john.setStrings({ui_equipment_swap:'Changer de main',ui_equipment_primary:'Principale',ui_equipment_unequip:'Ranger'});
+assert.equal(equipmentOptionLabel({action:'move',slot:'weapon'}, john.t, true), 'Changer de main');
+assert.equal(equipmentOptionLabel({action:'unequip_primary',slot:'weapon'}, john.t, true), 'Principale — Ranger');
+assert.equal(equipmentOptionLabel({action:'move',slot:'weapon'}, jane.t, true), 'Swap hands');
 john.setStrings({ ui_equipment_utility_number: 'New {n}', ui_equipment_equip: 'New equip' });
 assert.equal(equipmentOptionLabel(option, john.t), 'New equip — New 5');
 assert.equal(JSON.stringify(option), before, 'locale updates never mutate the authoritative intent');
@@ -36,3 +40,9 @@ const handler = app.match(/if \(data.type === 'localeStrings'\) \{([\s\S]*?)\n  
 assert.ok(handler.includes('setStrings(data.strings)'));
 assert.ok(!handler.includes('closeAmmoPanel') && !handler.includes('equipmentScope'), 'text refresh preserves in-flight scope');
 console.log('Equipment localization PASS: separate recipients, live text update, English fallback and unchanged intents');
+
+assert.equal(equipmentOptionLabel({action:'equip',slot:'weapon',replacing:true,occupantLabel:'Cattleman Revolver'}, jane.t, true), 'Primary — Replace Cattleman Revolver');
+assert.equal(equipmentOptionLabel({action:'equip',slot:'weapon_offhand'}, jane.t, true), 'Offhand — Equipar');
+const panel = fs.readFileSync(new URL('../src/components/EquipmentPanel.vue', import.meta.url), 'utf8');
+assert.ok(!panel.includes('v-for="slot in slots"'), 'unrelated occupancy grid is not rendered');
+assert.ok(!panel.includes("t('ui_equipment_hint')"), 'generic lasso guidance is not rendered');

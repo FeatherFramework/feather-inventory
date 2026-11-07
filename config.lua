@@ -1,11 +1,7 @@
 Config = {}
 
--- (INV-05) Was `true`, shipping `/AddItems` and friends open to every
--- player by default -- free item generation for the entire economy out of
--- the box. Keep enabled during pre-release development; switch this to false
--- for the first production release. The commands below are also ACE-restricted
--- so enabling it for testing does not hand them to every player.
-Config.DevMode = true
+-- Development commands are opt-in and remain ACE-restricted.
+Config.DevMode = false
 
 -- Durable ordinary-item fulfillment; callers supply a stable operation ID.
 Config.TrustedIdempotentGrantCallers = {
@@ -63,8 +59,9 @@ Config.TrustedConsumptionCallers = {
     },
 }
 
--- Migration gate: never enable until Weapons enrollment/runtime is implemented.
-Config.CharacterAmmunitionEnabled = false
+-- Canonical character ammunition is required by the native-only Weapons host.
+-- Enabling integration does not grant items or ammunition.
+Config.CharacterAmmunitionEnabled = true
 
 -- Gates verbose server-console logging (currently the access/ground
 -- resolution tracing added while building the robbery/ACL system, plus

@@ -316,7 +316,7 @@ end)
 exports('CommitNativeEquipmentTransition',function(context,spec)
     if GetInvokingResource()~='feather-weapons'
         or Config.CharacterAmmunitionEnabled~=true or type(context)~='table' or type(spec)~='table'
-        or (spec.action~='equip' and spec.action~='unequip'
+        or (spec.action~='equip' and spec.action~='unequip' and spec.action~='move' and spec.action~='unequip_primary'
             and not (spec.action=='shutdown' and type(spec.lifecycleWear)=='table'))
         or context.characterId~=spec.characterId then
         return Result.Err('equipment_commit_denied','Reserved native equipment intent required.')
@@ -341,6 +341,20 @@ exports('CommitNativeEquipmentTransition',function(context,spec)
             local observed=NativeLifecycleWear.Apply(tx,spec,current)
             if not observed.ok then return observed end
             working=observed.value
+        end
+        if spec.action=='move' or spec.action=='unequip_primary' then
+            -- Final wear can advance the selected instance revision. Bind to
+            -- that same instance; never swap a replacement promoted by wear.
+            for _,slot in ipairs({'weapon','weapon_offhand'}) do
+                if not working.expected[slot] or not spec.expected[slot]
+                    or working.expected[slot].itemId~=spec.expected[slot].itemId then
+                    return Result.Err('equipment_commit_denied','Sidearm assignments changed during final wear.')
+                end
+            end
+            if spec.action=='move' then
+                working=copy(working)
+                working.itemRevision=working.expected[working.fromSlot].revision
+            end
         end
         if spec.action=='shutdown' then
             if not current() then return Result.Err('equipment_commit_denied','Final wear authority changed.') end
