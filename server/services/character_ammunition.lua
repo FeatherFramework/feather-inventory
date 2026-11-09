@@ -251,7 +251,9 @@ local function mutate(context,spec,invokingResource,apply,reason)
         end)
         if not result.ok then return result end
         if spec.finalWear~=nil then
-            if operation~='observe' or Config.DevMode~=true or type(spec.finalWear)~='table'
+            -- Ordinary death persistence uses the same reserved runtime/session
+            -- authority above; development mode is only for diagnostic tooling.
+            if operation~='observe' or type(spec.finalWear)~='table'
                 or spec.finalWear.characterId~=safeContext.characterId or type(NativeLifecycleWear)~='table' then
                 return err(Result.Codes.DENIED,'Reserved final wear observation required.')
             end

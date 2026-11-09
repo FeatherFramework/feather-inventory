@@ -1,10 +1,10 @@
 local registered={}
-Config={DevMode=true,CharacterAmmunitionEnabled=true}
+Config={DevMode=false,CharacterAmmunitionEnabled=true}
 Result={Ok=function(v) return {ok=true,value=v} end,Err=function(c,m) return {ok=false,error={code=c,message=m}} end}
-local caller,valid,feature='feather-weapons',true,1
+local caller,valid,feature='feather-weapons',true,nil
 GetInvokingResource=function() return caller end
 GetResourceState=function() return 'started' end
-GetConvarInt=function() return feature end
+GetConvarInt=function(_,default) if feature==nil then return default end; return feature end
 local state={wear=0,paid=0}
 local function copy(v) if type(v)~='table' then return v end; local out={}; for k,x in pairs(v) do out[k]=copy(x) end; return out end
 exports=setmetatable({['feather-core']={IsSessionCurrent=function() return true end},
@@ -45,7 +45,7 @@ local spec={characterId='Jane',action='attachment-install',itemId=135,itemRevisi
  lifecycleWear={{itemId=135,itemRevision=2,before=before,after=wear}}}
 local commit=registered.CommitNativeAttachmentTransition
 caller='foreign'; assert(not commit(context,spec).ok and state.paid==0)
-caller='feather-weapons'; feature=0; assert(not commit(context,spec).ok); feature=1
+caller='feather-weapons'; feature=0; assert(not commit(context,spec).ok); feature=nil
 valid=false; assert(not commit(context,spec).ok); valid=true
 assert(commit(context,spec).ok and state.wear==1 and state.paid==1)
 assert(spec.itemRevision==2 and spec.before.maintenance.dirt==0,'caller reservation is private/unchanged')
