@@ -89,7 +89,7 @@ local documents,sequence={},0
 json={encode=function(value) sequence=sequence+1; documents[tostring(sequence)]=copy(value); return tostring(sequence) end,
  decode=function(value) return copy(documents[value]) end}
 Result.Codes={DENIED='denied',CONFLICT='conflict',INVALID_INPUT='invalid',NOT_FOUND='missing'}
-Config={DevMode=true,CharacterAmmunitionEnabled=true}
+Config={DevMode=false,CharacterAmmunitionEnabled=true}
 exports={['feather-core']={IsSessionCurrent=function() return active end},
  ['feather-weapons']={ValidateCharacterAmmoRuntimeOperation=function() return active end}}
 TransactionAPI={Transaction=function(_,body)

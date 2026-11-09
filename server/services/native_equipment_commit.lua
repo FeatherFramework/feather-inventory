@@ -255,7 +255,7 @@ exports('ReadNativeAttachmentMaterial',function(context,itemName)
     context=copy(context)
     local function current()
         return Config.CharacterAmmunitionEnabled==true
-            and GetConvarInt('feather_native_attachment_transactions',0)==1
+            and GetConvarInt('feather_native_attachment_transactions',1)==1
             and exports['feather-core']:IsSessionCurrent(context.actorSource,context.sessionId,context.characterId)==true
     end
     if not current() then return Result.Err('attachment_preflight_denied','Current attachment scope required.') end
@@ -283,7 +283,7 @@ exports('CommitNativeAttachmentTransition',function(context,spec)
     context,spec=copy(context),copy(spec)
     local function current()
         if Config.CharacterAmmunitionEnabled~=true or GetResourceState('feather-weapons')~='started'
-            or GetConvarInt('feather_native_attachment_transactions',0)~=1 then return false end
+            or GetConvarInt('feather_native_attachment_transactions',1)~=1 then return false end
         local called,allowed=pcall(function()
             return exports['feather-core']:IsSessionCurrent(context.actorSource,context.sessionId,context.characterId)==true
                 and exports['feather-weapons']:ValidateNativeEquipmentCommit(context,spec)==true

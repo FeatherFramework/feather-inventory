@@ -3,7 +3,7 @@ local docs,n={},0
 json={encode=function(v) n=n+1; docs[tostring(n)]=copy(v); return tostring(n) end,decode=function(v) return copy(docs[v]) end}
 Result={Codes={DENIED='denied',INVALID_INPUT='input',CONFLICT='conflict',NOT_FOUND='missing'},
  Ok=function(v) return {ok=true,value=v} end,Err=function(c) return {ok=false,error={code=c}} end}
-Config={DevMode=true,CharacterAmmunitionEnabled=true}
+Config={DevMode=false,CharacterAmmunitionEnabled=true}
 RegisterCommand=function() end
 InventoryIdentity={NormalizeCharacterId=function(id) return id end}
 local authority,failWear,expire=true,false,false
@@ -30,6 +30,15 @@ dofile('server/services/character_ammunition.lua')
 local context={actorSource=1,characterId='Jane',sessionId='s',runtimeEpoch='e',runtimeTicket='ticket'}
 local spec={expectedRevision=25,pools={ammo=0},limits={ammo=10},finalWear={characterId='Jane',lifecycleWear={}}}
 local A=CharacterAmmunitionAPI
+assert(not A.Observe(context,spec,'foreign-resource').ok and database.revision==25 and database.itemRevision==4,
+ 'production death wear still requires trusted Weapons caller')
+authority=false
+assert(not A.Observe(context,spec,'feather-weapons').ok and database.revision==25 and database.itemRevision==4,
+ 'production death wear still requires reserved runtime authority')
+authority=true
+local forged=copy(spec); forged.finalWear.characterId='other'
+assert(not A.Observe(context,forged,'feather-weapons').ok and database.revision==25 and database.itemRevision==4,
+ 'foreign final wear rolls back preceding ammo observation')
 failWear=true; assert(not A.Observe(context,spec,'feather-weapons').ok and database.revision==25 and database.itemRevision==4,'wear failure rolls back preceding ammo reduction')
 failWear=false; expire=true; assert(not A.Observe(context,spec,'feather-weapons').ok and database.revision==25 and database.itemRevision==4,'authority loss rolls back both')
 expire=false; authority=true; order={}
@@ -38,4 +47,4 @@ assert(result.ok and database.revision==26 and database.itemRevision==5 and orde
 spec.expectedRevision=26; spec.pools.ammo=0; order={}
 result=A.Observe(context,spec,'feather-weapons')
 assert(result.ok and database.revision==26 and database.itemRevision==6 and order[1]=='wear','zero belt does not churn ledger')
-print('Death ammo/wear atomic composition PASS (one transaction, wear failure and authority loss roll back ammo, unchanged ledger persists wear only)')
+print('Death ammo/wear atomic composition PASS (DevMode=false, trusted reserved runtime, atomic rollback, unchanged ledger persists wear only)')
