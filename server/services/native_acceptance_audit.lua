@@ -1,15 +1,23 @@
--- Read-only developer evidence. No SQL retries, writes, holds or fixture repair.
+-- Read-only opt-in acceptance evidence. No SQL retries, writes, holds or fixture repair.
 exports('ReadNativeAcceptanceAudit',function(actors)
- if GetInvokingResource()~='feather-weapons' or Config.DevMode~=true or Config.CharacterAmmunitionEnabled~=true
-  or (GetConvarInt('feather_native_acceptance_suite',0)~=1 and GetConvarInt('feather_native_restart_suite',0)~=1) or type(actors)~='table' or #actors~=2 then
+ local guid=type(actors)=='table' and #actors==1 and GetConvarInt('feather_native_guid_suite',0)==1
+ local legacy=Config.DevMode==true and (GetConvarInt('feather_native_acceptance_suite',0)==1
+  or GetConvarInt('feather_native_restart_suite',0)==1) and type(actors)=='table' and #actors==2
+ if GetInvokingResource()~='feather-weapons' or Config.CharacterAmmunitionEnabled~=true or not (guid or legacy) then
   return {ok=false,reason='acceptance_audit_disabled'}
+ end
+ for k,a in pairs(actors) do
+  if type(k)~='number' or k%1~=0 or k<1 or k>#actors or type(a)~='table'
+   or type(a.source)~='number' or a.source<1 or a.source%1~=0
+   or type(a.characterId)~='string' or #a.characterId<1 or #a.characterId>128
+   or type(a.sessionId)~='string' or #a.sessionId<1 or #a.sessionId>128 then return {ok=false,reason='acceptance_actor_invalid'} end
  end
  if not GuardsAPI.HasRegisteredGuard('feather-weapons') then return {ok=false,reason='native_guard_required'} end
  local expected={'6a2fd060-c46f-11f1-9ae2-e0d55eaa2deb','4560a489-ca6c-11f1-9ad4-e0d55eaa2deb'}
  local function current()
   for i,a in ipairs(actors) do
    local s=InventoryIdentity.GetSession(a.source)
-   if a.characterId~=expected[i] or not s or not s.ok or s.value.characterId~=a.characterId
+   if (not guid and a.characterId~=expected[i]) or not s or not s.ok or s.value.characterId~=a.characterId
     or s.value.sessionId~=a.sessionId then return false end
   end
   return true
