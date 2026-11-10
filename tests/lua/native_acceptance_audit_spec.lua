@@ -37,3 +37,19 @@ Config.DevMode=true;GetConvarInt=function() return 0 end;assert(not handler(acto
 GetConvarInt=function() return 1 end
 actors[1].characterId='unrelated';assert(not handler(actors).ok and reads==0)
 print('PASS read-only acceptance audit: provider caller/default gates, exact characters/current sessions, recovery hold and SELECT-only snapshots')
+
+-- The new console suite reads one current arbitrary actor in normal mode.
+-- This opens no route, write, grant, or runtime reservation in Inventory.
+Config.DevMode=false
+GetConvarInt=function(name,default) return name=='feather_native_guid_suite' and 1 or default end
+reads=0
+local single=handler({actors[1]})
+assert(single.ok and reads==4,'one current actor, normal config, SELECT-only audit')
+reads=0;assert(not handler(actors).ok and reads==0,'GUID flag cannot open legacy two-character suite')
+caller='other';assert(not handler({actors[1]}).ok and reads==0)
+caller='feather-weapons'
+local invalid={actors[1]};invalid.extra=actors[1]
+assert(not handler(invalid).ok and reads==0,'extra actor fields refused before SQL')
+GetConvarInt=function(_,default) return default end
+assert(not handler({actors[1]}).ok and reads==0,'missing opt-in stays disabled')
+print('PASS normal-mode single-actor GUID audit: trusted resource/current session/opt-in/array bounds, read-only')

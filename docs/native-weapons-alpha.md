@@ -73,3 +73,13 @@ represent the new native path as generally production-ready.
 User confirmed a fresh server start without either attachment startup convar. Jane restored two customized Cattlemans, and the Equipment panel offered Remove Long Barrel and Clean / repair. No customization mutation was requested in this final defaults check. Ammo remained revision 47 with 3 regular revolver rounds and 1 regular repeater round. Item #231 remained revision 5 with degradation 0.00666666682809 and soot 0.00999999977648; #128 remained revision 17 at its permanent wear floor 0.10000000149011 with zero soot. This completes the previously pending missing-convar live check. Earlier accepted attachment, cleaning, death/doctor recovery, storage and reconnect checks remain recorded above.
 
 Prepared patch versions: Weapons 0.21.2 and Inventory 0.14.1. Scope is default customization availability and normal DevMode=false death wear persistence; experimental model gates and periodic sampling remain unchanged. No commits, publication or additional server deployment are implied by this checkpoint.
+
+
+2026-11-09 prepared Inventory 0.14.2: the trusted `ReadNativeAcceptanceAudit`
+export additionally admits exactly one current arbitrary actor only while the
+console GUID acceptance opt-in is armed. It remains SELECT-only, requires the
+Weapons caller and registered guard, and opens no player route or mutation.
+The existing two-character developer audit retains its separate gates. The
+paired Weapons 0.22.0 production suite passed 1,800 native cases, complete report
+delivery, cleanup, original-loadout restoration and final visual acceptance.
+No audit flag is needed for normal gameplay. No schema/configuration migration.
