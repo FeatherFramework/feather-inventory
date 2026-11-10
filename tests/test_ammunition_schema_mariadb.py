@@ -6,6 +6,51 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+
+def execute_cursor(cursor, sql, parameters=()):
+    cursor.execute(sql, parameters)
+    # PyMySQL uses tuples for rows, including an empty tuple for an empty table.
+    return list(cursor.fetchall()) if cursor.description else cursor.rowcount
+
+
+def runtime_query(execute, lua, sql, parameters):
+    # Only the resource's fixed schema queries enter here. feather-mysql uses
+    # question-mark parameters; administrative test SQL already uses PyMySQL %s.
+    if sql.count('?') != len(parameters):
+        raise ValueError('Unexpected schema query parameter count')
+    rows = execute(sql.replace('?', '%s'), parameters)
+    return lua.table_from([lua.table_from(row) for row in rows])
+
+
+class SchemaTestAdapter(unittest.TestCase):
+    def test_runtime_parameters_use_driver_placeholders(self):
+        from types import SimpleNamespace
+        lua = SimpleNamespace(table_from=lambda value: value)
+        calls = []
+        def execute(sql, parameters):
+            # Exercise the same formatting boundary that failed in PyMySQL.
+            self.assertNotIn('?', sql)
+            formatted = sql % tuple(repr(value) for value in parameters)
+            calls.append((sql, parameters, formatted))
+            return [{'table_name': 'feather_character_ammunition'}]
+        result = runtime_query(execute, lua,
+                               'SELECT * FROM metadata WHERE table_name IN (?,?)',
+                               ('feather_character_ammunition', 'feather_ammunition_operations'))
+        self.assertEqual(result[0]['table_name'], 'feather_character_ammunition')
+        self.assertEqual(calls[0][0].count('%s'), 2)
+        self.assertEqual(calls[0][1], ('feather_character_ammunition', 'feather_ammunition_operations'))
+        with self.assertRaises(ValueError):
+            runtime_query(execute, lua, 'SELECT * WHERE name=?', ())
+        self.assertEqual(len(calls), 1)
+
+    def test_empty_driver_rows_are_normalized(self):
+        from types import SimpleNamespace
+        cursor = SimpleNamespace(execute=lambda sql, params: None, description=('column',),
+                                 fetchall=lambda: (), rowcount=0)
+        self.assertEqual(execute_cursor(cursor, 'SELECT * FROM empty_table'), [])
+        cursor.description = None
+        self.assertEqual(execute_cursor(cursor, 'CREATE TABLE example(id INT)'), 0)
+
 @unittest.skipUnless(os.environ.get('FEATHER_SCHEMA_TEST_PORT'), 'isolated CI MariaDB not configured')
 class AmmunitionSchemaMariaDB(unittest.TestCase):
     def test_actual_startup_fresh_existing_partial_and_incompatible(self):
@@ -17,8 +62,7 @@ class AmmunitionSchemaMariaDB(unittest.TestCase):
         created = []
         def execute(sql, parameters=()):
             with connection.cursor() as cursor:
-                cursor.execute(sql, parameters)
-                return cursor.fetchall() if cursor.description else cursor.rowcount
+                return execute_cursor(cursor, sql, parameters)
         def database():
             name = 'fi_ammo_schema_ci_' + uuid.uuid4().hex
             execute('CREATE DATABASE `' + name + '` CHARACTER SET utf8mb4')
@@ -34,7 +78,7 @@ class AmmunitionSchemaMariaDB(unittest.TestCase):
             lua.globals().LoadResourceFile = load
             lua.globals().DB = lua.table_from({
                 'exec': lambda sql: execute(sql),
-                'query': lambda sql, *params: lua.table_from([lua.table_from(row) for row in execute(sql, params)])})
+                'query': lambda sql, *params: runtime_query(execute, lua, sql, params)})
             lua.execute((ROOT / 'server/services/character_ammunition_schema.lua').read_text(encoding='utf-8'))
             return lua.globals().InventoryCharacterAmmoSchema.Start()
         def snapshot():
