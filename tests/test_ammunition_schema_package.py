@@ -12,7 +12,11 @@ spec.loader.exec_module(release)
 class AmmunitionSchemaPackage(unittest.TestCase):
     def test_packaged_authoritative_schema(self):
         name = 'database/character_ammunition.sql'
-        self.assertIn(name, release.runtime_files(ROOT))
+        # Python checks run before the UI build. Verify this source file is
+        # selected by the runtime packaging policy without requiring built UI.
+        self.assertTrue((ROOT / name).is_file())
+        self.assertIn(Path(name).parts[0], release.RUNTIME_DIRS)
+        self.assertTrue(release.allowed(name))
         sql = (ROOT / name).read_text(encoding='utf-8')
         sql = re.sub(r'--[^\r\n]*', '', sql)
         statements = [s.strip() for s in sql.split(';') if s.strip()]
