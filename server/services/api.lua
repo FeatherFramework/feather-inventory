@@ -225,6 +225,8 @@ function StartAPI()
   -- Register the complete API before the first database yield. Consumers can
   -- discover it immediately, but must await readiness before doing work.
   InventoryAwaitDatabase()
+  -- Complete ammunition schema setup before grants, checkout or readiness.
+  assert(InventoryCharacterAmmoSchema.Start(), 'Character ammunition schema startup failed')
   if InventoryDelegation then
     local delegationDeadline = GetGameTimer() + 30000
     while not InventoryDelegation.ready and GetGameTimer() < delegationDeadline do Wait(50) end

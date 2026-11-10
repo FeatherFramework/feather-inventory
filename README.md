@@ -1629,3 +1629,15 @@ Stables free/paid live handover acceptance is pending. Version unchanged.
 ### Item-attached collection storage
 
 RegisterCollectionStorage registers a trusted collection item type, capacity and live access predicate. GetCollectionStorage lazily creates/inspects a normal container bound to the exact unique instance; OpenCollectionStorage uses the existing UI and rechecks current character custody and live access on reads/mutations. Configure storageItems={horse_saddlebag=true} under the Stables collection policy. Provider startup adds inventory_collection_storage; no manual SQL. Collection retirement refuses nonempty attached storage; transfer preserves the original mapping and contents. No per-character container ownership is copied during transfer. Offline tests pass. Stables live acceptance confirmed opening, capacity, persistence across recall, moving bags between horses, filled-bag trading and nonempty sale refusal. Live fault injection remains pending.
+
+
+### Automatic shared-ammunition schema
+
+With `CharacterAmmunitionEnabled=true` (the default), Inventory loads its packaged
+`database/character_ammunition.sql` after database readiness and before economic
+services/gameplay readiness. Missing ledger/operation tables are created empty;
+existing rows are preserved. InnoDB, required columns/defaults and primary keys
+are verified before startup succeeds. Invalid schema or database errors fail
+startup rather than trigger automatic data repair. No developer smoke test or
+manual SQL import is needed. Feather Recipe imports the same packaged SQL for
+fresh installs. Version 0.14.3 introduces this startup contract.
