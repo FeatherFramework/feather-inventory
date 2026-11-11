@@ -534,7 +534,10 @@ function InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory
 
     if merge then context.reason = 'slot_merge' end
 
-    if crossInventory then
+    -- A same-inventory rearrangement also advances row_revision. Native-owned
+    -- and equipped instances need the same guards as a cross-inventory move,
+    -- including the destination occupant of a swap, before either row changes.
+    do
       local guardedRows = {}
       for _, row in ipairs(moving) do guardedRows[#guardedRows + 1] = row end
       for _, row in ipairs(occupant or {}) do guardedRows[#guardedRows + 1] = row end
@@ -543,7 +546,7 @@ function InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory
     end
 
     for _, row in ipairs(moving) do
-      if crossInventory then
+      do
         local allowed = InventoryMutationMetrics.Measure(context._timing, 'guardMs',
           GuardsAPI.CanMoveInstanceSnapshot, NormalizeLockedItem(row), context)
         if not allowed then return false end
@@ -554,7 +557,7 @@ function InventoryControllers.MoveSlotItems(fromInventory, fromSlot, toInventory
     end
     local swapContext = MutationContext(context, 'slot_swap')
     for _, row in ipairs(occupant or {}) do
-      if crossInventory then
+      do
         local allowed = InventoryMutationMetrics.Measure(context._timing, 'guardMs',
           GuardsAPI.CanMoveInstanceSnapshot, NormalizeLockedItem(row), swapContext)
         if not allowed then return false end

@@ -1,5 +1,13 @@
 # Feather Inventory
 
+Boxed shop offers use the immutable Shops order's `pack_size` (default 1 for
+historical orders). Inventory atomically delivers `quantity * pack_size` existing
+items and stages the unchanged whole-order Economy payment. Package size and
+delivered quantity are bounded to 100 items and included in new bundle receipt
+validation; historical single-item receipt fingerprints remain unchanged. This
+requires the matching Shops package-order upgrade. No ammunition is loaded into
+a character's carried pool by purchasing loose rounds.
+
 ## Automated development checks
 
 Pull requests and pushes to main run the full Lua regression runner and runtime
@@ -13,9 +21,7 @@ do not publish. Existing assets are never overwritten. These checks need no
 running game server and do not replace native in-game acceptance.
 See [the release process](docs/release-process.md) for developer instructions.
 
-Current version: **0.14.0**. Adds targeted equipment controls, atomic sidearm
-swapping and Primary removal with automatic Offhand promotion. Deploy with
-Feather Weapons **0.21.0** for the complete equipment UI flow. Native character
+Current version: **0.15.0**. Adds atomic boxed shop delivery with quantity-bound receipts. Deploy the gun-store feature with Feather Shops **0.4.0** and Feather Weapons **0.23.0**. Native character
 ammunition is enabled by default; development commands remain disabled.
 Existing saddlebag storage, Stables reviver policy and per-container Access
 integration remain available.
@@ -1641,3 +1647,5 @@ are verified before startup succeeds. Invalid schema or database errors fail
 startup rather than trigger automatic data repair. No developer smoke test or
 manual SQL import is needed. Feather Recipe imports the same packaged SQL for
 fresh installs. Version 0.14.3 introduces this startup contract.
+
+Same-inventory moves and swaps now run the same ownership/equipment guards as transfers before advancing item revisions. Unequip native-owned weapons before rearranging their inventory squares. Both source and destination occupants are checked; ordinary unbound rearrangement remains supported. This prevents later wear/logout revision mismatches; it does not silently rebase stale native copies.

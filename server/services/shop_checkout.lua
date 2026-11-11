@@ -23,7 +23,22 @@ local function Fingerprint(order)
         local value = tostring(input)
         values[#values + 1] = #value .. ':' .. value
     end
+    -- Keep historical single-item receipt fingerprints byte-for-byte stable.
+    -- A bundle's immutable pack size is additional authority, never client input.
+    if order.pack_size ~= nil and tonumber(order.pack_size) ~= 1 then
+        local size=tonumber(order.pack_size)
+        if size and size%1==0 then size=math.floor(size) end
+        values[#values + 1] = 'pack:' .. tostring(size)
+    end
     return table.concat(values, '|')
+end
+
+local function DeliveryQuantity(order)
+    local size = order.pack_size == nil and 1 or order.pack_size
+    if type(size) ~= 'number' or size % 1 ~= 0 or size < 1 or size > 100
+        or type(order.quantity) ~= 'number' or order.quantity % 1 ~= 0
+        or order.quantity < 1 or order.quantity > 100 or order.quantity * size > 100 then return nil end
+    return order.quantity * size
 end
 
 local function Settled(receipt, order, fingerprint)
@@ -39,14 +54,16 @@ local function Settled(receipt, order, fingerprint)
             {orderId=order.order_id,safeToClear=true})
     end
     if value.state ~= 'fulfilled' or type(value.itemInstanceIds) ~= 'table'
-        or #value.itemInstanceIds ~= order.quantity or type(value.transactionId) ~= 'string'
+        or #value.itemInstanceIds ~= DeliveryQuantity(order) or type(value.transactionId) ~= 'string'
         or not value.transactionId:match('^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$')
         or value.quantity~=order.quantity or value.currency~=order.currency_code or value.total~=order.total_amount
+        or ((order.pack_size or 1) ~= 1 and (value.packSize~=order.pack_size
+            or value.itemQuantity~=DeliveryQuantity(order)))
         or type(value.inventoryId)~='number' or value.inventoryId<1 or value.inventoryId%1~=0 then
         return Refuse('Checkout receipt is corrupt; no replacement issued.')
     end
     local seen = {}
-    for index=1,order.quantity do
+    for index=1,DeliveryQuantity(order) do
         local id=value.itemInstanceIds[index]
         if type(id) ~= 'number' or id < 1 or id % 1 ~= 0 or seen[id] then
             return Refuse('Checkout item identities are corrupt; no replacement issued.')
@@ -134,8 +151,10 @@ function ShopCheckoutAPI.Execute(context, order, participants)
         or not Callable(participants.payment) then
         return Refuse('Immutable order and owning transaction participants required.')
     end
+    local itemQuantity = DeliveryQuantity(order)
+    if not itemQuantity then return Refuse('Bounded immutable package quantity required.') end
     local weapon = participants.weapon
-    if weapon and (order.quantity ~= 1 or type(weapon) ~= 'table'
+    if weapon and (order.quantity ~= 1 or itemQuantity ~= 1 or type(weapon) ~= 'table'
         or weapon.itemName ~= order.item_name or weapon.requestId ~= order.order_id
         or type(weapon.metadata) ~= 'table' or type(weapon.metadata.serialNumber) ~= 'string'
         or not Callable(participants.provenance)) then
@@ -169,7 +188,7 @@ function ShopCheckoutAPI.Execute(context, order, participants)
         end
         -- Normal Tx capacity, weight, blacklist, stack placement and item guards.
         -- Complete these before taking the business's shared payment-account locks.
-        local delivered = tx:AddQuantity(inventoryId, order.definition_id, order.quantity,
+        local delivered = tx:AddQuantity(inventoryId, order.definition_id, itemQuantity,
             weapon and weapon.metadata or {}, {name=order.item_name,weapon=weapon~=nil})
         if not delivered or delivered.ok ~= true then return delivered or Refuse('Delivery failed.') end
         if weapon then
@@ -188,6 +207,9 @@ function ShopCheckoutAPI.Execute(context, order, participants)
             transactionId=payment.value.transactionId,inventoryId=inventoryId,
             itemInstanceIds=delivered.value,quantity=order.quantity,currency=order.currency_code,
             total=order.total_amount,replayed=false}
+        if (order.pack_size or 1) ~= 1 then
+            value.packSize=order.pack_size; value.itemQuantity=itemQuantity
+        end
         local updated = tx.query('UPDATE inventory_shop_checkout_receipts SET result_json=? WHERE order_id=?',
             {json.encode(value),order.order_id})
         if not updated or tonumber(updated.affectedRows or updated.affected_rows) ~= 1
