@@ -47,6 +47,10 @@ lua = LuaRuntime(unpack_returned_tuples=True)
 lua.globals().arg = lua.table_from({1: root.as_posix()})
 lua.execute((root / 'tests/lua/startup_readiness_spec.lua').read_text(encoding='utf-8'))
 
+schema_lua = LuaRuntime(unpack_returned_tuples=True)
+schema_lua.globals().arg = schema_lua.table_from({1: root.as_posix()})
+schema_lua.execute((root / 'tests/lua/character_ammunition_schema_spec.lua').read_text(encoding='utf-8'))
+
 lua = LuaRuntime(unpack_returned_tuples=True)
 lua.execute((root / 'tests/lua/character_ammo_spec.lua').read_text(encoding='utf-8'))
 
