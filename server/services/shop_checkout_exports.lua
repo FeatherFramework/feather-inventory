@@ -14,12 +14,13 @@ local function Order(id)
     if not Uuid(id) then return nil end
     local order=DB.one("SELECT * FROM shop_orders WHERE order_id=? AND source_resource='feather-shops'",id)
     if order then
-        for _,key in ipairs({'definition_id','quantity','unit_price','total_amount'}) do order[key]=tonumber(order[key]) end
+        for _,key in ipairs({'definition_id','quantity','unit_price','total_amount','pack_size'}) do order[key]=tonumber(order[key]) end
     end
     return order
 end
 exports('GetShopCheckoutContract',function()
-    return {contractVersion=1,ready=Ready()==true,atomicPaymentDelivery=true,recoveryFence=true}
+    return {contractVersion=1,ready=Ready()==true,atomicPaymentDelivery=true,recoveryFence=true,
+        packageDelivery=1,maximumDeliveredItems=100}
 end)
 exports('GetShopCheckoutDefinition',function(itemName)
     if not Allowed() or type(itemName)~='string' or #itemName<1 or #itemName>100 then return Refuse() end

@@ -351,6 +351,22 @@ test('guard and revoked access failures emit no events', function()
   denied = nil; accessDenied = true
   assert(not InventoryControllers.MoveSlotItems(1, 0, 2, 0, { actorSource = 1 })); unchanged(before)
 end)
+test('same-inventory native-owned source cannot advance its revision', function()
+  add(1, 1, 0, 1, 1)
+  denied=rows[1].id
+  local before=copy(rows)
+  assert(not InventoryControllers.MoveSlotItems(1, 0, 1, 1))
+  unchanged(before);assert(writes==0 and #events==0)
+end)
+
+test('same-inventory swap cannot advance a native-owned destination revision', function()
+  add(1, 1, 0, 1, 1);add(1, 1, 1, 2, 1)
+  denied=rows[2].id
+  local before=copy(rows)
+  assert(not InventoryControllers.MoveSlotItems(1, 0, 1, 1))
+  unchanged(before);assert(writes==0 and #events==0)
+end)
+
 test('same-inventory swap preserves total weight and row identities', function()
   add(2, 1, 0, 1, 1); add(3, 1, 1, 2, 1)
   assert(InventoryControllers.MoveSlotItems(1, 0, 1, 1)); assert(count(1, 0) == 3 and count(1, 1) == 2)
@@ -1009,7 +1025,7 @@ local function checkoutSetup(weapon)
   current=function() return checkoutCurrent end,
   payment=function(q,order)
     paidCalls=paidCalls+1
-    assert(#rows==1+order.quantity,'delivery must precede treasury locks')
+    assert(#rows==1+order.quantity*(order.pack_size or 1),'delivery must precede treasury locks')
     q('UPDATE checkout_test_wallets SET amount=?',{order.total_amount})
     if paymentFailed then return Result.Err('insufficient_funds','Insufficient funds.') end
     return {ok=true,value={transactionId='80000000-0000-4000-8000-000000000008',amount=order.total_amount,currency=order.currency_code},meta={pendingCommit=true}}
@@ -1034,6 +1050,43 @@ test('checkout item delivery and payment commit together with shared catalog loc
  assert(result.ok, result.error and result.error.message or result.message or result.code);assert(result.value.state=='fulfilled' and #result.value.itemInstanceIds==3)
  assert(commerce.balance==925 and #rows==4 and paidCalls==1 and #events==3 and definitionShared)
  assert(commerce.receipt.result_json)
+end)
+
+test('historical checkout receipt still replays after the additive pack-size default',function()
+ local participants=checkoutSetup();assert(checkout(participants).ok)
+ checkoutOrder.pack_size=1
+ local result=checkout(participants)
+ assert(result.ok and result.value.replayed and #rows==4 and commerce.balance==925 and paidCalls==1)
+end)
+
+test('checkout refuses malformed or excessive package sizes before payment or items',function()
+ for _,size in ipairs({0,-1,1.5,101,'50',math.huge}) do
+  local participants=checkoutSetup();checkoutOrder.pack_size=size
+  assert(not checkout(participants).ok and #rows==1 and commerce.balance==1000 and paidCalls==0)
+ end
+ local participants=checkoutSetup();checkoutOrder.pack_size=50
+ assert(not checkout(participants).ok and paidCalls==0 and #rows==1) -- 3 x 50 exceeds 100
+end)
+
+test('firearm package cannot multiply canonical weapon delivery',function()
+ local participants=checkoutSetup(true);checkoutOrder.pack_size=2
+ assert(not checkout(participants).ok and #rows==1 and commerce.balance==1000 and paidCalls==0)
+end)
+
+test('whole ammunition box must fit before any charge or partial delivery',function()
+ local participants=checkoutSetup()
+ checkoutOrder.quantity=1;checkoutOrder.pack_size=25;checkoutOrder.unit_price=50;checkoutOrder.total_amount=50
+ policies[1].max_weight=1
+ assert(not checkout(participants).ok and #rows==1 and commerce.balance==1000 and paidCalls==0 and commerce.receipt==nil)
+end)
+
+test('boxed receipt corruption cannot authorize replacement rounds',function()
+ local participants=checkoutSetup()
+ checkoutOrder.quantity=1;checkoutOrder.pack_size=50;checkoutOrder.unit_price=62;checkoutOrder.total_amount=62
+ local result=checkout(participants);assert(result.ok and #rows==51 and commerce.balance==938)
+ documents[commerce.receipt.result_json].itemQuantity=1
+ assert(not ShopCheckoutAPI.Resolve(copy(checkoutOrder)).ok)
+ assert(#rows==51 and commerce.balance==938 and paidCalls==1)
 end)
 test('checkout receipt replay does not recreate transferred items or charge again',function()
  local participants=checkoutSetup();local result=checkout(participants);assert(result.ok)
