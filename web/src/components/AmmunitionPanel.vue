@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref } from 'vue';
+import { t } from '@/i18n';
 const props = defineProps({ options: { type: Array, required: true }, busy: Boolean, message: String });
 const emit = defineEmits(['transfer', 'close']);
 const selected = ref(props.options[0]?.id || '');
@@ -9,25 +10,25 @@ const valid = computed(() => Number.isInteger(Number(quantity.value)) && Number(
 </script>
 <template>
   <div class="ammo-shade">
-    <section class="ammo-panel" role="dialog" aria-label="Ammunition" aria-modal="true">
-      <h2>Ammunition</h2>
-      <p>Load loose rounds into your shared carried pool. Unload returns carried rounds to Inventory.</p>
+    <section class="ammo-panel" role="dialog" :aria-label="t('ui_ammunition')" aria-modal="true">
+      <h2>{{ t('ui_ammunition') }}</h2>
+      <p>{{ t('ui_ammo_help') }}</p>
       <!-- Keep selection inside the NUI document: native select popups can
            leave a corrupted compositor surface in the embedded game browser. -->
-      <div class="ammo-types" role="group" aria-label="Ammunition type">
+      <div class="ammo-types" role="group" :aria-label="t('ui_ammo_type')">
         <button v-for="entry in options" :key="entry.id" type="button" :disabled="busy"
           :aria-pressed="selected === entry.id" :class="{ selected: selected === entry.id }"
-          @click="selected = entry.id">{{ entry.label }} <span>{{ entry.loose ?? '?' }} loose · {{ entry.carried }} carried</span></button>
+          @click="selected = entry.id">{{ entry.label }} <span>{{ t('ui_ammo_loose') }}: {{ entry.loose ?? '?' }} · {{ t('ui_ammo_carried') }}: {{ entry.carried }}</span></button>
       </div>
-      <p>Loose: {{ option?.loose ?? '?' }} · Carried: {{ option?.carried ?? 0 }}</p>
-      <label>Rounds <input v-model.number="quantity" type="number" min="1" max="1000" step="1" :disabled="busy"></label>
-      <p role="status">{{ busy ? 'Waiting for saved state and native acknowledgement…' : message }}</p>
+      <p>{{ t('ui_ammo_loose') }}: {{ option?.loose ?? '?' }} · {{ t('ui_ammo_carried') }}: {{ option?.carried ?? 0 }}</p>
+      <label>{{ t('ui_quantity') }} <input v-model.number="quantity" type="number" min="1" max="1000" step="1" :disabled="busy"></label>
+      <p role="status">{{ busy ? t('ui_ammo_waiting') : message }}</p>
       <div class="ammo-buttons">
-        <button :disabled="busy || !valid || !option || option.loose == null || quantity > option.loose" @click="emit('transfer', selected, Number(quantity), 'load')">Load</button>
-        <button :disabled="busy || !valid || !option || quantity > option.carried" @click="emit('transfer', selected, Number(quantity), 'unload')">Unload</button>
-        <button :disabled="busy" @click="emit('close')">Close</button>
+        <button :disabled="busy || !valid || !option || option.loose == null || quantity > option.loose" @click="emit('transfer', selected, Number(quantity), 'load')">{{ t('ui_ammo_load') }}</button>
+        <button :disabled="busy || !valid || !option || quantity > option.carried" @click="emit('transfer', selected, Number(quantity), 'unload')">{{ t('ui_ammo_unload') }}</button>
+        <button :disabled="busy" @click="emit('close')">{{ t('ui_equipment_close') }}</button>
       </div>
-      <small>Reload normally in-game. This does not choose a weapon's ammo type.</small>
+      <small>{{ t('ui_ammo_hint') }}</small>
     </section>
   </div>
 </template>

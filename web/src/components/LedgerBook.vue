@@ -14,6 +14,10 @@ const props = defineProps({
   capacity: { type: Number, required: true }, // compartments
   maxWeight: { type: Number, default: 0 }, // weight limit -- NOT capacity
   items: { type: Array, required: true }, // flat rows, each with slot_index
+  carriedWeight: { type: Number, default: 0 },
+  carriedThrowables: { type: Number, default: 0 },
+  carriedBusy: Boolean,
+  canManageAmmunition: Boolean,
   categories: { type: Array, required: true }, // [{ id: null, label: <localized ALL> }, { id, label }, ...]
   activeCategoryId: { default: null },
   searchQuery: { type: String, default: '' },
@@ -40,6 +44,8 @@ const emit = defineEmits([
   'cellDblClick',
   'cellContextMenu',
   'takeAll',
+  'manageAmmunition',
+  'unequipThrowable',
 ]);
 
 // Every compartment sharing a slot_index stacks together (up to
@@ -135,7 +141,7 @@ const detail = computed(() => {
 const hasWeightLimit = computed(() => Number(props.maxWeight) > 0);
 
 const carrying = computed(() => {
-  const lb = props.items.reduce((total, item) => total + (Number(item.weight) || 0), 0);
+  const lb = props.items.reduce((total, item) => total + (Number(item.weight) || 0), 0) + props.carriedWeight;
   return lb.toFixed(2);
 });
 
@@ -274,6 +280,18 @@ function cellBg(cell) {
         </div>
       </div>
 
+      <div v-if="canManageAmmunition" class="ledger-throwables">
+        <button type="button" :disabled="carriedBusy" :aria-busy="carriedBusy || undefined" @click="emit('manageAmmunition')">
+          {{ t('ui_ammunition') }}
+        </button>
+      </div>
+      <div v-if="carriedThrowables > 0" class="ledger-throwables">
+        <span>{{ t('ui_throwables_carried', carriedThrowables) }}</span>
+        <button type="button" :disabled="carriedBusy" :aria-busy="carriedBusy || undefined" @click="emit('unequipThrowable')">
+          <span v-if="carriedBusy" class="throwable-spinner" aria-hidden="true"></span>
+          {{ t('ui_throwable_unequip_one') }}
+        </button>
+      </div>
       <button
         v-if="canTakeAll"
         type="button"
@@ -736,6 +754,13 @@ function cellBg(cell) {
 .paired .ledger-detail-footer {
   font-size: 13px;
 }
+
+.ledger-throwables { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 7px; font-size: 13px; }
+.ledger-throwables button { display: flex; align-items: center; gap: 6px; padding: 5px 8px; background: transparent; border: 1px solid #68543180; cursor: pointer; }
+.ledger-throwables button:disabled { opacity: .6; cursor: default; }
+.throwable-spinner { width: 11px; height: 11px; border: 2px solid #68543140; border-top-color: #685431; border-radius: 50%; animation: throwable-spin .8s linear infinite; }
+@keyframes throwable-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .throwable-spinner { animation: none; } }
 
 .ledger-carrying {
   margin-top: auto;

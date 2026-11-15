@@ -1,5 +1,7 @@
 // English fallback only; Lua supplies the current player's translated bundle.
 export const equipmentDefaults = {
+  "ui_throwables_carried": "Tomahawks equipped: {n}",
+  "ui_throwable_unequip_one": "Unequip one",
   "ui_equipment_title": "Equipment",
   "ui_equipment_help": "Choose where to carry this weapon. Ammunition stays in your shared carried pools.",
   "ui_equipment_slots": "Equipment slot occupancy",
@@ -29,6 +31,8 @@ export const equipmentDefaults = {
   "ui_equipment_throwable": "Throwable",
   "ui_equipment_utility": "Utility",
   "ui_equipment_utility_number": "Utility {n}",
+  "ui_equipment_equipping": "Equipping…",
+  "ui_equipment_unequipping": "Unequipping…",
   "ui_equipment_checking": "Checking equipment…",
   "ui_equipment_none": "No changes are available for this item right now.",
   "ui_equipment_unavailable": "Equipment controls unavailable.",
@@ -53,6 +57,7 @@ export function equipmentSlotLabel(slot, t) {
   return entry ? t('ui_equipment_' + entry[0], ...(entry.length > 1 ? [entry[1]] : [])) : slot.label;
 }
 export function equipmentOptionLabel(option, t, targeted = false) {
+  if (!option.kind && /^weapon_melee(?:_|$)/.test(option.slot || '') && ['equip','unequip'].includes(option.action)) return t('ui_equipment_' + option.action);
   if (!option.kind && option.action === 'move') return t('ui_equipment_swap');
   if (!option.kind && option.action === 'unequip_primary') return equipmentSlotLabel(option, t) + ' — ' + t('ui_equipment_unequip');
   if (!option.kind && ['equip', 'unequip'].includes(option.action) && slots[option.slot]) {
@@ -71,4 +76,10 @@ export function equipmentOptionLabel(option, t, targeted = false) {
     return t('ui_equipment_' + option.action) + ' — ' + (name === key ? option.label?.split(' — ').slice(1).join(' — ') || option.attachmentId : name);
   }
   return option.label;
+}
+
+export function equipmentBusyMessage(option) {
+  if (option.action === 'equip') return 'ui_equipment_equipping';
+  if (['unequip','unequip_primary'].includes(option.action)) return 'ui_equipment_unequipping';
+  return 'ui_equipment_checking';
 }

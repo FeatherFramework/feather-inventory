@@ -53,6 +53,50 @@ class SchemaTestAdapter(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get('FEATHER_SCHEMA_TEST_PORT'), 'isolated CI MariaDB not configured')
 class AmmunitionSchemaMariaDB(unittest.TestCase):
+    def test_carried_accounting_with_mixed_character_collations(self):
+        import pymysql
+        from lupa.lua54 import LuaRuntime
+        connection = pymysql.connect(host='127.0.0.1', port=int(os.environ['FEATHER_SCHEMA_TEST_PORT']),
+                                     user='root', password=os.environ['FEATHER_SCHEMA_TEST_PASSWORD'],
+                                     autocommit=True, cursorclass=pymysql.cursors.DictCursor)
+        name = 'fi_ammo_schema_ci_' + uuid.uuid4().hex
+        def execute(sql, parameters=()):
+            with connection.cursor() as cursor:
+                return execute_cursor(cursor, sql, parameters)
+        try:
+            execute('CREATE DATABASE `' + name + '` CHARACTER SET utf8mb4')
+            execute('USE `' + name + '`')
+            execute('''CREATE TABLE inventory (id BIGINT PRIMARY KEY,
+                character_id CHAR(36) COLLATE utf8mb4_unicode_ci,
+                owner_character_id CHAR(36),location VARCHAR(40),is_public INT,max_slots INT)
+                DEFAULT CHARSET=utf8mb4''')
+            execute('''CREATE TABLE inventory_character_collections (character_id CHAR(36),
+                source_resource VARCHAR(100),collection_key VARCHAR(100),inventory_id BIGINT)
+                DEFAULT CHARSET=utf8mb4 COLLATE utf8mb4_general_ci''')
+            execute('''CREATE TABLE inventory_items (id BIGINT,item_id BIGINT,row_revision INT,
+                metadata TEXT,inventory_id BIGINT)''')
+            execute('''CREATE TABLE items (id BIGINT,name VARCHAR(100),type VARCHAR(40),
+                instance_mode VARCHAR(20),archived_at DATETIME NULL,weight DOUBLE)''')
+            character = '00000000-0000-0000-0000-000000000001'
+            execute("INSERT INTO inventory VALUES (5,%s,NULL,'character',0,40),(99,NULL,NULL,'character_collection',0,3)", (character,))
+            execute("INSERT INTO inventory_character_collections VALUES (%s,'feather-weapons','native_throwable_units_v1',99)", (character,))
+            execute("INSERT INTO items VALUES (10,'weapon_thrown_tomahawk','item_weapon','unique',NULL,2)")
+            execute("INSERT INTO inventory_items VALUES (42,10,1,'{}',99)")
+            with self.assertRaises(pymysql.err.OperationalError) as error:
+                execute('SELECT c.inventory_id FROM inventory source JOIN inventory_character_collections c ON c.character_id=source.character_id WHERE source.id=5')
+            self.assertEqual(error.exception.args[0], 1267)
+            lua = LuaRuntime(unpack_returned_tuples=True)
+            lua.execute((ROOT / 'server/services/native_throwable_unit_storage.lua').read_text(encoding='utf-8'))
+            lua.globals().queryPort = lambda sql, params: runtime_query(execute, lua, sql, tuple(params.values()))
+            lua.execute('query=function(sql,p) return queryPort(sql,p) end')
+            for locked in (False, True):
+                result = lua.globals().NativeThrowableUnitStorage.Accounting(lua.globals().query, 5, locked)
+                self.assertEqual(result.weight, 2)
+                self.assertEqual(result.rows[1].id, 42)
+        finally:
+            execute('DROP DATABASE IF EXISTS `' + name + '`')
+            connection.close()
+
     def test_actual_startup_fresh_existing_partial_and_incompatible(self):
         import pymysql
         from lupa.lua54 import LuaRuntime

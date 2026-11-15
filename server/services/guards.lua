@@ -189,7 +189,8 @@ local function RunResolvedGuards(registry, instance, context)
     return true
 end
 
-local function RunGuards(registry, instanceId, context)
+local EvaluateSnapshot
+local function RunGuards(registry, instanceId, context, query)
     -- Nothing registered is the overwhelmingly common case (no consumer
     -- resource loaded), so skip the instance read entirely rather than
     -- paying a query per moved item for guards that do not exist.
@@ -197,6 +198,16 @@ local function RunGuards(registry, instanceId, context)
         return true
     end
 
+    if query then
+        local rows=query([[SELECT ii.*, i.name,i.display_name,i.description,i.weight,i.usable,i.type,
+            i.category_id,i.max_quantity,i.max_stack_size,i.instance_mode
+            FROM inventory_items ii INNER JOIN items i ON i.id=ii.item_id
+            WHERE ii.id=? FOR UPDATE]],{instanceId})
+        if type(rows)~='table' or #rows~=1 or not PrepareEquipmentSnapshots(registry,query,rows) then
+            return false,'Item instance could not be locked for guard evaluation.'
+        end
+        return EvaluateSnapshot(registry,InventoryControllers.NormalizeLockedItemSnapshot(rows[1]),context)
+    end
     local instance = InstancesAPI.GetInstance(instanceId)
     if not Result.IsOk(instance) then
         -- Cannot describe what is moving, so cannot let a guard make an
@@ -212,8 +223,8 @@ end
 --
 -- @return true, or false plus a reason
 --
-function GuardsAPI.CanMoveInstance(instanceId, context)
-    return RunGuards(MoveGuards, instanceId, context)
+function GuardsAPI.CanMoveInstance(instanceId, context, query)
+    return RunGuards(MoveGuards, instanceId, context, query)
 end
 
 function GuardsAPI.CanChangeInstance(instanceId, context)
@@ -225,7 +236,7 @@ end
 -- Transaction paths already hold a normalized snapshot from their locking
 -- SELECT. Reusing it prevents a second connection from querying a row locked
 -- by the transaction itself while preserving the exact guard contract.
-local function EvaluateSnapshot(registry, instance, context)
+EvaluateSnapshot = function(registry, instance, context)
     if next(registry) == nil then return true end
     if type(instance) ~= 'table' or not tonumber(instance.id) then
         return false, 'Item instance could not be read for guard evaluation.'

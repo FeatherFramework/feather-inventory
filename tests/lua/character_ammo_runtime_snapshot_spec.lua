@@ -97,3 +97,20 @@ utilityFlag=0
 result=CharacterAmmunitionAPI.RuntimeSnapshot(context,limits,'feather-weapons')
 assert(result.ok and result.value.utilityEquipment==nil and utilityReads==1,'utility default-off bypasses reader')
 print('utility atomic snapshot PASS: same transaction, missing component refusal and disabled gate isolation')
+GetConvar=function(name,default) return name=='feather_throwable_quantities' and '1' or default end
+limits.ammo_tomahawk_regular=3;context.epoch='quantity-epoch'
+local priorQuery=tx.query;local legacy,equipped=false,false
+tx.query=function(sql,...)
+ if sql:find('inventory_character_collections',1,true) then
+  assert(sql:find('native_throwable_units_v1',1,true) and not sql:find('spent',1,true))
+  return legacy and {{id=113}} or {}
+ end
+ if sql:find("slot='weapon_throwable'",1,true) then return equipped and {{slot='weapon_throwable'}} or {} end
+ return priorQuery(sql,...)
+end
+result=CharacterAmmunitionAPI.RuntimeSnapshot(context,limits,'feather-weapons')
+assert(result.ok and result.value.throwableEquipment.contract==3 and result.value.throwableEquipment.identity.epoch=='quantity-epoch'
+ and result.value.throwableEquipment.units==nil and result.value.throwableEquipment.pools.ammo_tomahawk_regular==0)
+legacy=true;assert(not CharacterAmmunitionAPI.RuntimeSnapshot(context,limits,'feather-weapons').ok,'no implicit conversion of legacy private units')
+legacy=false;equipped=true;assert(not CharacterAmmunitionAPI.RuntimeSnapshot(context,limits,'feather-weapons').ok,'legacy equipped carrier must be stored first')
+print('PASS quantity snapshot: ledger-only projection, same locked scope, refuses legacy carried/equipped units, spent review rows untouched')

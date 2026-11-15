@@ -20,6 +20,9 @@ local UI_STRING_KEYS = {
   'ui_use', 'ui_give', 'ui_drop', 'ui_split', 'ui_cancel', 'ui_confirm',
   'ui_quantity', 'ui_weight', 'ui_how_many', 'ui_use_all', 'ui_invalid_amount',
   'ui_no_entry',
+  'ui_ammunition', 'ui_ammo_help', 'ui_ammo_type', 'ui_ammo_loose', 'ui_ammo_carried',
+  'ui_ammo_waiting', 'ui_ammo_load', 'ui_ammo_unload', 'ui_ammo_hint',
+  'ui_ammo_unavailable', 'ui_ammo_none', 'ui_ammo_uncertain', 'ui_ammo_loaded', 'ui_ammo_unloaded',
   'ui_take_all',
   'ui_taking_all',
   'ui_using_item',
@@ -58,6 +61,10 @@ local UI_STRING_KEYS = {
   'ui_equipment_throwable',
   'ui_equipment_utility',
   'ui_equipment_utility_number',
+  'ui_equipment_equipping',
+  'ui_throwables_carried',
+  'ui_throwable_unequip_one',
+  'ui_equipment_unequipping',
   'ui_equipment_checking',
   'ui_equipment_none',
   'ui_equipment_unavailable',
@@ -124,6 +131,10 @@ InventoryAction.Open = function(otherInventoryId, target)
     local generation = presentationGeneration
     local results = Feather.RPC.CallAsync('Feather:Inventory:GetInventoryItems', { otherInventoryId = otherInventoryId })
     if generation ~= presentationGeneration or not CanOpenInventory() then return end
+    if type(results) ~= 'table' then
+      Feather.Notify.RightNotify(Translate('err_invalid_inventory', 'That inventory is unavailable.'), 3000)
+      return
+    end
     if results.error ~= nil then
       -- Localized off the server's stable errorCode, falling back to the
       -- English `error` string it has always sent (§10.2).
@@ -145,6 +156,8 @@ InventoryAction.Open = function(otherInventoryId, target)
       visible = true,
       playerInventory = results.inventory,
       playerItems = results.inventoryItems,
+      carriedThrowables = results.carriedThrowables or {},
+      carriedWeight = results.carriedWeight or 0,
       playerIgnoreLimits = results.inventoryIgnoreLimits or 0,
       otherInventory = results.otherInventory,
       otherItems = results.otherInventoryItems,
@@ -163,6 +176,7 @@ InventoryAction.Open = function(otherInventoryId, target)
       playerMaxWeight = results.inventoryMaxWeight,
       otherMaxWeight = results.otherInventoryMaxWeight,
       strings = BuildUIStrings(),
+      nativeAmmunition = Config.CharacterAmmunitionEnabled == true and GetResourceState('feather-weapons') == 'started',
       -- (§10.3) Wear stages resolved here rather than duplicated in JS --
       -- thresholds come from Config, labels through the same locale path as
       -- every other UI string.

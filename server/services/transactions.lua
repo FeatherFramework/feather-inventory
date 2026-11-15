@@ -796,7 +796,7 @@ function Tx:MoveInstance(instanceId, toInventoryId, toSlot)
         return Result.Err(Result.Codes.INVALID_INPUT, 'Invalid move parameters.')
     end
 
-    local allowed, reason = GuardsAPI.CanMoveInstance(id, self.context)
+    local allowed, reason = GuardsAPI.CanMoveInstance(id, self.context, self.query)
     if not allowed then
         return Result.Err(Result.Codes.DENIED, reason or 'Move blocked by a guard.')
     end

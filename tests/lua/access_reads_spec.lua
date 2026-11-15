@@ -68,3 +68,26 @@ for _,mode in pairs(InventoryAPI.AccessModes) do
   assert(not InventoryAPI.CanAccessInventory(1,42,mode,{}).ok)
 end
 print('PASS private collections refuse generic open/read/insert/remove/manage')
+
+-- Own carried controls are a minimal presentation; pairing with another player
+-- never queries/discloses that player's private collection.
+near,lootable,targetPresent=true,true,true
+InventoryControllers.GetInventoryByCharacter=function(cid) return cid=='self' and 1 or 3 end
+InventoryControllers.GetInventoryCapacity=function() return 25 end
+InventoryControllers.GetInventoryWeightLimit=function() return 125 end
+InventoryControllers.GetInventoryItems=function() return {} end
+InventoryControllers.GetInventoryItemsPair=function() return {sourceItems={},targetItems={}} end
+local carriedReads=0
+NativeThrowableUnitStorage={Accounting=function(_,inventory)
+ assert(inventory==1,'only requesting character custody is presented')
+ carriedReads=carriedReads+1
+ return {weight=2,rows={{id=90,metadata={private='not-for-ui'},custody_id=42},{id=91}}}
+end}
+local result=InventoryAPI.InternalOpenInventory(1,2)
+assert(result.ok and result.value.otherInventory==3 and carriedReads==1)
+assert(result.value.carriedWeight==2 and #result.value.carriedThrowables==2)
+assert(result.value.carriedThrowables[1].id==90 and result.value.carriedThrowables[1].metadata==nil
+ and result.value.carriedThrowables[1].custody_id==nil,'no private inventory ID or metadata exposed')
+NativeThrowableUnitStorage.Accounting=function() return nil end
+assert(not InventoryAPI.InternalOpenInventory(1).ok,'unavailable custody cannot be presented as zero weight')
+print('PASS carried throwable presentation: own scope, minimal IDs/count/weight, paired private isolation and unavailable-read refusal')

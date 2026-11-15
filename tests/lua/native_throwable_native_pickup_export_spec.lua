@@ -29,3 +29,22 @@ gate=1; caller='untrusted'; assert(not apply(context,spec).ok and writes==1)
 caller='feather-weapons'; local stale=copy(context); stale.runtimeTicket='old'
 assert(not apply(stale,spec).ok and writes==1)
 print('native pickup export PASS: trusted caller/reserved plan/current gate, transaction and post-write rollback; mocked claim')
+local quantityGate='1';Config.DevMode=false;gate=0;authority=true
+GetConvar=function(name,default) return name=='feather_throwable_quantities' and quantityGate or default end
+exports['feather-weapons'].ValidateCharacterAmmoRuntimeOperation=function(_,c,op,s)
+ return authority and c.runtimeEpoch=='e' and c.runtimeTicket=='ticket' and op=='pickup'
+  and s.nativePickupPlan.version==2 and s.limits.ammo_tomahawk_regular==3
+end
+ThrowableQuantityRecovery={Claim=function(_,c,s,current)
+ assert(c.characterId=='john' and c.runtimeEpoch=='e' and s.nativePickupPlan.version==2 and current())
+ writes=writes+1;if lose then authority=false end
+ return Result.Ok({characterId='john',revision=12,pools={ammo_tomahawk_regular=0},quantityDeclined=true,recovered=0})
+end}
+spec={expectedRevision=11,limits={ammo_tomahawk_regular=3},pools={ammo_tomahawk_regular=1},
+ nativePickupPlan={version=2,kind='quantity_pickup_ledger_plan',expectedRevision=11}}
+local result=apply(context,spec)
+assert(result.ok and result.value.quantityDeclined and writes==2,'quantity mode requires its own opt-in, not legacy developer flags')
+lose=true;assert(not apply(context,spec).ok and writes==2,'quantity post-write scope loss rolls back')
+authority=true;lose=false;quantityGate='0';assert(not apply(context,spec).ok and writes==2)
+quantityGate='1';caller='untrusted';assert(not apply(context,spec).ok and writes==2)
+print('PASS quantity pickup export: separate opt-in, exact runtime ticket, no legacy developer flag, preserves definite denial, post-write rollback')

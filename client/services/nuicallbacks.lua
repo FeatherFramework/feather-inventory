@@ -67,6 +67,12 @@ local function EquipmentCall(method,args,cb)
     if method=='repair' then return exports['feather-weapons']:RepairNativeEquipment(args.itemId,args.scope) end
     return exports['feather-weapons']:ChangeNativeEquipment(args.itemId,args.action,args.slot,args.scope)
   end)
+  if method=='change' and result and result.ok==true and type(result.value)=='table'
+      and result.value.refreshInventory==true then
+    -- Read the committed inventory/custody before acknowledging the UI. Keep
+    -- the existing paired book and never repeat the equipment mutation.
+    pcall(InventoryAction.Refresh)
+  end
   equipmentBusy=false
   cb(result)
 end
