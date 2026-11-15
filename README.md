@@ -30,7 +30,7 @@ do not publish. Existing assets are never overwritten. These checks need no
 running game server and do not replace native in-game acceptance.
 See [the release process](docs/release-process.md) for developer instructions.
 
-Current version: **0.15.0**. Adds atomic boxed shop delivery with quantity-bound receipts. Deploy the gun-store feature with Feather Shops **0.4.0** and Feather Weapons **0.23.0**. Native character
+Current version: **0.16.0**. Adds native melee equipment and opt-in bounded Tomahawk quantity recovery. Deploy with Feather Shops **0.4.1** and Feather Weapons **0.24.0**. Native character
 ammunition is enabled by default; development commands remain disabled.
 Existing saddlebag storage, Stables reviver policy and per-container Access
 integration remain available.
