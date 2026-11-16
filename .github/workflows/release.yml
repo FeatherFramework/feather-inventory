@@ -71,8 +71,9 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
-          repository: FeatherFramework/feather-weapons
-          ref: 93b3f4321408eb28bfb0d74b9f38de12210136ed
+          # Paired draft PR #50: immutable reviewed runtime/test revision.
+          repository: JusCampin/feather-weapons
+          ref: 59fd99011fea3379dffa12e677eda41e7494bf25
           path: feather-weapons
           persist-credentials: false
       - uses: pnpm/action-setup@v4

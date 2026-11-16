@@ -24,10 +24,17 @@ assert.match(html, /<button[^>]*>Ammunition<\/button>/, 'empty inventory still e
 html = await renderToString(createSSRApp(Book, { ...props, canManageAmmunition: false }));
 assert.doesNotMatch(html, />Ammunition<\/button>/, 'other/unsupported book does not expose player controls');
 const Panel = await component('AmmunitionPanel');
-const options = [{ id: 'ammo_tomahawk_regular', label: 'Tomahawk', loose: 0, carried: 1 }];
+const options = [{ id: 'ammo_tomahawk_regular', label: 'Tomahawk', loose: 0, carried: 1, capacity: 3 }];
 html = await renderToString(createSSRApp(Panel, { options }));
 assert.match(html, /<button(?![^>]*disabled)[^>]*>Unload<\/button>/, 'recovered carried unit can be stored without a loose item');
 assert.match(html, /<button[^>]*disabled[^>]*>Load<\/button>/);
+html = await renderToString(createSSRApp(Panel, { options: [{ ...options[0], loose: 1, carried: 3 }] }));
+assert.match(html, /At capacity \(3\/3\)/);
+assert.match(html, /<button[^>]*disabled[^>]*>Load<\/button>/, 'full pool disables loading even with loose stock');
+assert.match(html, /<button(?![^>]*disabled)[^>]*>Unload<\/button>/);
+assert.doesNotMatch(html, /Load ammunition to carry it/);
+html = await renderToString(createSSRApp(Panel, { options: [{ ...options[0], loose: 1, carried: 2 }] }));
+assert.match(html, /<button(?![^>]*disabled)[^>]*>Load<\/button>/, 'space for exactly one remains usable');
 const scope = { characterId: 'john', sessionId: 's', epoch: 'e' };
 const quantity = ref(1);
 const message = computed(() => t('ui_ammo_loaded', quantity.value, 2));

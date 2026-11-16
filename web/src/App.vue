@@ -247,12 +247,14 @@ async function onAmmoTransfer(ammunitionId, quantity, direction) {
     const { data } = await api.post('Feather:Inventory:NativeAmmoTransfer', { ammunitionId, quantity, direction, scope: ammoScope.value });
     if (!ammoLifetime.current(ticket)) return;
     if (!data?.ok) {
-      ammoMessageKey.value = data?.dispatched === false ? 'ui_ammo_unavailable' : 'ui_ammo_uncertain';
+      ammoMessageKey.value = data?.dispatched === false
+        ? (data.error?.code === 'ammunition_capacity_exceeded' ? '' : 'ui_ammo_unavailable') : 'ui_ammo_uncertain';
       if (data?.dispatched === false && data.value?.options) {
         for (const entry of ammoPanel.value || []) {
           const refreshed = data.value.options.find((candidate) => candidate.id === entry.id);
           entry.loose = refreshed?.loose ?? null;
           if (refreshed) entry.carried = refreshed.carried;
+          if (refreshed) entry.capacity = refreshed.capacity;
         }
         return;
       }
@@ -266,6 +268,7 @@ async function onAmmoTransfer(ammunitionId, quantity, direction) {
       const refreshed = data.value.options?.find((candidate) => candidate.id === entry.id);
       entry.loose = refreshed?.loose ?? null;
       if (refreshed) entry.carried = refreshed.carried;
+      if (refreshed) entry.capacity = refreshed.capacity;
     }
     ammoMessageKey.value = direction === 'load' ? 'ui_ammo_loaded' : 'ui_ammo_unloaded';
     ammoMessageArgs.value = [quantity, data.value.carried];

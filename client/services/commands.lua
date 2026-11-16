@@ -31,6 +31,18 @@ RegisterNetEvent("Feather:Character:Spawned", function()
   InventoryCharacterActive = true
   EnsureInventoryKeyListener()
 end)
+-- A connected player's Character resource does not replay Spawned when only
+-- Inventory restarts. Read its supported world-context export; never invent a
+-- spawn event or enable controls while Character is still in selection.
+AddEventHandler('onClientResourceStart', function(resourceName)
+  if resourceName ~= GetCurrentResourceName() or GetResourceState('feather-character') ~= 'started' then return end
+  local ok, context = pcall(function() return exports['feather-character']:GetMedicalContext() end)
+  if ok and type(context) == 'table' and type(context.characterId) == 'string' and context.characterId ~= ''
+      and type(context.sessionId) == 'string' and context.sessionId ~= '' then
+    InventoryCharacterActive = true
+    EnsureInventoryKeyListener()
+  end
+end)
 AddEventHandler('Feather:Character:Logout', function()
   InventoryCharacterActive = false
   InventoryAction.Close(true)

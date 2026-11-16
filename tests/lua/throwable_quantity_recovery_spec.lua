@@ -11,7 +11,15 @@ json={encode=function(v) serial=serial+1;docs[tostring(serial)]=copy(v);return t
 Result={Codes={INVALID_INPUT='invalid',CONFLICT='conflict',DENIED='denied',NOT_FOUND='missing'},
  Ok=function(v) return {ok=true,value=v} end,Err=function(c,m) return {ok=false,error={code=c,message=m}} end}
 Config={CharacterAmmunitionEnabled=true,DevMode=false}
-GetConvar=function(name,default) return name=='feather_throwable_quantities' and '1' or default end
+local expiryTestEnabled=false
+local distanceTestEnabled=false
+local bucketTestEnabled=false
+GetConvar=function(name,default)
+ if name=='feather_quantity_expiry_test' then return expiryTestEnabled and '1' or '0' end
+ if name=='feather_quantity_distance_test' then return distanceTestEnabled and '1' or '0' end
+ if name=='feather_quantity_bucket_test' then return bucketTestEnabled and '1' or '0' end
+ return name=='feather_throwable_quantities' and '1' or default
+end
 RegisterCommand=function() end
 InventoryIdentity={NormalizeCharacterId=function(v) return ({jane=true,john=true,third=true})[v] and v end}
 InventoryMetadata={DocumentsEqual=equal}
@@ -67,11 +75,14 @@ local function atomic(fn)
  return ok and r or Result.Err('interrupted')
 end
 local function where(x,bucket) return {version=1,bucket=bucket or 0,position={x=x or 0,y=0,z=0}} end
-local function spend(units,final)
+local function spend(units,final,expirySeconds,distanceOffset,bucketTest,sourceBucket)
  local l=db.ledgers.jane
+ local position=where(0,sourceBucket);position.expiryTestSeconds=expirySeconds
+ position.distanceTestOffset=distanceOffset
+ position.bucketTest=bucketTest
  return atomic(function() return CharacterAmmunitionAPI.ApplyObservation(tx,{characterId='jane'},
   {expectedRevision=l.revision,pools={ammo_tomahawk_regular=l.pools.ammo_tomahawk_regular-units,
-   ammo_revolver_regular=l.pools.ammo_revolver_regular},limits=limits,quantityRecovery=where(),finalWear=final},current) end)
+   ammo_revolver_regular=l.pools.ammo_revolver_regular},limits=limits,quantityRecovery=position,finalWear=final},current) end)
 end
 local function claim(character,position,revision,pools)
  local l=db.ledgers[character];local after=pools or copy(l.pools);if not pools then after.ammo_tomahawk_regular=after.ammo_tomahawk_regular+1 end
@@ -109,6 +120,59 @@ for _,scenario in ipairs({'bucket','distance','expired'}) do
  assert(db.ledgers.john.pools.ammo_tomahawk_regular==0)
 end
 reset();assert(spend(1).ok and claim('john',where(50)).value.recovered==1,'inclusive radius50m')
+reset();local beforeExpiry=copy(db)
+assert(not spend(1,nil,5).ok and equal(db,beforeExpiry),'short expiry is default-off and rolls back debit')
+expiryTestEnabled=true
+reset();assert(not spend(2,nil,5).ok,'short allowance requires exactly one paid unit')
+reset();assert(not spend(1,nil,10).ok,'no caller-selected arbitrary lifetime')
+reset();assert(spend(1,nil,5).ok and db.allowances['jane:0'].expiryTest==true
+ and db.allowances['jane:0'].expiresAt==1005)
+clock=1006;expiryTestEnabled=false
+assert(claim('john').value.quantityDeclined and db.ledgers.john.pools.ammo_tomahawk_regular==0,
+ 'expired test allowance stays invalid after test switch is disabled')
+expiryTestEnabled=true
+reset();assert(spend(1,nil,5).ok);clock=1004
+assert(claim('john').value.recovered==1,'test short lifetime uses ordinary expiry predicate')
+reset();assert(spend(1).ok and db.allowances['jane:0'].expiresAt==1180
+ and db.allowances['jane:0'].expiryTest==nil,'normal records stay 180 seconds with test switch on')
+expiryTestEnabled=false
+reset();local beforeDistance=copy(db)
+assert(not spend(1,nil,nil,100).ok and equal(db,beforeDistance),'distance test default-off rolls back debit')
+distanceTestEnabled=true
+reset();assert(not spend(1,nil,nil,50).ok,'only fixed test offset allowed')
+reset();assert(not spend(2,nil,nil,100).ok,'distance test requires single paid unit')
+expiryTestEnabled=true
+reset();assert(not spend(1,nil,5,100).ok,'expiry and distance tests cannot combine')
+expiryTestEnabled=false
+reset();assert(spend(1,nil,nil,100).ok)
+assert(db.allowances['jane:0'].position.x==100 and db.allowances['jane:0'].distanceTest==true
+ and db.allowances['jane:0'].expiresAt==1180)
+assert(claim('john').value.quantityDeclined and db.ledgers.john.pools.ammo_tomahawk_regular==0,
+ 'actual query radius excludes offset allowance at original landing location')
+assert(db.allowances['jane:0'].remaining==1,'distance rejection does not consume allowance')
+assert(claim('third',where(100)).value.recovered==1,'same receipt remains claimable inside its recorded radius')
+reset();assert(spend(1).ok and db.allowances['jane:0'].position.x==0
+ and db.allowances['jane:0'].distanceTest==nil,'enabled test switch alone never shifts normal receipts')
+distanceTestEnabled=false
+reset();local beforeBucket=copy(db)
+assert(not spend(1,nil,nil,nil,true).ok and equal(db,beforeBucket),'bucket test disabled by default')
+bucketTestEnabled=true
+reset();assert(not spend(2,nil,nil,nil,true).ok,'bucket test is one paid unit only')
+reset();assert(not spend(1,nil,nil,nil,1).ok,'bucket test requires exact marker')
+expiryTestEnabled=true;distanceTestEnabled=true
+reset();assert(not spend(1,nil,5,nil,true).ok)
+reset();assert(not spend(1,nil,nil,100,true).ok,'cannot combine radius and bucket tests')
+expiryTestEnabled=false;distanceTestEnabled=false
+reset();assert(spend(1,nil,nil,nil,true).ok)
+assert(db.allowances['jane:0'].bucket==1 and db.allowances['jane:0'].bucketTest==true
+ and db.allowances['jane:0'].position.x==0 and db.allowances['jane:0'].expiresAt==1180)
+assert(claim('john').value.quantityDeclined and db.allowances['jane:0'].remaining==1,
+ 'same location cannot consume another bucket allowance')
+assert(claim('third',where(0,1)).value.recovered==1,'matching bucket positive control')
+reset();assert(spend(1,nil,nil,nil,true,2147483647).ok and db.allowances['jane:0'].bucket==0)
+reset();assert(spend(1).ok and db.allowances['jane:0'].bucket==0
+ and db.allowances['jane:0'].bucketTest==nil,'switch alone does not change normal buckets')
+bucketTestEnabled=false
 reset();r=claim('john',nil,nil,{ammo_tomahawk_regular=1,ammo_revolver_regular=6})
 assert(r.ok and r.value.quantityDeclined and db.ledgers.john.pools.ammo_revolver_regular==6
  and db.ledgers.john.pools.ammo_tomahawk_regular==0,'denial keeps genuine shot reductions')

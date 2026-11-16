@@ -24,12 +24,33 @@ function Q.Record(tx,context,spec,previous,observed,current)
  local units=type(before)=='number' and type(after)=='number' and before-after or 0
  if spec.finalWear~=nil or not location(where) or not int(units,1,3) or not int(spec.expectedRevision,0,9007199254740990)
   or spec.limits.ammo_tomahawk_regular~=3 or not live(current) then return denied() end
+ local lifetime=180
+ if where.bucketTest~=nil then
+  if where.bucketTest~=true or units~=1 or where.expiryTestSeconds~=nil or where.distanceTestOffset~=nil
+   or type(GetConvar)~='function' or GetConvar('feather_quantity_bucket_test','0')~='1' then return denied() end
+ end
+ if where.distanceTestOffset~=nil then
+  if where.distanceTestOffset~=100 or units~=1 or where.expiryTestSeconds~=nil or type(GetConvar)~='function'
+   or GetConvar('feather_quantity_distance_test','0')~='1' then return denied() end
+ end
+ if where.expiryTestSeconds~=nil then
+  if where.expiryTestSeconds~=5 or units~=1 or type(GetConvar)~='function'
+   or GetConvar('feather_quantity_expiry_test','0')~='1' then return denied() end
+  lifetime=5
+ end
  local id=context.characterId..':'..spec.expectedRevision
  local rows=tx.query('SELECT result_json FROM inventory_grant_receipts WHERE source_resource=? AND grant_id=? FOR UPDATE',{namespace,id})
  if type(rows)~='table' or #rows~=0 then return denied() end
  local now=os.time()
  local value={version=1,kind='tomahawk_quantity_allowance',remaining=units,units=units,
-  bucket=where.bucket,position=copy(where.position),createdAt=now,expiresAt=now+180}
+  bucket=where.bucket,position=copy(where.position),createdAt=now,expiresAt=now+lifetime,
+  expiryTest=lifetime==5 or nil}
+ if where.distanceTestOffset==100 then
+  value.position.x=value.position.x+100;value.distanceTest=true
+ end
+ if where.bucketTest==true then
+  value.bucket=where.bucket==2147483647 and 0 or where.bucket+1;value.bucketTest=true
+ end
  local fingerprint=('quantity-v1:%s:%d:%d'):format(id,units,where.bucket)
  if not wrote(tx.query('INSERT INTO inventory_grant_receipts (source_resource,grant_id,request_fingerprint,result_json) VALUES (?,?,?,?)',
   {namespace,id,fingerprint,json.encode(value)})) or not live(current) then return denied() end
@@ -67,7 +88,13 @@ function Q.Claim(tx,context,spec,current)
   local v=decode(row.result_json)
   if not v or v.version~=1 or v.kind~='tomahawk_quantity_allowance' or not location({version=1,bucket=v.bucket,position=v.position})
    or not int(v.units,1,3) or not int(v.remaining,1,v.units) or not int(v.createdAt,0,9007199254740990)
-   or v.expiresAt~=v.createdAt+180 or type(row.grant_id)~='string' then return denied() end
+   or (v.expiryTest~=nil and v.expiryTest~=true)
+   or (v.expiryTest==true and v.units~=1)
+   or (v.distanceTest~=nil and v.distanceTest~=true)
+   or (v.distanceTest==true and (v.units~=1 or v.expiryTest~=nil))
+   or (v.bucketTest~=nil and v.bucketTest~=true)
+   or (v.bucketTest==true and (v.units~=1 or v.expiryTest~=nil or v.distanceTest~=nil))
+   or v.expiresAt~=v.createdAt+(v.expiryTest==true and 5 or 180) or type(row.grant_id)~='string' then return denied() end
   local a,b=v.position,plan.location.position
   if v.bucket~=plan.location.bucket or v.expiresAt<os.time()
    or (a.x-b.x)^2+(a.y-b.y)^2+(a.z-b.z)^2>2500 or not live(current) then return denied() end

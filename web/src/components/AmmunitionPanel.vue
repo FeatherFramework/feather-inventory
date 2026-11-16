@@ -7,12 +7,22 @@ const selected = ref(props.options[0]?.id || '');
 const quantity = ref(1);
 const option = computed(() => props.options.find((entry) => entry.id === selected.value));
 const valid = computed(() => Number.isInteger(Number(quantity.value)) && Number(quantity.value) > 0 && Number(quantity.value) <= 1000);
+const loadReason = computed(() => {
+  const entry = option.value;
+  if (!entry) return '';
+  if (!Number.isFinite(entry.capacity)) return t('ui_ammo_unavailable');
+  if (entry.carried >= entry.capacity) return t('ui_ammo_full', entry.carried, entry.capacity);
+  if (!valid.value) return t('ui_ammo_quantity_invalid');
+  if (Number(quantity.value) > entry.capacity - entry.carried) return t('ui_ammo_space', entry.capacity - entry.carried);
+  if (entry.loose == null) return t('ui_ammo_unavailable');
+  if (Number(quantity.value) > entry.loose) return t('ui_ammo_not_enough');
+  return '';
+});
 </script>
 <template>
   <div class="ammo-shade">
     <section class="ammo-panel" role="dialog" :aria-label="t('ui_ammunition')" aria-modal="true">
       <h2>{{ t('ui_ammunition') }}</h2>
-      <p>{{ t('ui_ammo_help') }}</p>
       <!-- Keep selection inside the NUI document: native select popups can
            leave a corrupted compositor surface in the embedded game browser. -->
       <div class="ammo-types" role="group" :aria-label="t('ui_ammo_type')">
@@ -22,9 +32,9 @@ const valid = computed(() => Number.isInteger(Number(quantity.value)) && Number(
       </div>
       <p>{{ t('ui_ammo_loose') }}: {{ option?.loose ?? '?' }} · {{ t('ui_ammo_carried') }}: {{ option?.carried ?? 0 }}</p>
       <label>{{ t('ui_quantity') }} <input v-model.number="quantity" type="number" min="1" max="1000" step="1" :disabled="busy"></label>
-      <p role="status">{{ busy ? t('ui_ammo_waiting') : message }}</p>
+      <p role="status">{{ busy ? t('ui_ammo_waiting') : loadReason || message }}</p>
       <div class="ammo-buttons">
-        <button :disabled="busy || !valid || !option || option.loose == null || quantity > option.loose" @click="emit('transfer', selected, Number(quantity), 'load')">{{ t('ui_ammo_load') }}</button>
+        <button :disabled="busy || !option || !!loadReason" @click="emit('transfer', selected, Number(quantity), 'load')">{{ t('ui_ammo_load') }}</button>
         <button :disabled="busy || !valid || !option || quantity > option.carried" @click="emit('transfer', selected, Number(quantity), 'unload')">{{ t('ui_ammo_unload') }}</button>
         <button :disabled="busy" @click="emit('close')">{{ t('ui_equipment_close') }}</button>
       </div>

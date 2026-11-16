@@ -102,6 +102,10 @@ RegisterNUICallback('Feather:Inventory:NativeAmmoTransfer',function(args,cb)
     local selected
     for _,option in ipairs(preview.value.options) do if option.id==args.ammunitionId then selected=option end end
     local available=selected and (args.direction=='load' and selected.loose or selected.carried)
+    if args.direction=='load' and selected and type(selected.capacity)=='number'
+      and selected.carried+args.quantity>selected.capacity then
+      return {ok=false,dispatched=false,error={code='ammunition_capacity_exceeded'},value={options=preview.value.options}}
+    end
     if type(available)~='number' or args.quantity>available then
       return {ok=false,dispatched=false,error={code='ammunition_availability_changed'},
         message='Available rounds changed. Nothing was transferred.',value={options=preview.value.options}}

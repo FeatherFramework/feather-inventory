@@ -21,6 +21,7 @@ local UI_STRING_KEYS = {
   'ui_quantity', 'ui_weight', 'ui_how_many', 'ui_use_all', 'ui_invalid_amount',
   'ui_no_entry',
   'ui_ammunition', 'ui_ammo_help', 'ui_ammo_type', 'ui_ammo_loose', 'ui_ammo_carried',
+  'ui_ammo_full', 'ui_ammo_space', 'ui_ammo_not_enough', 'ui_ammo_quantity_invalid',
   'ui_ammo_waiting', 'ui_ammo_load', 'ui_ammo_unload', 'ui_ammo_hint',
   'ui_ammo_unavailable', 'ui_ammo_none', 'ui_ammo_uncertain', 'ui_ammo_loaded', 'ui_ammo_unloaded',
   'ui_take_all',
