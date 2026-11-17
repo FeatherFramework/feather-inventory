@@ -10,7 +10,8 @@ exports('ReconcileNativeThrowablePickup',function(context,spec)
     local function current()
         if Config.CharacterAmmunitionEnabled~=true or GetResourceState('feather-weapons')~='started' then return false end
         if quantities then
-            if type(GetConvar)~='function' or GetConvar('feather_throwable_quantities','0')~='1' or not ThrowableQuantityRecovery then return false end
+            local flag=spec.nativePickupPlan.ammunitionId=='ammo_arrow_regular' and 'feather_regular_arrows' or 'feather_throwable_quantities'
+            if type(GetConvar)~='function' or GetConvar(flag,'0')~='1' or not ThrowableQuantityRecovery then return false end
         elseif Config.DevMode~=true or type(GetConvarInt)~='function' or GetConvarInt('feather_native_throwable_pickup',0)~=1
             or not NativeThrowableNativePickupClaim then return false end
         local ok,value=pcall(function()

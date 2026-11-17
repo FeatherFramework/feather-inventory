@@ -203,7 +203,9 @@ function A.ApplyObservation(tx,context,spec,authority)
         spent.value.consumed=consumed;spent.value.changed=true
         return spent
     end
-    if quantities and consumed.ammo_tomahawk_regular and consumed.ammo_tomahawk_regular>0 and spec.finalWear==nil then
+    local arrows=type(GetConvar)=='function' and GetConvar('feather_regular_arrows','0')=='1'
+    if spec.finalWear==nil and (quantities and consumed.ammo_tomahawk_regular and consumed.ammo_tomahawk_regular>0
+        or arrows and consumed.ammo_arrow_regular and consumed.ammo_arrow_regular>0) then
         if not ThrowableQuantityRecovery then return err(Result.Codes.DENIED,'Quantity recovery unavailable.') end
         local recorded=ThrowableQuantityRecovery.Record(tx,context,spec,previous,observed,authority)
         if not recorded.ok then return recorded end

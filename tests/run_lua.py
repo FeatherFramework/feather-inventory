@@ -151,6 +151,7 @@ for name in (
     'native_broken_equipment_spec.lua',
     'native_collection_timing_spec.lua',
     'throwable_quantity_recovery_spec.lua',
+    'regular_arrow_recovery_spec.lua',
 ):
     isolated = LuaRuntime(unpack_returned_tuples=True)
     isolated.globals().arg = isolated.table_from({1: root.as_posix()})

@@ -1,5 +1,13 @@
 # Feather Inventory
 
+Version **0.17.0** adds type-separated Regular-arrow recovery for Weapons0.25.0.
+With `setr feather_regular_arrows 1`, funded shot debits create arrow allowances
+atomically; native recovery consumes them once within180seconds/50metres and the
+same routing bucket. Arrow and Tomahawk allowances cannot fund each other.
+Existing schema, item names and historical receipts are retained. Loaded arrows
+use the character ledger, capped at40; recovery does not issue an owned bow.
+Keep the flag enabled before resource startup while using this saved pool.
+
 Opt-in regular Tomahawk quantities (`setr feather_throwable_quantities 1`, with
 the matching Weapons update) use the existing stack ammunition item and ledger,
 with capacity three. The per-player localized Ammunition footer remains available
