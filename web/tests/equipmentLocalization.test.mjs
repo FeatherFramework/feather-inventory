@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { equipmentDefaults, equipmentSlotLabel, equipmentOptionLabel } from '../src/equipmentPresentation.js';
+import { equipmentDefaults, equipmentSlotLabel, equipmentOptionLabel, equipmentBusyMessage } from '../src/equipmentPresentation.js';
 import * as john from '../src/i18n.js?john';
 import * as jane from '../src/i18n.js?jane';
 
@@ -46,3 +46,16 @@ assert.equal(equipmentOptionLabel({action:'equip',slot:'weapon_offhand'}, jane.t
 const panel = fs.readFileSync(new URL('../src/components/EquipmentPanel.vue', import.meta.url), 'utf8');
 assert.ok(!panel.includes('v-for="slot in slots"'), 'unrelated occupancy grid is not rendered');
 assert.ok(!panel.includes("t('ui_equipment_hint')"), 'generic lasso guidance is not rendered');
+
+john.setStrings({ui_equipment_unequip:'Ranger'});
+for (const slot of ['weapon_melee','weapon_melee_secondary','weapon_melee_tertiary','weapon_melee_quaternary','weapon_melee_quinary']) {
+  assert.equal(equipmentOptionLabel({action:'equip',slot},jane.t,true),'Equipar');
+  assert.equal(equipmentOptionLabel({action:'unequip',slot},john.t,true),'Ranger');
+}
+
+assert.equal(equipmentBusyMessage({action:'equip'}),'ui_equipment_equipping');
+assert.equal(equipmentBusyMessage({action:'unequip'}),'ui_equipment_unequipping');
+assert.equal(equipmentBusyMessage({action:'unequip_primary'}),'ui_equipment_unequipping');
+jane.setStrings({ui_equipment_equipping:'Equipando…'});
+assert.equal(jane.t(equipmentBusyMessage({action:'equip'})),'Equipando…');
+assert.equal(jane.t(equipmentBusyMessage({action:'unequip'})),'Unequipping…');

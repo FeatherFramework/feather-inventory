@@ -14,6 +14,10 @@ InventoryCharacterAmmoSchema={Start=function()
  if schemaFail then error('ammunition_schema_sentinel') end
  return true
 end}
+InventoryNativeWeaponItemPolicy={Start=function()
+ assert(InventoryReadiness.state=='starting' and schemaInitialized==1 and initialized==0 and checkoutInitialized==0)
+ return true
+end}
 DB = {awaitReady = function(timeout) assert(timeout == 60000); coroutine.yield('waiting'); return reachable end}
 GrantOnceAPI = {Start = function() initialized = initialized + 1 end}
 ShopCheckoutAPI = {Start = function() checkoutInitialized=checkoutInitialized+1 end}

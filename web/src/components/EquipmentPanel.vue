@@ -11,7 +11,7 @@ const emit = defineEmits(['change', 'close']);
       <p>{{ t('ui_equipment_title') }}</p>
       <div v-if="busy" class="equipment-progress" role="status">
         <span class="equipment-spinner" aria-hidden="true"></span>
-        <span>{{ t('ui_equipment_checking') }}</span>
+        <span>{{ t(message || 'ui_equipment_checking') }}</span>
       </div>
       <p v-if="options.some(option => option.kind === 'attachment')">{{ t('ui_equipment_attachment_hint') }}</p>
       <p v-if="options.some(option => option.kind === 'repair')">{{ t('ui_equipment_repair_hint') }}</p>

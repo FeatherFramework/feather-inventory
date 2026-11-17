@@ -3,6 +3,7 @@ GetResourceState=function() return 'started' end
 local callbacks={}
 RegisterNUICallback=function(name,fn) callbacks[name]=fn end
 local loose,carried,transfers=1,0,0
+local capacity=3
 local onRead
 Feather={RPC={CallAsync=function()
   if onRead then local fn=onRead; onRead=nil; fn() end
@@ -12,7 +13,7 @@ Feather={RPC={CallAsync=function()
 end}}
 exports={['feather-weapons']={
  GetNativeAmmunitionControls=function() return {ok=true,value={characterId='jane',sessionId='s',epoch='e',
-  options={{id='regular',itemName='ammo_revolver_regular',carried=carried}}}} end,
+  options={{id='regular',itemName='ammo_revolver_regular',carried=carried,capacity=capacity}}}} end,
  TransferNativeAmmunition=function(_,id,quantity,direction)
   assert(id=='regular' and quantity==1)
   transfers=transfers+1
@@ -29,6 +30,11 @@ local function transfer(args,cb)
 end
 local load={ammunitionId='regular',quantity=1,direction='load'}
 local result,overlap
+carried=3
+transfer(load,function(v) result=v end)
+assert(not result.ok and result.dispatched==false and result.error.code=='ammunition_capacity_exceeded'
+ and transfers==0 and loose==1 and result.value.options[1].capacity==3)
+carried=0
 transfer({ammunitionId='regular',quantity=1,direction='load',scope={characterId='jane',sessionId='old',epoch='e'}},function(v) result=v end)
 assert(not result.ok and result.dispatched==false and transfers==0)
 transfer({ammunitionId='regular',quantity=1,direction='load',scope={characterId='jane',sessionId='s',epoch='old'}},function(v) result=v end)

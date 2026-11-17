@@ -9,6 +9,8 @@ import ItemCountModal from '@/components/ItemCountModal.vue';
 import AmmunitionPanel from '@/components/AmmunitionPanel.vue';
 import EquipmentPanel from '@/components/EquipmentPanel.vue';
 import { createAmmoPanelLifetime } from './ammoPanelLifetime';
+import { equipmentBusyMessage } from './equipmentPresentation';
+import { isNativeFirearm, isNativeMelee, isNativeThrowable, carriedThrowableUnits, loadMeleeContextAction } from './meleeContextAction';
 import Hotbar from '@/components/Hotbar.vue';
 import { t, setStrings, setConditionStages } from '@/i18n';
 
@@ -31,6 +33,8 @@ function makeBook(footerLabel) {
     inventoryId: null,
     ignoreLimits: 0,
     items: [],
+    carriedThrowables: [],
+    carriedWeight: 0,
     activeCategoryId: null,
     searchQuery: '',
     selectedIndex: -1,
@@ -63,6 +67,12 @@ if (import.meta.env.DEV) {
     { id: 104, slot_index: 7, name: 'medical_tonic', display_name: 'Health Tonic', description: 'Restores health.', usable: 1, weight: 1, category_id: 2 },
   ];
   rawCategories.value = [{ id: 1, name: 'provisions' }, { id: 2, name: 'medical' }];
+  if (previewMode === 'throwables') {
+    player.carriedThrowables = [{id: 901}, {id: 902}, {id: 903}];
+    player.carriedWeight = 3;
+    player.items.push({id: 904, slot_index: 2, name: 'weapon_thrown_tomahawk', display_name: 'Tomahawk',
+      description: 'A standard throwing tomahawk.', usable: 0, weight: 1, category_id: 3});
+  }
   Object.assign(hotbar, {
     enabled: true,
     visible: true,
@@ -87,7 +97,10 @@ const hotbarDragEligible = computed(() => {
 const contextMenu = ref(null); // { book, slot, x, y } | null
 const ammoPanel = ref(null);
 const ammoBusy = ref(false);
-const ammoMessage = ref('');
+const nativeAmmoEnabled = ref(false);
+const ammoMessageKey = ref('');
+const ammoMessageArgs = ref([]);
+const ammoMessage = computed(() => ammoMessageKey.value ? t(ammoMessageKey.value, ...ammoMessageArgs.value) : '');
 const ammoScope = ref(null);
 const ammoLifetime = createAmmoPanelLifetime();
 const equipmentPanel = ref(null);
@@ -110,9 +123,49 @@ function closeAmmoPanel() {
   ammoPanel.value = null;
   ammoScope.value = null;
 }
-const contextCanAmmo = computed(() => contextMenu.value?.book === 'player' && contextStack().items.some((item) => !/^weapon_melee_(knife|machete|hammer|cleaver|hatchet)$/.test(item.name) && /^(ammo_|weapon_)/.test(item.name)));
+const contextCanAmmo = computed(() => contextMenu.value?.book === 'player' && contextStack().items.some((item) => !isNativeMelee(item) && !isNativeThrowable(item) && /^(ammo_|weapon_)/.test(item.name)));
+const contextIsDirectEquipment = computed(() => contextMenu.value?.book === 'player' && contextStack().items.length === 1 && (isNativeMelee(contextStack().items[0]) || isNativeThrowable(contextStack().items[0])));
 const contextCanEquipment = computed(() => contextMenu.value?.book === 'player' && contextStack().items.length === 1
   && /^weapon_/.test(contextStack().items[0]?.name || ''));
+async function onContextDirectEquipment() {
+  if (equipmentBusy.value || ammoBusy.value || mutationBusy.value) return;
+  const action = contextMenu.value?.equipmentAction;
+  if (!action || !contextIsDirectEquipment.value || contextStack().items[0]?.id !== action.itemId) return;
+  contextMenu.value = null;
+  await withMutationBusy(equipmentBusyMessage(action.option), async () => {
+    closeAmmoPanel();
+    equipmentScope.value = action.scope;
+    equipmentItem.value = action.itemId;
+    await changeEquipment(action.option);
+  });
+}
+async function onUnequipThrowable() {
+  if (equipmentBusy.value || ammoBusy.value || mutationBusy.value) return;
+  const item = player.carriedThrowables.at(-1);
+  if (!item) return;
+  await withMutationBusy('ui_equipment_unequipping', async () => {
+    closeAmmoPanel();
+    const ticket = equipmentLifetime.capture();
+    const current = () => visible.value && equipmentLifetime.current(ticket)
+      && player.carriedThrowables.some((unit) => unit.id === item.id);
+    equipmentBusy.value = true;
+    const menu = {};
+    try {
+      await loadMeleeContextAction(menu, item.id, (route, payload) => api.post(route, payload), current, true);
+      if (!current()) return;
+      const action = menu.equipmentAction;
+      if (!action || action.option.action !== 'unequip') {
+        equipmentPanel.value = [];
+        equipmentMessage.value = 'ui_equipment_unavailable';
+        return;
+      }
+      equipmentScope.value = action.scope;
+      equipmentItem.value = item.id;
+      equipmentBusy.value = false;
+      await changeEquipment(action.option);
+    } finally { equipmentBusy.value = false; }
+  });
+}
 async function onContextEquipment() {
   if (equipmentBusy.value || ammoBusy.value || mutationBusy.value) return;
   const item = contextStack().items[0];
@@ -139,6 +192,7 @@ async function onContextEquipment() {
 }
 async function changeEquipment(option) {
   if (equipmentBusy.value || !equipmentScope.value) return;
+  equipmentMessage.value = equipmentBusyMessage(option);
   equipmentBusy.value = true;
   const ticket = equipmentLifetime.capture();
   try {
@@ -166,21 +220,24 @@ async function changeEquipment(option) {
   } finally { equipmentBusy.value = false; }
 }
 async function onContextAmmo() {
+  return openAmmoPanel(contextStack().items[0]?.id);
+}
+async function openAmmoPanel(itemId) {
   if (ammoBusy.value) return;
   const ticket = ammoLifetime.invalidate();
-  const itemId = contextStack().items[0]?.id;
   contextMenu.value = null;
-  ammoMessage.value = '';
+  ammoMessageKey.value = '';
+  ammoMessageArgs.value = [];
   try {
     const { data } = await api.post('Feather:Inventory:NativeAmmoOptions', { itemId });
     if (!ammoLifetime.current(ticket)) return;
     if (data?.ok) {
       ammoScope.value = { characterId: data.value.characterId, sessionId: data.value.sessionId, epoch: data.value.epoch };
       ammoPanel.value = data.value.options;
-      if (!data.value.options.length) ammoMessage.value = 'No supported shared-pool ammunition for this item.';
+      if (!data.value.options.length) ammoMessageKey.value = 'ui_ammo_none';
     }
-    else { ammoPanel.value = []; ammoMessage.value = data?.message || data?.error?.code || 'Ammunition controls unavailable.'; }
-  } catch { if (ammoLifetime.current(ticket)) { ammoPanel.value = []; ammoMessage.value = 'Ammunition controls unavailable.'; } }
+    else { ammoPanel.value = []; ammoMessageKey.value = 'ui_ammo_unavailable'; }
+  } catch { if (ammoLifetime.current(ticket)) { ammoPanel.value = []; ammoMessageKey.value = 'ui_ammo_unavailable'; } }
 }
 async function onAmmoTransfer(ammunitionId, quantity, direction) {
   if (ammoBusy.value) return;
@@ -190,12 +247,14 @@ async function onAmmoTransfer(ammunitionId, quantity, direction) {
     const { data } = await api.post('Feather:Inventory:NativeAmmoTransfer', { ammunitionId, quantity, direction, scope: ammoScope.value });
     if (!ammoLifetime.current(ticket)) return;
     if (!data?.ok) {
-      ammoMessage.value = data?.message || data?.error?.code || 'Transfer uncertain; do not retry.';
+      ammoMessageKey.value = data?.dispatched === false
+        ? (data.error?.code === 'ammunition_capacity_exceeded' ? '' : 'ui_ammo_unavailable') : 'ui_ammo_uncertain';
       if (data?.dispatched === false && data.value?.options) {
         for (const entry of ammoPanel.value || []) {
           const refreshed = data.value.options.find((candidate) => candidate.id === entry.id);
           entry.loose = refreshed?.loose ?? null;
           if (refreshed) entry.carried = refreshed.carried;
+          if (refreshed) entry.capacity = refreshed.capacity;
         }
         return;
       }
@@ -209,9 +268,11 @@ async function onAmmoTransfer(ammunitionId, quantity, direction) {
       const refreshed = data.value.options?.find((candidate) => candidate.id === entry.id);
       entry.loose = refreshed?.loose ?? null;
       if (refreshed) entry.carried = refreshed.carried;
+      if (refreshed) entry.capacity = refreshed.capacity;
     }
-    ammoMessage.value = `${direction === 'load' ? 'Loaded' : 'Unloaded'} ${quantity} round(s). Carried: ${data.value.carried}.`;
-  } catch { if (ammoLifetime.current(ticket)) { ammoMessage.value = 'Transfer uncertain; do not retry. Check Weapons status.'; ammoPanel.value = []; } }
+    ammoMessageKey.value = direction === 'load' ? 'ui_ammo_loaded' : 'ui_ammo_unloaded';
+    ammoMessageArgs.value = [quantity, data.value.carried];
+  } catch { if (ammoLifetime.current(ticket)) { ammoMessageKey.value = 'ui_ammo_uncertain'; ammoPanel.value = []; } }
   finally { ammoBusy.value = false; }
 }
 const mutationBusy = ref(false);
@@ -291,6 +352,7 @@ const onMessage = (event) => {
   closeAmmoPanel();
 
   visible.value = data.visible;
+  nativeAmmoEnabled.value = data.nativeAmmunition === true;
   rawCategories.value = data.categories || [];
   setStrings(data.strings);
   setConditionStages(data.conditionStages, data.conditionMax);
@@ -304,6 +366,8 @@ const onMessage = (event) => {
   player.inventoryId = data.playerInventory;
   player.ignoreLimits = data.playerIgnoreLimits || 0;
   player.items = data.playerItems || [];
+  player.carriedThrowables = carriedThrowableUnits(data.carriedThrowables);
+  player.carriedWeight = Number.isFinite(data.carriedWeight) && data.carriedWeight >= 0 ? data.carriedWeight : 0;
   player.activeCategoryId = null;
   player.searchQuery = '';
   player.selectedIndex = -1;
@@ -563,6 +627,14 @@ function onCellContextMenu(bookKey, slotIndex, event) {
   hover.value = null;
   book.selectedIndex = slotIndex;
   contextMenu.value = { book: bookKey, slot: slotIndex, x: event.clientX, y: event.clientY };
+  if (contextIsDirectEquipment.value) {
+    const menu = contextMenu.value;
+    const itemId = contextStack().items[0].id;
+    const ticket = equipmentLifetime.capture();
+    void loadMeleeContextAction(menu, itemId, (route, payload) => api.post(route, payload),
+      () => visible.value && contextMenu.value === menu && equipmentLifetime.current(ticket)
+        && contextStack().items.length === 1 && contextStack().items[0]?.id === itemId, isNativeThrowable(contextStack().items[0]));
+  }
 }
 
 function contextStack() {
@@ -722,7 +794,7 @@ async function performGive(book, items) {
   });
 }
 
-const contextCanUse = computed(() => !!contextStack().items[0]?.usable);
+const contextCanUse = computed(() => !isNativeMelee(contextStack().items[0]) && !isNativeFirearm(contextStack().items[0]) && !isNativeThrowable(contextStack().items[0]) && !!contextStack().items[0]?.usable);
 async function setHotbarSlot(slot, item) {
   try {
     const { data } = await api.post('Feather:Inventory:Hotbar:Set', {
@@ -800,6 +872,12 @@ const quantityActionLabel = computed(() => {
         :capacity="player.capacity"
         :max-weight="player.maxWeight"
         :items="player.items"
+        :carried-weight="player.carriedWeight"
+        :carried-throwables="player.carriedThrowables.length"
+        :carried-busy="mutationBusy || equipmentBusy || ammoBusy"
+        :can-manage-ammunition="nativeAmmoEnabled"
+        @manage-ammunition="openAmmoPanel()"
+        @unequip-throwable="onUnequipThrowable"
         :categories="categoryOptions"
         v-model:active-category-id="player.activeCategoryId"
         v-model:search-query="player.searchQuery"
@@ -850,11 +928,15 @@ const quantityActionLabel = computed(() => {
       :y="contextMenu.y"
       :can-use="contextCanUse"
       :can-ammo="contextCanAmmo"
-      :can-equipment="contextCanEquipment"
+      :can-equipment="contextCanEquipment && !contextIsDirectEquipment"
+      :direct-equipment="contextIsDirectEquipment"
+      :equipment-loading="contextMenu.equipmentLoading === true"
+      :equipment-action="contextMenu.equipmentAction?.option.action || ''"
       :can-split="contextCanSplit"
       @use="onContextUse"
       @ammo="onContextAmmo"
       @equipment="onContextEquipment"
+      @direct-equipment="onContextDirectEquipment"
       @give="onContextGive"
       @drop="onContextDrop"
       @split="onContextSplit"

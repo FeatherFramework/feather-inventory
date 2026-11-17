@@ -27,6 +27,17 @@ local function scenario(devMode)
  dofile('client/controllers/inventory.lua')
  dofile('client/services/commands.lua')
  assert(listeners==(devMode and 1 or 0))
+ local worldContext
+ GetResourceState=function(name) return name=='feather-character' and 'started' or 'stopped' end
+ exports={['feather-character']={GetMedicalContext=function() return worldContext end}}
+ events.onClientResourceStart('feather-inventory')
+ assert(InventoryCharacterActive==devMode,'selection must not activate Inventory after restart')
+ worldContext={characterId='jane',sessionId='session'}
+ events.onClientResourceStart('unrelated-resource')
+ assert(InventoryCharacterActive==devMode)
+ events.onClientResourceStart('feather-inventory')
+ assert(InventoryCharacterActive and listeners==1,'existing spawned character regains hotkey after Inventory restart')
+ events.onClientResourceStart('feather-inventory');assert(listeners==1,'no duplicate listeners')
  events['Feather:Character:Spawned']()
  InventoryAction.Open()
  assert(focus and messages[#messages].type=='toggleInventory')

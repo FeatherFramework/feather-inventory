@@ -1,5 +1,22 @@
 # Feather Inventory
 
+Version **0.17.0** adds type-separated Regular-arrow recovery for Weapons0.25.0.
+With `setr feather_regular_arrows 1`, funded shot debits create arrow allowances
+atomically; native recovery consumes them once within180seconds/50metres and the
+same routing bucket. Arrow and Tomahawk allowances cannot fund each other.
+Existing schema, item names and historical receipts are retained. Loaded arrows
+use the character ledger, capped at40; recovery does not issue an owned bow.
+Keep the flag enabled before resource startup while using this saved pool.
+
+Opt-in regular Tomahawk quantities (`setr feather_throwable_quantities 1`, with
+the matching Weapons update) use the existing stack ammunition item and ledger,
+with capacity three. The per-player localized Ammunition footer remains available
+even when Inventory is empty. Paid throw debits create bounded shared recovery
+allowances in the same transaction; native collection consumes them once without
+transferring serialized item metadata. No schema migration or historical item
+conversion is required. Quantity equipment snapshots also support death sealing
+and orderly restart cleanup. Keep the mode enabled while quantities are loaded.
+
 Boxed shop offers use the immutable Shops order's `pack_size` (default 1 for
 historical orders). Inventory atomically delivers `quantity * pack_size` existing
 items and stages the unchanged whole-order Economy payment. Package size and
@@ -21,7 +38,7 @@ do not publish. Existing assets are never overwritten. These checks need no
 running game server and do not replace native in-game acceptance.
 See [the release process](docs/release-process.md) for developer instructions.
 
-Current version: **0.15.0**. Adds atomic boxed shop delivery with quantity-bound receipts. Deploy the gun-store feature with Feather Shops **0.4.0** and Feather Weapons **0.23.0**. Native character
+Current version: **0.16.0**. Adds native melee equipment and opt-in bounded Tomahawk quantity recovery. Deploy with Feather Shops **0.4.1** and Feather Weapons **0.24.0**. Native character
 ammunition is enabled by default; development commands remain disabled.
 Existing saddlebag storage, Stables reviver policy and per-container Access
 integration remain available.
@@ -248,7 +265,7 @@ bindings/preferences are preserved while the feature or player choice is
 disabled.
 
 When Settings is available, visibility uses Feather Menu's compact arrow
-selector and opacity uses a 50–100 percent slider. Slot borders and available
+selector and opacity uses a 50â€“100 percent slider. Slot borders and available
 item icons remain fully opaque while the parchment and labels follow the preference. Both apply immediately and
 persist in Inventory-owned client KVPs.
 
@@ -264,14 +281,14 @@ never supplies the item instance to use.
 5. **Custom Inventory API**: Developers can easily register custom inventories for different entities within the game, expanding the functionality of the script to cater to specific gameplay scenarios.
 6. **Trusted grant API**: Server resources can list item definitions and atomically grant validated catalog items to an inventory.
 7. **Item instances & versioned metadata**: Definitions are `stack` or `unique`; each owned row carries a versioned JSON metadata document with compare-and-set.
-8. **Transactions**: Multi-item mutations commit atomically or not at all, with real `SELECT ... FOR UPDATE` row locking — concurrent callers queue rather than racing.
+8. **Transactions**: Multi-item mutations commit atomically or not at all, with real `SELECT ... FOR UPDATE` row locking â€” concurrent callers queue rather than racing.
 9. **Movement guards & post-commit events**: Other resources can veto a move before it happens and observe every mutation after it commits.
-10. **Persisted equipment slots**: A generic `character × slot → instance` store that survives a reconnect or a restart, with no idea what a weapon is.
+10. **Persisted equipment slots**: A generic `character Ã— slot â†’ instance` store that survives a reconnect or a restart, with no idea what a weapon is.
 11. **Canonical character UUID support**: Character ownership, access grants, equipment, and transactional issuance preserve Contract 1 UUIDs end to end.
 
 # API Reference
 
-Hosted documentation: [featherframework.net/api/Inventory](https://featherframework.net/api/Inventory) — note that it may lag behind this file, which is written against the current source.
+Hosted documentation: [featherframework.net/api/Inventory](https://featherframework.net/api/Inventory) â€” note that it may lag behind this file, which is written against the current source.
 
 ```lua
 -- server
@@ -291,7 +308,7 @@ The server export exposes:
 | `Transaction` / `MutateItem` / `CreateInstance` | Atomic, row-locked multi-item mutations |
 | `DestroyInstances` / `UseItemAction` | Exact audited destruction and declarative atomic use |
 | `Guards` | Veto a move or destroy before it happens |
-| `Equipment` | Persisted `character × slot → instance` |
+| `Equipment` | Persisted `character Ã— slot â†’ instance` |
 | `Diagnostics` | Transaction counters and read-only integrity scans |
 
 Provider functions are also aliased at the **top level**: `GetCapabilities`,
@@ -301,8 +318,8 @@ Provider functions are also aliased at the **top level**: `GetCapabilities`,
 ### Supported server surface index
 
 This is the supported `initiate()` contract. Functions present on the Lua
-tables but omitted here—`Internal*`, `RegisterInternalUseGuard`, locked-snapshot
-guard helpers, and `Emit*`—are resource-private implementation details.
+tables but omitted hereâ€”`Internal*`, `RegisterInternalUseGuard`, locked-snapshot
+guard helpers, and `Emit*`â€”are resource-private implementation details.
 
 | Surface | Supported methods |
 |---|---|
@@ -330,17 +347,17 @@ The client export exposes only `Action`.
 { ok = false, error = { code = 'stable_code', message = '...', details = {} }, correlationId = <id?> }
 ```
 
-The API contract version is `4`. Read it from `GetCapabilities().value.contractVersion` and refuse to start against anything lower — a key-existence check cannot detect a changed return shape.
+The API contract version is `4`. Read it from `GetCapabilities().value.contractVersion` and refuse to start against anything lower â€” a key-existence check cannot detect a changed return shape.
 
 `code` is stable and machine-readable; `message` is developer-facing English. Player-facing text is resolved separately from `translations/` via the matching `err_<code>` key.
 
-> Test envelopes with `Result.IsOk(result)` or `result.ok == true`, never `if result then` — a failure envelope is itself a truthy table, so a bare truthiness test treats every error as success.
+> Test envelopes with `Result.IsOk(result)` or `result.ok == true`, never `if result then` â€” a failure envelope is itself a truthy table, so a bare truthiness test treats every error as success.
 
 Stable codes: `invalid_input`, `not_found`, `denied`, `conflict`, `unsupported`, `limit_exceeded`, `dependency_missing`, `internal`.
 
 ---
 
-## `Inventory` — containers, capacity, access
+## `Inventory` â€” containers, capacity, access
 
 ### Registration
 
@@ -386,13 +403,13 @@ MySQL.update.await('UPDATE wagons SET inventory_uuid = ? WHERE id = ?',
   { registered.value.uuid, wagon.id })
 ```
 
-`RegisterInventory` returns `Ok({ uuid, id })` — the **UUID** is what you store and pass to most `Items` functions; the numeric **id** is what the `Instances`, `Transaction` and access functions take. Positional multi-returns became named tables in contract 2; `GetInventory` and `GetCustomInventory` used to return their fields in different orders.
+`RegisterInventory` returns `Ok({ uuid, id })` â€” the **UUID** is what you store and pass to most `Items` functions; the numeric **id** is what the `Instances`, `Transaction` and access functions take. Positional multi-returns became named tables in contract 2; `GetInventory` and `GetCustomInventory` used to return their fields in different orders.
 
 Notes that catch people out:
 
-- `maxWeight` — `nil` uses `Config.maxWeight`; **`0` means no weight limit** (ground piles register this way, since a heap on the floor has nothing doing the carrying). Slot and per-item quantity limits still apply at `0`.
-- `maxSlots` — `nil` uses `Config.maxItemSlots`. Capacity is per-inventory and the ledger grid scrolls, so it is not bounded by what fits on one visible page.
-- `ownerCharacterId` / `isPublic` / `maxSlots` / `maxWeight` are written **only when explicitly passed**. Omitting one on a re-register never resets a stored setting — so calling `RegisterInventory('wagons', id)` on every spawn is safe.
+- `maxWeight` â€” `nil` uses `Config.maxWeight`; **`0` means no weight limit** (ground piles register this way, since a heap on the floor has nothing doing the carrying). Slot and per-item quantity limits still apply at `0`.
+- `maxSlots` â€” `nil` uses `Config.maxItemSlots`. Capacity is per-inventory and the ledger grid scrolls, so it is not bounded by what fits on one visible page.
+- `ownerCharacterId` / `isPublic` / `maxSlots` / `maxWeight` are written **only when explicitly passed**. Omitting one on a re-register never resets a stored setting â€” so calling `RegisterInventory('wagons', id)` on every spawn is safe.
 
 Before deleting an entity that owns a container, its resource can inspect and
 close the Inventory side safely:
@@ -536,12 +553,12 @@ local move = Inventory.Inventory.EvaluateSlotMove(fromInventoryId, 3, toInventor
 
 All four return `Ok({ accepted = boolean, code = string?, message = string })`.
 
-> **A refusal is a success.** "This inventory cannot hold that" is a question that was answered, so it comes back as `ok = true` with `accepted = false`. `ok = false` means the evaluation itself failed — a missing inventory, a database error. Keeping them apart is the point: a dead connection and a full backpack must not take the same branch.
+> **A refusal is a success.** "This inventory cannot hold that" is a question that was answered, so it comes back as `ok = true` with `accepted = false`. `ok = false` means the evaluation itself failed â€” a missing inventory, a database error. Keeping them apart is the point: a dead connection and a full backpack must not take the same branch.
 
-`EvaluateInventoryAcceptance` is the single definition of "can this inventory accept N of these" — quantity cap, slot capacity accounting for stacking, weight, and blacklist. The two `InventoryCanHold*` functions are thin wrappers over it that differ only in how they resolve the inventory.
+`EvaluateInventoryAcceptance` is the single definition of "can this inventory accept N of these" â€” quantity cap, slot capacity accounting for stacking, weight, and blacklist. The two `InventoryCanHold*` functions are thin wrappers over it that differ only in how they resolve the inventory.
 
-- `InventoryCanHold` takes a **player source or inventory UUID**; `InventoryCanHoldById` takes a **raw `inventory.id`**. Passing a raw id to the former is misread as a source — use the `ById` variant for ids.
-- `EvaluateSlotMove` uses net-delta math (`current − leaving + arriving`) on **both** inventories, so a swap at the weight limit trading equal weights is correctly allowed, and a swap whose *return leg* would overload the source is correctly rejected.
+- `InventoryCanHold` takes a **player source or inventory UUID**; `InventoryCanHoldById` takes a **raw `inventory.id`**. Passing a raw id to the former is misread as a source â€” use the `ById` variant for ids.
+- `EvaluateSlotMove` uses net-delta math (`current âˆ’ leaving + arriving`) on **both** inventories, so a swap at the weight limit trading equal weights is correctly allowed, and a swap whose *return leg* would overload the source is correctly rejected.
 
 ### Open / close
 
@@ -564,7 +581,7 @@ Inventory.Inventory.OpenInventory(source, wagonUuid, 'storage')
 Inventory.Inventory.CloseInventory(source)
 ```
 
-`OpenInventory`/`CloseInventory` are the client-facing pair — they trigger the ledger UI. `InternalOpenInventory(src, otherInventoryId)` returns the item payload directly without touching the UI, and `InternalCloseInventory(src)` releases the open-inventory lock (called for you on disconnect).
+`OpenInventory`/`CloseInventory` are the client-facing pair â€” they trigger the ledger UI. `InternalOpenInventory(src, otherInventoryId)` returns the item payload directly without touching the UI, and `InternalCloseInventory(src)` releases the open-inventory lock (called for you on disconnect).
 
 ### Access control
 
@@ -623,15 +640,15 @@ Inventory.Inventory.HasTemporaryAccess(source, inventoryId)        --> boolean
 Inventory.Inventory.RevokeTemporaryAccess(source, inventoryId)
 ```
 
-`IsInventoryAccessibleBySrc(src, inventoryId)` is the blunt boolean underneath all of it — prefer `CanAccessInventory`, which asks the real question.
+`IsInventoryAccessibleBySrc(src, inventoryId)` is the blunt boolean underneath all of it â€” prefer `CanAccessInventory`, which asks the real question.
 
-Only `MANAGE` currently resolves differently: it is owner/admin only and is never granted by proximity or public visibility. A ground pile is readable and lootable by anyone near it, and manageable by nobody — modelling that honestly beats inventing four permission bits that all resolve identically.
+Only `MANAGE` currently resolves differently: it is owner/admin only and is never granted by proximity or public visibility. A ground pile is readable and lootable by anyone near it, and manageable by nobody â€” modelling that honestly beats inventing four permission bits that all resolve identically.
 
 Access is re-checked on every call rather than cached, so a mutation arriving late cannot ride an authorization that was true a minute ago.
 
 ---
 
-## `Items` — grants, removal, use, condition
+## `Items` â€” grants, removal, use, condition
 
 Throughout this table, `inventoryId` follows the framework's dual convention: **numeric = player source**, **string = inventory UUID**.
 
@@ -669,13 +686,13 @@ Inventory.Items.InventoryHasItems({
 }, source)                                              --> Ok(boolean)
 ```
 
-> **Predicates return `Ok(boolean)`.** `Result.IsOk()` is true for a successful `false`, so read `.value` — and fail closed when `ok` is false. A failure envelope is itself truthy, so testing the envelope rather than its value grants access on a database error.
+> **Predicates return `Ok(boolean)`.** `Result.IsOk()` is true for a successful `false`, so read `.value` â€” and fail closed when `ok` is false. A failure envelope is itself truthy, so testing the envelope rather than its value grants access on a database error.
 
 > `InventoryHasItems` takes `name`, while the capacity functions take `item`. They are different shapes; worth double-checking when you copy a table between them.
 
 ### Granting
 
-`GrantItem` is the **trusted** path — admin tools, rewards, scripted payouts. It validates quantity, catalog membership, slot capacity, weight, per-item quantity cap and the blacklist atomically, and returns stable codes.
+`GrantItem` is the **trusted** path â€” admin tools, rewards, scripted payouts. It validates quantity, catalog membership, slot capacity, weight, per-item quantity cap and the blacklist atomically, and returns stable codes.
 
 **Signatures**
 
@@ -687,7 +704,7 @@ Inventory.Instances.SetDefinitionArchived(definitionId, archived, reason?) -> Re
 Inventory.Instances.MigrateDefinitionInstances(sourceDefinitionId, targetDefinitionId, reason) -> Result
 ```
 
-> **`GrantItem` refuses `unique` definitions** with `unique_requires_issuer`. It creates rows through a batched `INSERT` with no metadata, so granting a weapon this way would produce an instance with an empty document — present and equippable, with nothing for its owning resource to read. Unique items are issued by whichever resource models them, which creates the instance and its complete document in one transaction. Filter them out of any generic grant UI using `instance_mode` from `GetDefinitions`.
+> **`GrantItem` refuses `unique` definitions** with `unique_requires_issuer`. It creates rows through a batched `INSERT` with no metadata, so granting a weapon this way would produce an instance with an empty document â€” present and equippable, with nothing for its owning resource to read. Unique items are issued by whichever resource models them, which creates the instance and its complete document in one transaction. Filter them out of any generic grant UI using `instance_mode` from `GetDefinitions`.
 
 **Example**
 
@@ -838,12 +855,12 @@ transaction.
 The callback receives the joined item row, the player source, and a `refresh`
 callback. The owning resource may replace its own registration; another
 resource receives a conflict and cannot take it over. `UseItem` re-derives
-ownership from the item's own `inventory_id` — a client cannot use an item it
+ownership from the item's own `inventory_id` â€” a client cannot use an item it
 does not hold.
 
 ### Metadata
 
-Per-instance metadata lives on `Instances` — see [that section](#instances--item-identity-and-versioned-metadata). There is no `Items.SetMetadata`; it was a passthrough that discarded the envelope and the correlation id.
+Per-instance metadata lives on `Instances` â€” see [that section](#instances--item-identity-and-versioned-metadata). There is no `Items.SetMetadata`; it was a passthrough that discarded the envelope and the correlation id.
 
 **Signature**
 
@@ -859,7 +876,7 @@ Inventory.Instances.MergeMetadata(instanceId, { ammo = 5, chambered = true })
 
 ### Condition / durability
 
-A generic per-instance `0..Config.Condition.Max` wear value stored in the metadata document. This resource owns the **convention** — key, range, clamping, display — and none of the **policy**: when an item wears and by how much belongs to whichever resource models that behaviour.
+A generic per-instance `0..Config.Condition.Max` wear value stored in the metadata document. This resource owns the **convention** â€” key, range, clamping, display â€” and none of the **policy**: when an item wears and by how much belongs to whichever resource models that behaviour.
 
 **Signatures**
 
@@ -894,9 +911,9 @@ end
 
 ---
 
-## `Instances` — item identity and versioned metadata
+## `Instances` â€” item identity and versioned metadata
 
-`instanceId` is the `inventory_items` row id. It is **preserved across movement** — rows are updated, never deleted and recreated — so a transferred item keeps its identity, its metadata and its revision.
+`instanceId` is the `inventory_items` row id. It is **preserved across movement** â€” rows are updated, never deleted and recreated â€” so a transferred item keeps its identity, its metadata and its revision.
 
 ### Reading
 
@@ -929,7 +946,7 @@ local rounds = Inventory.Instances.FindInstances(inventoryId, 'ammo_revolver')
 if rounds.ok then print(#rounds.value) end
 ```
 
-**One revision, and it covers movement.** `revision` is `row_revision`, and it moves for *any* change to the row — a metadata write, a move to another inventory, a slot change. That is what compare-and-set compares: a caller that read ammunition and had it moved to someone else's inventory before writing must conflict rather than consume it from its new owner. A separate document-only counter used to sit beside it; it was removed, because nothing asked the narrower question and two counters made every new compare-and-set a guess about which one to pass.
+**One revision, and it covers movement.** `revision` is `row_revision`, and it moves for *any* change to the row â€” a metadata write, a move to another inventory, a slot change. That is what compare-and-set compares: a caller that read ammunition and had it moved to someone else's inventory before writing must conflict rather than consume it from its new owner. A separate document-only counter used to sit beside it; it was removed, because nothing asked the narrower question and two counters made every new compare-and-set a guess about which one to pass.
 
 ### Stack vs unique
 
@@ -1005,11 +1022,11 @@ if not caps.value.features.rowLocking then
 end
 ```
 
-Check `contractVersion` **before** registering anything against the API. It is a plain integer, deliberately separate from the human-readable semver `version` — a consumer compares it numerically, and `tonumber('2.0.0')` is `nil`. A key-existence check cannot detect a changed return shape, so this is the gate that turns a version mismatch into a clear startup failure rather than a silently misread result. Current flags include `instanceMode`, `metadataDocument`, `instanceRevision`, `instanceReadModel`, `resultEnvelope`, `transactions`, `movementGuards`, `postCommitEvents`, `accessModes`, `metadataSizeLimit`, `transactionMetrics`, `rowLocking`, `equippedState`, `atomicCreation`, `definitionMigration`, `auditedDestruction`, `atomicUseActions`, and `integrityDiagnostics`.
+Check `contractVersion` **before** registering anything against the API. It is a plain integer, deliberately separate from the human-readable semver `version` â€” a consumer compares it numerically, and `tonumber('2.0.0')` is `nil`. A key-existence check cannot detect a changed return shape, so this is the gate that turns a version mismatch into a clear startup failure rather than a silently misread result. Current flags include `instanceMode`, `metadataDocument`, `instanceRevision`, `instanceReadModel`, `resultEnvelope`, `transactions`, `movementGuards`, `postCommitEvents`, `accessModes`, `metadataSizeLimit`, `transactionMetrics`, `rowLocking`, `equippedState`, `atomicCreation`, `definitionMigration`, `auditedDestruction`, `atomicUseActions`, and `integrityDiagnostics`.
 
 ---
 
-## `Transaction` — atomic, row-locked multi-item mutations
+## `Transaction` â€” atomic, row-locked multi-item mutations
 
 Everything inside the body either commits together or not at all. Rows read with `GetItemForUpdate` are **locked** for the rest of the transaction, so a concurrent caller queues rather than racing you.
 
@@ -1057,7 +1074,7 @@ end
 
 Returning a **failure envelope** from the body is a deliberate rejection: everything rolls back and your reason is preserved. Raising an error rolls back too and comes back as `internal`.
 
-`context` improves auditability and **never grants authority**. When it names an `actorSource`, every mutating operation on the handle asserts that actor's *live* access to the inventory it touches — per operation, not once per transaction, because a transaction can touch several inventories and access to one is not access to another. A context with no `actorSource` is a trusted server-side operation and is not gated.
+`context` improves auditability and **never grants authority**. When it names an `actorSource`, every mutating operation on the handle asserts that actor's *live* access to the inventory it touches â€” per operation, not once per transaction, because a transaction can touch several inventories and access to one is not access to another. A context with no `actorSource` is a trusted server-side operation and is not gated.
 
 ### Handle methods
 
@@ -1085,7 +1102,7 @@ tx:AssertAccess(source, inventoryId, action) -> Result
 | `tx:RemoveInstances(inventoryId, definitionId, { ids })` | Remove **exactly** the instances you named, so you commit the ones your preflight actually calculated against. A row that moved or vanished yields `conflict`. |
 | `tx:SetMetadata(instanceId, document, expectedRevision?)` | Replace the document. `expectedRevision` is compared against `row_revision`. |
 | `tx:MoveInstance(instanceId, toInventoryId, toSlot)` | Relocate, preserving identity and metadata. Asks the move guards first. |
-| `tx:AssertAccess(src, inventoryId, action)` | Re-check access *inside* the transaction — an inventory having been opened earlier is not authority at commit time. |
+| `tx:AssertAccess(src, inventoryId, action)` | Re-check access *inside* the transaction â€” an inventory having been opened earlier is not authority at commit time. |
 
 ### Crossing a resource boundary
 
@@ -1147,7 +1164,7 @@ fact per instance.
 
 An `idempotencyKey` in the context makes a repeated call return the first call's cached result instead of executing again.
 
-> **The cache is in-memory and does not survive a restart.** A request retried across a resource or server restart finds no record and **will execute again**. That is fine for a reload or a repair. For anything **economic** — a purchase, a payout, anything a player is charged for — keep your own persisted idempotency record keyed on your own domain. The cache is bounded at 500 entries / 60s, because an unbounded cache keyed by caller-supplied strings is a memory-exhaustion vector.
+> **The cache is in-memory and does not survive a restart.** A request retried across a resource or server restart finds no record and **will execute again**. That is fine for a reload or a repair. For anything **economic** â€” a purchase, a payout, anything a player is charged for â€” keep your own persisted idempotency record keyed on your own domain. The cache is bounded at 500 entries / 60s, because an unbounded cache keyed by caller-supplied strings is a memory-exhaustion vector.
 
 ### Diagnostics
 
@@ -1174,7 +1191,7 @@ local scan = Inventory.Diagnostics.RunIntegrityDiagnostics({ sampleLimit = 50 })
 -- }
 ```
 
-Returned as a copy, so a caller cannot reset the counters by mutating what it was handed. With real row locking, contending callers queue rather than retry — so `conflicts` is a genuine signal (a cross-request compare-and-set losing) rather than expected background noise, and `rolledBack` is the number to watch.
+Returned as a copy, so a caller cannot reset the counters by mutating what it was handed. With real row locking, contending callers queue rather than retry â€” so `conflicts` is a genuine signal (a cross-request compare-and-set losing) rather than expected background noise, and `rolledBack` is the number to watch.
 
 Development plans and test procedures are maintained in [feather-framework-docs](https://github.com/DavFount/feather-framework-docs/tree/main/feather-inventory).
 
@@ -1183,13 +1200,13 @@ references and grants, missing/archived definitions, malformed metadata,
 invalid or excessive slots, mixed/oversized/metadata-incompatible stacks,
 stacked unique items, dangling or wrongly-owned equipment, overweight
 inventories, and definition quantity violations. Samples are capped per code
-from 1–500 while summary counts always include every finding. In DevMode,
+from 1â€“500 while summary counts always include every finding. In DevMode,
 `/InvIntegrityCheck [sampleLimit]` prints the same report to the server console.
 There is deliberately no repair flag.
 
 ---
 
-## `Guards` — vetoing movement, observing mutations
+## `Guards` â€” vetoing movement, observing mutations
 
 **Signatures**
 
@@ -1229,13 +1246,13 @@ The guard receives the **normalized instance** (same shape as `GetInstance().val
 
 **Guard contract:**
 
-- Guards are **synchronous**. Do not yield — no `Wait`, no `CallAsync`, no MySQL await. There is no way to enforce that in Lua, so it is stated rather than checked: a yielding guard stalls every mutation behind it.
+- Guards are **synchronous**. Do not yield â€” no `Wait`, no `CallAsync`, no MySQL await. There is no way to enforce that in Lua, so it is stated rather than checked: a yielding guard stalls every mutation behind it.
 - Return `true` to allow, or `false, reason` to veto.
 - **A guard that errors is treated as a veto, not an allow.** A broken guard must not silently become permission.
-- Guards hold no state, so a crashed consumer cannot wedge the inventory — there is nothing to release.
+- Guards hold no state, so a crashed consumer cannot wedge the inventory â€” there is nothing to release.
 - Re-registering the same `name` replaces it, so a resource restart cannot accumulate duplicate guards.
 
-Guards run at the chokepoints every route funnels through — bulk transfer and
+Guards run at the chokepoints every route funnels through â€” bulk transfer and
 give and ground drop and take-all (`MoveInventoryItems`), drag and swap
 (`MoveSlotItems`), grants (`CreateInventoryItem`), and the legacy
 `RemoveItemByName`/`RemoveItemById`. The two legacy removal helpers now delegate
@@ -1249,11 +1266,11 @@ local allowed, reason = Inventory.Guards.CanMoveInstance(instanceId, { reason = 
 local allowed, reason = Inventory.Guards.CanDestroyInstance(instanceId, { reason = 'ui_preview' })
 ```
 
-The `Emit*` functions on `Guards` are internal — this resource calls them after committing. Consumers listen for the events below rather than emitting them.
+The `Emit*` functions on `Guards` are internal â€” this resource calls them after committing. Consumers listen for the events below rather than emitting them.
 
 ### Events
 
-All are **internal** `TriggerEvent` and deliberately *not* network-registered — a networked mutation event would be spoofable by any client. Each payload is a single table.
+All are **internal** `TriggerEvent` and deliberately *not* network-registered â€” a networked mutation event would be spoofable by any client. Each payload is a single table.
 
 ```lua
 AddEventHandler('Feather:Inventory:ItemMoved', function(payload)
@@ -1276,13 +1293,13 @@ actorCharacterId, resource, correlationId, reason, occurredAt`. Events are
 emitted only **after** commit, so `outcome` is always `committed`; rejected
 attempt storage belongs to an external audit consumer at the API boundary.
 
-These five are the only mutation signals. The old `feather-inventory:ItemAdded` / `feather-inventory:ItemRemoved` pair was removed — every one of its fire sites already sat beside a structured emit carrying strictly more (correlation id, actor, definition id, revision), and its own first argument had meant a *definition* id on one path and an *instance* id on another. Listen for the events above instead.
+These five are the only mutation signals. The old `feather-inventory:ItemAdded` / `feather-inventory:ItemRemoved` pair was removed â€” every one of its fire sites already sat beside a structured emit carrying strictly more (correlation id, actor, definition id, revision), and its own first argument had meant a *definition* id on one path and an *instance* id on another. Listen for the events above instead.
 
 ---
 
-## `Equipment` — persisted equipment slots
+## `Equipment` â€” persisted equipment slots
 
-Generic `character × slot → instance` storage. `slot` is an arbitrary string **you** choose — `'primary'`, `'sidearm'`, `'holster'`, `'hat'`. Inventory stores and constrains it; you decide what the names mean, so a clothing resource can use the same table without inventory learning about clothing.
+Generic `character Ã— slot â†’ instance` storage. `slot` is an arbitrary string **you** choose â€” `'primary'`, `'sidearm'`, `'holster'`, `'hat'`. Inventory stores and constrains it; you decide what the names mean, so a clothing resource can use the same table without inventory learning about clothing.
 
 This exists because equipped state cannot live only in a consumer's memory: it has to survive a reconnect and a resource or server restart.
 
@@ -1380,7 +1397,7 @@ local equipped = Inventory.Equipment.IsInstanceEquipped(instanceId)
 if equipped.ok and equipped.value then print('equipped') end
 ```
 
-An instance can only occupy one slot at a time (enforced by a unique key), and destroying the item unequips it (`ON DELETE CASCADE`) rather than leaving a row pointing at nothing — so "consumed while equipped" is self-healing instead of a dangling reference.
+An instance can only occupy one slot at a time (enforced by a unique key), and destroying the item unequips it (`ON DELETE CASCADE`) rather than leaving a row pointing at nothing â€” so "consumed while equipped" is self-healing instead of a dangling reference.
 
 ---
 
@@ -1424,11 +1441,11 @@ Inventory.Action.Open(wagonUuid, 'storage')      -- paired with a container
 Inventory.Action.Close()
 ```
 
-The client export is deliberately thin — every mutation is server-authoritative, including which compartment an item sits in. There is no client-side API for changing inventory contents.
+The client export is deliberately thin â€” every mutation is server-authoritative, including which compartment an item sits in. There is no client-side API for changing inventory contents.
 
 ---
 
-## Removed (breaking) — contract 2
+## Removed (breaking) â€” contract 2
 
 The framework is alpha and does not carry backwards compatibility. **The result envelope is now the only convention**; see [Result shapes](#result-shapes). Alongside that, these surfaces existed only to avoid breaking consumers and have been removed:
 
@@ -1442,14 +1459,14 @@ The framework is alpha and does not carry backwards compatibility. **The result 
 | `GetItemCount` returning `-1` on failure | Returns `nil` |
 | `item_metadata` payload key on ledger item rows | `metadata` |
 | `{ error = true/false }` returns on `Items`, `Inventory`, `Categories` | `{ ok, value }` / `{ ok, error }` |
-| Positional multi-returns (`RegisterInventory`, `GetInventory`, …) | named tables inside `.value` |
+| Positional multi-returns (`RegisterInventory`, `GetInventory`, â€¦) | named tables inside `.value` |
 | Generic `GrantItem` on a `unique` definition | issue it through the resource that owns it |
 
-> **Rebuild your database for this release.** These are schema changes with no in-place migration path, by design — the framework is alpha and servers are rebuilt rather than upgraded. `metadata_revision` is simply no longer created; on a database that already has it the column is left behind, unread and unwritten. The flat `item_metadata` table is likewise removed at its source, by `feather-recipe` no longer creating it.
+> **Rebuild your database for this release.** These are schema changes with no in-place migration path, by design â€” the framework is alpha and servers are rebuilt rather than upgraded. `metadata_revision` is simply no longer created; on a database that already has it the column is left behind, unread and unwritten. The flat `item_metadata` table is likewise removed at its source, by `feather-recipe` no longer creating it.
 
 This resource issues no `DROP TABLE` or `DROP COLUMN` at all. It creates the columns it owns and stops creating the ones it no longer needs.
 
-Both consumers were checked against every one of these before removal — `feather-weapons` and `feather-admin` call none of them.
+Both consumers were checked against every one of these before removal â€” `feather-weapons` and `feather-admin` call none of them.
 
 ## Troubleshooting
 
@@ -1469,26 +1486,26 @@ Huge inspiration to RDO's inventory system with many QOL improvements.
 
 ## To-Do
 
-The full tracked backlog — including decisions deferred or declined, with reasons — is maintained by the team outside this repository. Section references in the code comments below (`§6.1`, `§10.4`, …) point into it.
+The full tracked backlog â€” including decisions deferred or declined, with reasons â€” is maintained by the team outside this repository. Section references in the code comments below (`Â§6.1`, `Â§10.4`, â€¦) point into it.
 
-- **Hotbar** — implemented and live-tested, including the RedM `Shift+1–6` control-suppression matrix.
-- **Looting** — built server-side but deliberately inert: it stays fail-closed until `feather-status`/`feather-health` provides authoritative restraint/incapacitation state. Law-enforcement and criminal resources may both consume the capability.
-- **Perishables** — blocked on unique-instance support for definitions that must stack.
-- **Search/filter within a book** — shipped as a themed category dropdown and search field in a two-column filter row.
-- **Sound/haptic feedback** — none exists today; wants a period-fit sound-set decision first.
-- **In-game item-definition editor** — ownership settled: `feather-inventory`
+- **Hotbar** â€” implemented and live-tested, including the RedM `Shift+1â€“6` control-suppression matrix.
+- **Looting** â€” built server-side but deliberately inert: it stays fail-closed until `feather-status`/`feather-health` provides authoritative restraint/incapacitation state. Law-enforcement and criminal resources may both consume the capability.
+- **Perishables** â€” blocked on unique-instance support for definitions that must stack.
+- **Search/filter within a book** â€” shipped as a themed category dropdown and search field in a two-column filter row.
+- **Sound/haptic feedback** â€” none exists today; wants a period-fit sound-set decision first.
+- **In-game item-definition editor** â€” ownership settled: `feather-inventory`
   owns validated preflight/write and identity-migration contracts;
   `feather-admin` owns permissioned operator UX, confirmations, and audit
   presentation. Safe catalog edits precede identity-changing migration tools.
 
-Known gaps in the API surface above, tracked in `MASTER_PLAN.md` §6.1:
+Known gaps in the API surface above, tracked in `MASTER_PLAN.md` Â§6.1:
 
 - `RunGuards` re-reads the instance on a separate connection instead of being handed the row the transaction already locked.
 ## Server API readiness
 
 Server exports are registered before receipt-table initialization yields to the
 database. `AwaitReady(timeoutMs)` returns an Inventory Result envelope and waits
-at most 0–60000 milliseconds (default 30000). `GetHealth()` reports starting,
+at most 0â€“60000 milliseconds (default 30000). `GetHealth()` reports starting,
 ready, or failed. Readiness completes only after receipt setup and API startup
 registration finish. Initialization failures are logged and reported, not treated
 as readiness. Durable grant/cancellation exports fail closed until ready.
@@ -1595,13 +1612,13 @@ Development receipt proof: server-console `InvConsumptionProof run`, then after 
 Development-only StablesCareProofFixture supports the fixed cross-resource care receipt fixture, requiring bcc-stables/DevMode/readiness. Ordinary inspection delegates only exact active-manifest proof requests; production consumption authorization remains unchanged. See [care bridge proof](../gameplay-resource-docs/bcc-stables/HORSE_CARE_BRIDGE_PROOF.md). New service requires refresh before Inventory restart.
 
 
-### 0.8.0 validation checkpoint — 2026-10-25
+### 0.8.0 validation checkpoint â€” 2026-10-25
 
 The full Lua suite passes, including eleven receipt cases, fixture authorization gates and existing regression suites (79 production Lua files parse). Live MariaDB evidence covers separate-connection consume/cancel races, rollback, lost commit replies, replay across Inventory resource restart, real guarded item removal and exact disposable fixture cleanup. Stables' live cross-resource proof recovered a real disposable item's receipt, applied one local benefit and recovered cancellation; production allowlist remained unchanged. These are controlled development proofs, not production feeding, full-process crash or every session-interruption acceptance. Existing transaction, item-use and grant APIs remain unchanged. The version bump synchronizes manifest and web package metadata; pnpm lock has no project-version field. No UI source/build changes are introduced.
 
 Development grant metadata: the existing ACE-restricted, DevMode-only AddItems command accepts an optional JSON object, for example: AddItems horsebrush 1 {"condition":1,"display":"Last use"}. Invalid JSON is refused before granting. This creates a separate last-use brush for manual breakage acceptance; it does not change existing instances.
 
-### 0.9.0 validation checkpoint — 2026-10-27
+### 0.9.0 validation checkpoint â€” 2026-10-27
 
 Adds server-only, receipt-backed ordinary-tool wear without changing the existing
 food-consumption contract or condition APIs. Wear, guarded final-use removal and
@@ -1649,3 +1666,15 @@ manual SQL import is needed. Feather Recipe imports the same packaged SQL for
 fresh installs. Version 0.14.3 introduces this startup contract.
 
 Same-inventory moves and swaps now run the same ownership/equipment guards as transfers before advancing item revisions. Unequip native-owned weapons before rearranging their inventory squares. Both source and destination occupants are checked; ordinary unbound rearrangement remains supported. This prevents later wear/logout revision mismatches; it does not silently rebase stale native copies.
+
+Paired melee support defaults on for all five existing melee slots. Generic equipment writes remain fenced; normal equip/unequip uses the Weapons release/commit/restore coordinator. The Equipment panel presents translated Equip/Unequip labels without numbered internal slots. Deploy with the matching Weapons melee update.
+
+Native firearm and melee definitions are not generic-use items. Inventory startup sets usable=false on the exact24 canonical firearm names and5 melee names (unique item_weapon definitions only), without touching instance data or revisions. Melee Equip/Unequip is available directly in the context menu after fresh server-authorized options load, using the existing scoped equipment transaction and busy feedback. Firearms retain their Equipment submenu for placement, customization and cleaning.
+
+
+Staged throwable recovery: the inactive shared-claim primitive also accepts
+version3 durable prompt bindings without projectile/network IDs. Exact paid
+item metadata, placement identity, collector ledger and receipt commit together;
+readback is mutation-free. The primitive now loads for a guarded released-authority commit export. Public
+recovery admission and world placement remain unactivated. Live shared pickup
+acceptance remains pending.

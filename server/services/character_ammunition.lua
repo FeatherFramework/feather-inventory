@@ -193,6 +193,23 @@ function A.ApplyObservation(tx,context,spec,authority)
         changed=changed or consumed[id]>0
     end
     -- Idle samples must not generate revision churn or database writes.
+    local quantities=type(GetConvar)=='function' and GetConvar('feather_throwable_quantities','0')=='1'
+    if changed and not quantities and spec.limits.ammo_tomahawk_regular==3 and consumed.ammo_tomahawk_regular>0 then
+        if not NativeThrowableUnitStorage or not callable(authority) then
+            return err(Result.Codes.DENIED,'Physical throwable spend authority required.')
+        end
+        local spent=NativeThrowableUnitStorage.Observe(tx,context,spec,authority)
+        if not spent or not spent.ok then return spent or err(Result.Codes.CONFLICT,'Physical throwable spend failed.') end
+        spent.value.consumed=consumed;spent.value.changed=true
+        return spent
+    end
+    local arrows=type(GetConvar)=='function' and GetConvar('feather_regular_arrows','0')=='1'
+    if spec.finalWear==nil and (quantities and consumed.ammo_tomahawk_regular and consumed.ammo_tomahawk_regular>0
+        or arrows and consumed.ammo_arrow_regular and consumed.ammo_arrow_regular>0) then
+        if not ThrowableQuantityRecovery then return err(Result.Codes.DENIED,'Quantity recovery unavailable.') end
+        local recorded=ThrowableQuantityRecovery.Record(tx,context,spec,previous,observed,authority)
+        if not recorded.ok then return recorded end
+    end
     if changed then
         local updated=tx.query('UPDATE feather_character_ammunition SET pools = ?, revision = ? WHERE character_id = ? AND revision = ?',
             {json.encode(observed),revision+1,characterId,revision})
@@ -243,7 +260,9 @@ local function mutate(context,spec,invokingResource,apply,reason)
     local safeContext = { actorSource = context.actorSource, characterId = context.characterId,
         actorCharacterId = context.characterId, sessionId = context.sessionId,
         resource = 'feather-weapons', reason = reason, correlationId = context.correlationId,
-        runtimeEpoch=context.runtimeEpoch,runtimeTicket=context.runtimeTicket }
+        runtimeEpoch=context.runtimeEpoch,runtimeTicket=context.runtimeTicket,
+        nativeThrowableSpend=operation=='observe' and type(spec)=='table' and type(spec.limits)=='table'
+            and spec.limits.ammo_tomahawk_regular==3 or nil }
     return TransactionAPI.Transaction(safeContext, function(tx)
         if not current(safeContext) or not runtimeCurrent(safeContext) then return err(Result.Codes.DENIED, 'Session or runtime changed.') end
         local result = apply(tx, safeContext, spec,function()
@@ -426,7 +445,27 @@ local function snapshot(context,limits,invokingResource,withEquipment)
             if not read.ok then return read end
             result.value.utilityEquipment=read.value
         end
-        if withEquipment and Config.CharacterAmmunitionEnabled==true
+        if withEquipment and Config.CharacterAmmunitionEnabled==true and limits.ammo_tomahawk_regular==3
+            and type(GetConvar)=='function' and GetConvar('feather_throwable_quantities','0')=='1' then
+            -- No implicit conversion of legacy carried identity-bearing units.
+            local legacy=tx.query([[SELECT ii.id FROM inventory_items ii
+                INNER JOIN inventory_character_collections c ON c.inventory_id=ii.inventory_id
+                WHERE c.source_resource='feather-weapons' AND c.collection_key='native_throwable_units_v1'
+                  AND c.character_id=? LIMIT 1 FOR UPDATE]],{safeContext.characterId})
+            local equipped=tx.query("SELECT slot FROM character_equipment WHERE character_id=? AND slot='weapon_throwable' LIMIT 1 FOR UPDATE",{safeContext.characterId})
+            if type(legacy)~='table' or type(equipped)~='table' or #legacy>0 or #equipped>0 then
+                return err(Result.Codes.CONFLICT,'Store legacy carried Tomahawks before enabling quantity mode.')
+            end
+            result.value.throwableEquipment={contract=3,kind='throwable_quantity',characterId=safeContext.characterId,
+                identity={characterId=safeContext.characterId,sessionId=safeContext.sessionId,epoch=context.epoch or context.runtimeEpoch},
+                revision=result.value.revision,pools=copy(result.value.pools)}
+        elseif withEquipment and Config.CharacterAmmunitionEnabled==true and limits.ammo_tomahawk_regular==3 then
+            if not NativeThrowableUnitStorage then return err(Result.Codes.CONFLICT,'Physical throwable reader not installed.') end
+            local read=NativeThrowableUnitStorage.Read(tx,{characterId=safeContext.characterId,sessionId=safeContext.sessionId,
+                epoch=context.epoch or context.runtimeEpoch},limits,function() return current(safeContext) end)
+            if not read or not read.ok then return read or err(Result.Codes.CONFLICT,'Physical throwable read failed.') end
+            result.value.throwableEquipment=read.value
+        elseif withEquipment and Config.CharacterAmmunitionEnabled==true
             and type(GetConvarInt)=='function' and GetConvarInt('feather_native_throwable',0)==1 then
             if not NativeThrowableEquipment or limits.ammo_tomahawk_regular~=1 then return err(Result.Codes.CONFLICT,'Throwable reader/policy not installed.') end
             local read=NativeThrowableEquipment.Read(tx,safeContext.characterId,nil,function()
@@ -440,12 +479,12 @@ local function snapshot(context,limits,invokingResource,withEquipment)
         local knifeEnabled=withEquipment and Config.CharacterAmmunitionEnabled==true
             and type(GetConvarInt)=='function' and GetConvarInt('feather_native_knife',0)==1
         local meleeEnabled=withEquipment and Config.CharacterAmmunitionEnabled==true
-            and type(GetConvarInt)=='function' and GetConvarInt('feather_native_melee',0)==1
+            and type(GetConvarInt)=='function' and GetConvarInt('feather_native_melee',1)==1
         if meleeEnabled then
             if not NativeMeleeEquipment then return err(Result.Codes.CONFLICT,'Melee reader not installed.') end
             local read=NativeMeleeEquipment.Read(tx,safeContext.characterId,nil,function()
                 return Config.CharacterAmmunitionEnabled==true
-                    and GetConvarInt('feather_native_melee',0)==1 and current(safeContext)
+                    and GetConvarInt('feather_native_melee',1)==1 and current(safeContext)
             end,locked)
             if not read.ok then return read end
             result.value.meleeEquipment=read.value

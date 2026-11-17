@@ -35,8 +35,23 @@ callbacks['Feather:Inventory:NativeAttachmentChange']({itemId=135,action='instal
 assert(result.ok and calls==3)
 callbacks['Feather:Inventory:NativeRepair']({itemId=128,scope=scope},reply)
 assert(result.ok and calls==4)
+local refreshes=0
+InventoryAction={Refresh=function()
+ refreshes=refreshes+1
+ local nested
+ callbacks['Feather:Inventory:NativeEquipmentOptions']({itemId=112},function(value) nested=value end)
+ assert(not nested.ok and nested.error.code=='equipment_action_in_flight','refresh keeps equipment action reserved')
+end}
+exports['feather-weapons'].ChangeNativeEquipment=function()
+ calls=calls+1;return {ok=true,value={refreshInventory=true}}
+end
+callbacks['Feather:Inventory:NativeEquipmentChange']({itemId=170,action='unequip',slot='weapon_throwable',scope=scope},reply)
+assert(result.ok and calls==5 and refreshes==1,'successful physical custody change refreshes once before reply')
+exports['feather-weapons'].ChangeNativeEquipment=function() calls=calls+1;return {ok=false} end
+callbacks['Feather:Inventory:NativeEquipmentChange']({itemId=170,action='unequip',slot='weapon_throwable',scope=scope},reply)
+assert(not result.ok and calls==6 and refreshes==1,'uncertain mutation never replays or assumes a returned item')
 started=false
-callbacks['Feather:Inventory:NativeEquipmentChange']({itemId=112},reply); assert(not result.ok and calls==4)
+callbacks['Feather:Inventory:NativeEquipmentChange']({itemId=112},reply); assert(not result.ok and calls==6)
 started=true; exports['feather-weapons'].GetNativeEquipmentControls=function() error('unavailable') end
 callbacks['Feather:Inventory:NativeEquipmentOptions']({itemId=112},reply); assert(not result.ok)
 print('Native equipment NUI PASS (gates, intent only, overlap reservation, unavailable export)')

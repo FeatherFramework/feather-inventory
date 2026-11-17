@@ -805,9 +805,18 @@ InventoryAPI.InternalOpenInventory = function(src, otherInventoryId)
     inventoryItems = InventoryControllers.GetInventoryItems(inventory)
   end
 
+  local carried={weight=0,rows={}}
+  if NativeThrowableUnitStorage then
+    carried=NativeThrowableUnitStorage.Accounting(function(sql,params) return DB.query(sql,table.unpack(params)) end,tonumber(inventory),false)
+    if not carried then return Result.Err('inventory_unavailable','Carried equipment could not be read.') end
+  end
+  local carriedThrowables={}
+  for _,row in ipairs(carried.rows) do carriedThrowables[#carriedThrowables+1]={id=tonumber(row.id)} end
   return Result.Ok({
     inventory = inventory,
     inventoryItems = inventoryItems,
+    carriedThrowables = carriedThrowables,
+    carriedWeight = carried.weight,
     inventoryIgnoreLimits = inventoryIgnoreLimits,
     -- (§10.4) Each book carries its own capacity. The client used to send one
     -- global Config.maxItemSlots for both, which made a large storage chest

@@ -1,5 +1,23 @@
 InventoryControllers = {}
 
+local function CarriedLoad(query,inventory,lock,returning)
+  local load=NativeThrowableUnitStorage and NativeThrowableUnitStorage.Accounting(query,tonumber(inventory),lock)
+    or (not NativeThrowableUnitStorage and {weight=0,counts={},rows={}})
+  if not load then return nil end
+  if returning then
+    local found={}
+    for _,row in ipairs(load.rows) do
+      if returning[tonumber(row.id)]==true then
+        found[tonumber(row.id)]=true
+        load.weight=load.weight-row.weight
+        local key=tostring(row.item_id);load.counts[key]=load.counts[key]-1
+      end
+    end
+    for id,value in pairs(returning) do if value~=true or not found[id] then return nil end end
+  end
+  return load
+end
+
 local function RunMoveTransaction(body,metrics,context,scope)
   -- The runtime service is mandatory at StartAPI readiness. Legacy-only unit
   -- fixtures load this controller independently of the service graph.
@@ -28,6 +46,7 @@ local function NormalizeLockedItem(row)
     definition = {
       id = tonumber(row.item_id), name = row.name,
       displayName = row.display_name, weight = tonumber(row.weight),
+      description = row.description, usable = Boolean[row.usable] == true, categoryId = tonumber(row.category_id),
       type = row.type, maxQuantity = tonumber(row.max_quantity),
       maxStackSize = tonumber(row.max_stack_size),
       instanceMode = row.instance_mode or 'stack',
@@ -161,6 +180,9 @@ local function SlotMoveAcceptanceInTransaction(query, fromInventory, fromSlot, t
           remaining[#remaining + 1] = row
         end
       end
+      local carried=CarriedLoad(query,inventoryId,true)
+      if not carried then return false,'internal','Carried equipment could not be read.' end
+      for _,row in ipairs(carried.rows) do remaining[#remaining+1]=row end
       local restrictionRows = query('SELECT `item_id` FROM `inventory_blacklist` WHERE `inventory_id`=? ORDER BY `item_id` FOR UPDATE;', { inventoryId })
       if type(restrictionRows) ~= 'table' then return false, 'internal', 'Inventory restrictions could not be read.' end
       local restricted = {}
@@ -297,15 +319,14 @@ function InventoryControllers.GetInventoryTotalWeight(inventory)
   local result = DB.query(
     'SELECT SUM(`items`.`weight`) AS `weight` FROM `items` INNER JOIN `inventory_items` ON `items`.`id`=`inventory_items`.`item_id` WHERE `inventory_items`.`inventory_id`=?',
     inventory)
-  if not result[1] or not result[1].weight then
-    return 0
-  end
+  local carried=CarriedLoad(function(sql,params) return DB.query(sql,table.unpack(params)) end,inventory,false)
+  if not carried then error('Carried equipment weight is unavailable.') end
 
   -- tonumber because a DECIMAL column can arrive as a STRING depending on the
   -- driver -- the same reason every read of characters.x/y/z is wrapped. Lua
   -- coerces strings in arithmetic but NOT in comparison, so an unguarded
   -- `weight > limit` would error rather than misbehave quietly.
-  return tonumber(result[1].weight) or 0
+  return (tonumber(result[1] and result[1].weight) or 0)+carried.weight
 end
 
 function InventoryControllers.GetInventoryItems(inventory)
@@ -749,7 +770,7 @@ end
 -- @param checkItems { { item = name, quantity = n }, ... }
 -- @return true, or false plus a code and message
 --
-function InventoryControllers.AcceptanceInTransaction(query, inventory, checkItems)
+function InventoryControllers.AcceptanceInTransaction(query, inventory, checkItems, returningCarriedIds)
   local invRows = query(
     'SELECT `max_weight`, `ignore_item_limit`, `max_slots` FROM `inventory` WHERE `id`=? FOR UPDATE;',
     { inventory })
@@ -791,6 +812,11 @@ function InventoryControllers.AcceptanceInTransaction(query, inventory, checkIte
     'SELECT COALESCE(SUM(i.`weight`), 0) AS `weight` FROM `inventory_items` ii INNER JOIN `items` i ON i.`id`=ii.`item_id` WHERE ii.`inventory_id`=?;',
     { inventory })
   local currentWeight = tonumber(totalWeightRows and totalWeightRows[1] and totalWeightRows[1].weight) or 0
+  -- Internal return composition excludes exactly the returning private rows
+  -- before adding them below. This prevents charging carried weight twice.
+  local carried=CarriedLoad(query,inventory,true,returningCarriedIds)
+  if not carried then return false,'internal','Carried equipment could not be read.' end
+  currentWeight=currentWeight+carried.weight
   local addedWeight = 0
 
   for _, entry in ipairs(checkItems) do
@@ -816,6 +842,7 @@ function InventoryControllers.AcceptanceInTransaction(query, inventory, checkIte
         'SELECT COUNT(`id`) AS `count` FROM `inventory_items` WHERE `inventory_id`=? AND `item_id`=?;',
         { inventory, def.id })
       local held = tonumber(heldRows and heldRows[1] and heldRows[1].count) or 0
+      held=held+(carried.counts[tostring(def.id)] or 0)
       if (held + quantity) > (tonumber(def.max_quantity) or 0) then
         return false, 'item_limit', 'Max Quantity Exceeded.'
       end
@@ -1014,6 +1041,9 @@ function InventoryControllers.MoveInventoryItems(sourceInventory, targetInventor
       failureCode, failureMessage = 'internal', 'Inventory state could not be read.'
       return false
     end
+    local carried=CarriedLoad(query,targetInventory,true)
+    if not carried then failureCode,failureMessage='internal','Carried equipment could not be read.';return false end
+    for _,row in ipairs(carried.rows) do targetRows[#targetRows+1]=row end
     local restricted = {}
     for _, row in ipairs(restrictionRows) do restricted[tostring(row.item_id)] = true end
     local plan, code, message = InventoryMutationMetrics.Measure(metrics, 'planningMs',

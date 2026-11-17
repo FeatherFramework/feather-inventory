@@ -4,6 +4,53 @@ local function copy(value)
     if type(value)~='table' then return value end
     local out={}; for key,item in pairs(value) do out[key]=copy(item) end; return out
 end
+local function registerPickupCommit(name,native)
+exports(name,function(context,spec)
+    if GetInvokingResource()~='feather-weapons' or type(context)~='table' or type(spec)~='table'
+        or spec.action~='throwable-pickup' or spec.pickupContract~=(native and 2 or 1) or context.characterId~=spec.characterId
+        or type(spec.pickupClaim)~='table' or spec.pickupClaim.version~=(native and 4 or 3)
+        or (native and (spec.pickupClaim.presentation~='native' or spec.pickupClaim.kind~='physical_throwable_native_claim'))
+        or (native and (type(spec.pickupClaim.expectedPools)~='table' or spec.pickupClaim.expectedPools.ammo_tomahawk_regular~=0))
+        or (not native and spec.pickupClaim.presentation~=nil and spec.pickupClaim.presentation~='prompt')
+        or type(spec.lifecycleSnapshot)~='table' or type(spec.lifecycleWear)~='table'
+        or type(spec.limits)~='table' or spec.limits.ammo_tomahawk_regular~=3 then
+        return Result.Err('pickup_commit_denied','Released paid pickup intent required.')
+    end
+    context,spec=copy(context),copy(spec)
+    local timing=native and NativeCollectionTiming and NativeCollectionTiming.New('claim',context.actorSource,spec.pickupClaim.itemId)
+    local function current()
+        if Config.CharacterAmmunitionEnabled~=true or GetResourceState('feather-weapons')~='started'
+            or (native and (type(GetConvarInt)~='function' or GetConvarInt('feather_native_paid_collection',0)~=1)) then return false end
+        local ok,value=pcall(function()
+            return exports['feather-core']:IsSessionCurrent(context.actorSource,context.sessionId,context.characterId)==true
+                and exports['feather-weapons']:ValidateNativeEquipmentCommit(context,spec)==true
+        end)
+        return ok and value==true
+    end
+    if timing then current=timing.Wrap('authority',current) end
+    local function body(tx)
+        if not current() then return Result.Err('pickup_commit_denied','Pickup authority changed.') end
+        local observed=NativeLifecycleWear.Apply(tx,spec,current)
+        if not observed or not observed.ok then return observed or Result.Err('pickup_commit_denied','Final wear unavailable.') end
+        local working=observed.value
+        local claimContext={resource='feather-weapons',actorSource=context.actorSource,characterId=context.characterId,
+            sessionId=context.sessionId,epoch=context.epoch,ticket=context.ticket}
+        local result=NativeThrowableSharedClaim.Apply(tx,claimContext,working.pickupClaim,working.limits,current)
+        if not result or not result.ok then return result or Result.Err('pickup_commit_denied','Claim unavailable.') end
+        if not current() then return Result.Err('pickup_commit_denied','Pickup authority changed before commit.') end
+        return result
+    end
+    local function operation()
+        if not NativeThrowableSharedClaim or not current() then return Result.Err('pickup_commit_denied','Pickup authority unavailable.') end
+        return TransactionAPI.Transaction({resource='feather-weapons',reason=native and 'native_throwable_native_pickup' or 'native_throwable_prompt_pickup',actorSource=context.actorSource,
+            actorCharacterId=context.characterId,characterId=context.characterId,sessionId=context.sessionId},timing and timing.Wrap('body',body) or body)
+    end
+    if timing then return timing.Run(operation) end
+    return operation()
+end)
+end
+registerPickupCommit('CommitNativeThrowablePromptPickup',false)
+registerPickupCommit('CommitNativeThrowableNativePickup',true)
 -- Native knife remains default-off; these trusted exports do not create a route,
 -- enrollment, grant or Weapons reservation by themselves.
 local function registerMeleeExports(name,convar,componentName,slots)
@@ -15,7 +62,7 @@ exports('ReadNative'..name..'Equipment',function(context,itemId)
     local bound={actorSource=context.actorSource,characterId=context.characterId,sessionId=context.sessionId}
     local function current()
         return Config.CharacterAmmunitionEnabled==true
-            and type(GetConvarInt)=='function' and GetConvarInt(convar,0)==1
+            and type(GetConvarInt)=='function' and GetConvarInt(convar,convar=='feather_native_melee' and 1 or 0)==1
             and exports['feather-core']:IsSessionCurrent(bound.actorSource,bound.sessionId,bound.characterId)==true
     end
     local component=_G[componentName]
@@ -35,7 +82,7 @@ exports('CommitNative'..name..'Equipment',function(context,spec)
         epoch=context.epoch,ticket=context.ticket}
     local function current()
         if Config.CharacterAmmunitionEnabled~=true
-            or type(GetConvarInt)~='function' or GetConvarInt(convar,0)~=1
+            or type(GetConvarInt)~='function' or GetConvarInt(convar,convar=='feather_native_melee' and 1 or 0)~=1
             or GetResourceState('feather-weapons')~='started' then return false end
         local ok,value=pcall(function()
             return exports['feather-core']:IsSessionCurrent(bound.actorSource,bound.sessionId,bound.characterId)==true
@@ -58,12 +105,52 @@ exports('CommitNative'..name..'Equipment',function(context,spec)
 end)
 end
 registerMeleeExports('Knife','feather_native_knife','NativeKnifeEquipment',{weapon_melee=true})
--- Staged multi-slot route: flag defaults off; no caller can mint a reservation
+-- Normal multi-slot melee route defaults on; no caller can mint a reservation
 -- here. The existing Weapons validator must authorize the exact released intent.
 registerMeleeExports('Melee','feather_native_melee','NativeMeleeEquipment',{
     weapon_melee=true,weapon_melee_secondary=true,weapon_melee_tertiary=true,
     weapon_melee_quaternary=true,weapon_melee_quinary=true})
 registerMeleeExports('Throwable','feather_native_throwable','NativeThrowableEquipment',{weapon_throwable=true})
+exports('CommitNativeThrowableUnits',function(context,spec)
+    if GetInvokingResource()~='feather-weapons' or type(context)~='table' or type(spec)~='table'
+        or spec.throwableUnits~=true or spec.throwable~=true or spec.slot~='weapon_throwable'
+        or (spec.action~='equip' and spec.action~='unequip') or context.characterId~=spec.characterId
+        or type(spec.unitStorage)~='table' or spec.unitStorage.action~=(spec.action=='equip' and 'carry' or 'return')
+        or type(spec.lifecycleSnapshot)~='table' or type(spec.lifecycleWear)~='table' then
+        return Result.Err('throwable_units_commit_denied','Released physical throwable intent required.')
+    end
+    context,spec=copy(context),copy(spec)
+    local function current()
+        if Config.CharacterAmmunitionEnabled~=true or GetResourceState('feather-weapons')~='started' then return false end
+        local ok,allowed=pcall(function()
+            return exports['feather-core']:IsSessionCurrent(context.actorSource,context.sessionId,context.characterId)==true
+                and exports['feather-weapons']:ValidateNativeEquipmentCommit(context,spec)==true
+        end)
+        return ok and allowed==true
+    end
+    if not current() or not NativeThrowableUnitStorage then return Result.Err('throwable_units_commit_denied','Current released authority required.') end
+    return TransactionAPI.Transaction({resource='feather-weapons',reason='native_throwable_units',actorSource=context.actorSource,
+        actorCharacterId=context.characterId,characterId=context.characterId,sessionId=context.sessionId},function(tx)
+        local observed=NativeLifecycleWear.Apply(tx,spec,current)
+        if not observed or not observed.ok then return observed or Result.Err('throwable_units_commit_denied','Final wear failed.') end
+        local working=observed.value
+        local rows=tx.query([[SELECT ce.slot,ce.inventory_items_id,ii.row_revision,inv.character_id AS owner_character
+            FROM character_equipment ce LEFT JOIN inventory_items ii ON ii.id=ce.inventory_items_id
+            LEFT JOIN inventory inv ON inv.id=ii.inventory_id WHERE ce.character_id=? ORDER BY ce.slot FOR UPDATE]],{context.characterId})
+        if type(rows)~='table' then return Result.Err('throwable_units_commit_denied','Equipment snapshot unavailable.') end
+        local expected={}
+        for _,row in ipairs(rows) do
+            if type(row.slot)~='string' or expected[row.slot] or row.owner_character~=context.characterId then
+                return Result.Err('throwable_units_commit_denied','Equipment ownership changed.')
+            end
+            expected[row.slot]={itemId=tonumber(row.inventory_items_id),revision=tonumber(row.row_revision)}
+        end
+        if not InventoryMetadata.DocumentsEqual(expected,working.expected) or not current() then
+            return Result.Err('throwable_units_commit_denied','Equipment snapshot changed.')
+        end
+        return NativeThrowableUnitStorage.Apply(tx,context,working.unitStorage,current)
+    end)
+end)
 exports('CommitNativeThrowableFunding',function(context,spec)
     if GetInvokingResource()~='feather-weapons' or type(context)~='table' or type(spec)~='table'
         or context.characterId~=spec.characterId or spec.action~='throwable-funding'
@@ -128,8 +215,33 @@ exports('ReadNativeEquipmentTransition',function(context,itemId,limits)
         end
         local equipment=CharacterAmmunitionAPI.ReadRuntimeEquipment(tx,context.characterId,locked)
         if not equipment.ok then return equipment end
-        local candidate
+        local physical,quantity
+        if type(limits)=='table' and limits.ammo_tomahawk_regular==3
+            and type(GetConvar)=='function' and GetConvar('feather_throwable_quantities','0')=='1' then
+            local legacy=tx.query([[SELECT ii.id FROM inventory_items ii
+                INNER JOIN inventory_character_collections c ON c.inventory_id=ii.inventory_id
+                WHERE c.source_resource='feather-weapons' AND c.collection_key='native_throwable_units_v1'
+                  AND c.character_id=? LIMIT 1 FOR UPDATE]],{context.characterId})
+            if type(legacy)~='table' or #legacy>0 or expected.weapon_throwable~=nil then
+                return Result.Err('equipment_preflight_denied','Store legacy carried Tomahawks before enabling quantity mode.')
+            end
+            local ledger=CharacterAmmunitionAPI.ReadSnapshot(tx,context.characterId,limits,false)
+            if not ledger or not ledger.ok then return ledger or Result.Err('equipment_preflight_denied','Quantity ledger unavailable.') end
+            quantity={contract=3,kind='throwable_quantity',characterId=context.characterId,
+                identity={characterId=context.characterId,sessionId=context.sessionId,epoch=context.epoch},
+                revision=ledger.value.revision,pools=copy(ledger.value.pools)}
+        elseif type(limits)=='table' and limits.ammo_tomahawk_regular==3 then
+            if not NativeThrowableUnitStorage then return Result.Err('equipment_preflight_denied','Physical throwable reader unavailable.') end
+            local read=NativeThrowableUnitStorage.Read(tx,context,limits,current)
+            if not read or not read.ok then return read or Result.Err('equipment_preflight_denied','Physical throwable read failed.') end
+            physical=read.value
+        end
+        local candidate,candidateCustody
         if itemId then
+            if physical then for _,row in ipairs(physical.units) do
+                if row.id==itemId then candidate=copy(row);candidateCustody='carried' end
+            end end
+            if not candidate then
             local owned=locked and locked.ReadItem(tx,context.characterId,itemId)
             if locked and owned==nil then return Result.Err('equipment_preflight_denied','Snapshot expired.') end
             if not owned then owned=tx.query([[SELECT ii.id, ii.row_revision, ii.metadata, i.name AS itemName
@@ -140,10 +252,16 @@ exports('ReadNativeEquipmentTransition',function(context,itemId,limits)
             local decoded,metadata=pcall(function() return type(row.metadata)=='table' and row.metadata or json.decode(row.metadata) end)
             if not decoded or type(metadata)~='table' then return Result.Err('equipment_preflight_denied','Item metadata unavailable.') end
             candidate={id=tonumber(row.id),revision=tonumber(row.row_revision),itemName=row.itemName,metadata=metadata}
+            if physical then candidateCustody='inventory' end
+            end
         end
         if not current() then return Result.Err('equipment_preflight_denied','Session changed during read.') end
         local value={characterId=context.characterId,expected=expected,equipment=equipment.value,candidate=candidate,
             brokenEquipmentContract=1,brokenDeathEquipmentContract=1,brokenPromotionContract=1}
+        if physical then
+            value.throwableEquipment=physical;value.throwableLimits=copy(limits);value.candidateCustody=candidateCustody
+        end
+        if quantity then value.throwableEquipment=quantity;value.throwableLimits=copy(limits) end
         if type(GetConvarInt)=='function' and GetConvarInt('feather_native_utility',0)==1 then
             if not NativeUtilityEquipment then return Result.Err('equipment_preflight_denied','Utility reader unavailable.') end
             local function utilityCurrent() return current() and GetConvarInt('feather_native_utility',0)==1 end
@@ -152,7 +270,7 @@ exports('ReadNativeEquipmentTransition',function(context,itemId,limits)
             value.utilityEquipment=read.value
             if not utilityCurrent() then return Result.Err('equipment_preflight_denied','Utility authority changed.') end
         end
-        if type(GetConvarInt)=='function' and GetConvarInt('feather_native_throwable',0)==1 then
+        if not physical and not quantity and type(GetConvarInt)=='function' and GetConvarInt('feather_native_throwable',0)==1 then
             if not NativeThrowableEquipment then return Result.Err('equipment_preflight_denied','Throwable reader unavailable.') end
             local function throwableCurrent() return current() and GetConvarInt('feather_native_throwable',0)==1 end
             local read=NativeThrowableEquipment.Read(tx,context.characterId,nil,throwableCurrent,locked)
@@ -169,9 +287,9 @@ exports('ReadNativeEquipmentTransition',function(context,itemId,limits)
             end
             if not throwableCurrent() then return Result.Err('equipment_preflight_denied','Throwable authority changed.') end
         end
-        if type(GetConvarInt)=='function' and GetConvarInt('feather_native_melee',0)==1 then
+        if type(GetConvarInt)=='function' and GetConvarInt('feather_native_melee',1)==1 then
             if not NativeMeleeEquipment then return Result.Err('equipment_preflight_denied','Melee reader unavailable.') end
-            local function meleeCurrent() return current() and GetConvarInt('feather_native_melee',0)==1 end
+            local function meleeCurrent() return current() and GetConvarInt('feather_native_melee',1)==1 end
             local read=NativeMeleeEquipment.Read(tx,context.characterId,nil,meleeCurrent,locked)
             if not read.ok then return read end
             value.meleeEquipment=read.value

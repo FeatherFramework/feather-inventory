@@ -71,8 +71,9 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
-          repository: FeatherFramework/feather-weapons
-          ref: 93b3f4321408eb28bfb0d74b9f38de12210136ed
+          # Paired Weapons PR #50: immutable regular-arrow implementation.
+          repository: JusCampin/feather-weapons
+          ref: e3d60a0cb0b5ab22d81d4ee740fc7f6025791ed9
           path: feather-weapons
           persist-credentials: false
       - uses: pnpm/action-setup@v4
