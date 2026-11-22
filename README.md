@@ -1,6 +1,10 @@
 # Feather Inventory
 
-Version **0.17.0** adds type-separated Regular-arrow recovery for Weapons0.25.0.
+Version **0.18.0** adds Regular-knife recovery and bounded Poison-to-Regular
+knife conversion for Weapons **0.26.0**, preserving independent ammunition pools
+and existing schema. See [release notes](docs/release-0.18.0.md).
+
+The existing type-separated Regular-arrow recovery remains available.
 With `setr feather_regular_arrows 1`, funded shot debits create arrow allowances
 atomically; native recovery consumes them once within180seconds/50metres and the
 same routing bucket. Arrow and Tomahawk allowances cannot fund each other.

@@ -1,4 +1,9 @@
 -- Execute the real observation/recovery primitives; model SQL locks and rollback.
+local knives=arg and arg[2]=='knives'
+local ammoId=knives and 'ammo_throwing_knives_regular' or 'ammo_arrow_regular'
+local capacity=knives and 8 or 40
+local flag=knives and 'feather_throwing_knife_quantities' or 'feather_regular_arrows'
+local namespace=knives and 'regular-knife-quantity-allowance-v1' or 'regular-arrow-quantity-allowance-v1'
 local function copy(v) if type(v)~='table' then return v end;local r={};for k,x in pairs(v) do r[k]=copy(x) end;return r end
 local docs,serial={},0
 json={encode=function(v) serial=serial+1;docs[tostring(serial)]=copy(v);return tostring(serial) end,
@@ -7,17 +12,18 @@ Result={Codes={INVALID_INPUT='invalid',CONFLICT='conflict',DENIED='denied',NOT_F
  Ok=function(v) return {ok=true,value=v} end,Err=function(c) return {ok=false,error={code=c}} end}
 Config={CharacterAmmunitionEnabled=true,DevMode=false}
 local enabled=true
-GetConvar=function(name,default) return name=='feather_regular_arrows' and enabled and '1'
+local extraFlags={}
+GetConvar=function(name,default) return extraFlags[name] or name==flag and enabled and '1'
  or name=='feather_throwable_quantities' and '1' or default end
 RegisterCommand=function() end
 InventoryIdentity={NormalizeCharacterId=function(v) return v end}
 local clock=1000;os.time=function() return clock end
 dofile('server/services/character_ammunition.lua');dofile('server/internal/throwable_quantity_recovery.lua')
-local limits={ammo_arrow_regular=40,ammo_tomahawk_regular=3,ammo_revolver_regular=100}
+local limits={[ammoId]=capacity,ammo_tomahawk_regular=3,ammo_revolver_regular=100}
 local db,failUpdate,authority
 local function reset()
- db={ledgers={jane={revision=0,pools={ammo_arrow_regular=40,ammo_tomahawk_regular=3,ammo_revolver_regular=10}},
-  john={revision=0,pools={ammo_arrow_regular=0,ammo_tomahawk_regular=0,ammo_revolver_regular=7}}},allowances={},receipts={}}
+ db={ledgers={jane={revision=0,pools={[ammoId]=capacity,ammo_tomahawk_regular=3,ammo_revolver_regular=10}},
+  john={revision=0,pools={[ammoId]=0,ammo_tomahawk_regular=0,ammo_revolver_regular=7}}},allowances={},receipts={}}
  clock=1000;enabled=true;failUpdate=false;authority=true
 end
 local function key(ns,id) return ns..'/'..id end
@@ -56,7 +62,7 @@ local function atomic(fn)
 end
 local function where(x,bucket) return {version=1,bucket=bucket or 0,position={x=x or 0,y=0,z=0}} end
 local function spend(arrows,toms)
- local l=db.ledgers.jane;local p=copy(l.pools);p.ammo_arrow_regular=p.ammo_arrow_regular-arrows;p.ammo_tomahawk_regular=p.ammo_tomahawk_regular-(toms or 0)
+ local l=db.ledgers.jane;local p=copy(l.pools);p[ammoId]=p[ammoId]-arrows;p.ammo_tomahawk_regular=p.ammo_tomahawk_regular-(toms or 0)
  return atomic(function() return CharacterAmmunitionAPI.ApplyObservation(tx,{characterId='jane'},
   {expectedRevision=l.revision,pools=p,limits=limits,quantityRecovery=where()},current) end)
 end
@@ -66,24 +72,28 @@ local function claim(id,n,position,revision)
   {expectedRevision=revision or l.revision,pools=p,limits=limits,
    nativePickupPlan={version=2,kind='quantity_pickup_ledger_plan',ammunitionId=id,location=position or where()}},current) end)
 end
+if arg and arg[3]=='fixture' then
+ return {reset=reset,db=function() return db end,limits=limits,tx=tx,copy=copy,atomic=atomic,current=current,
+  where=where,claim=claim,spend=spend,flags=extraFlags,fail=function(v) failUpdate=v end}
+end
 reset();assert(spend(3,1).ok)
-assert(db.ledgers.jane.pools.ammo_arrow_regular==37 and db.ledgers.jane.pools.ammo_tomahawk_regular==2)
-assert(db.allowances['regular-arrow-quantity-allowance-v1/jane:0'].remaining==3)
+assert(db.ledgers.jane.pools[ammoId]==capacity-3 and db.ledgers.jane.pools.ammo_tomahawk_regular==2)
+assert(db.allowances[namespace..'/jane:0'].remaining==3)
 assert(db.allowances['tomahawk-quantity-allowance-v1/jane:0'].remaining==1,'same revision has type-separated receipts')
-local r=claim('ammo_arrow_regular',4);assert(r.ok and r.value.recovered==3 and r.value.quantityDeclined)
-assert(db.ledgers.john.pools.ammo_arrow_regular==3 and db.ledgers.john.pools.ammo_tomahawk_regular==0)
+local r=claim(ammoId,4);assert(r.ok and r.value.recovered==3 and r.value.quantityDeclined)
+assert(db.ledgers.john.pools[ammoId]==3 and db.ledgers.john.pools.ammo_tomahawk_regular==0)
 assert(db.allowances['tomahawk-quantity-allowance-v1/jane:0'].remaining==1,'arrows cannot consume Tomahawk allowances')
-r=claim('ammo_arrow_regular',1);assert(r.ok and r.value.recovered==0,'spent allowance cannot be reused')
+r=claim(ammoId,1);assert(r.ok and r.value.recovered==0,'spent allowance cannot be reused')
 assert(claim('ammo_tomahawk_regular',1).value.recovered==1)
-reset();assert(spend(40).ok);r=claim('ammo_arrow_regular',40);assert(r.ok and r.value.recovered==40)
-assert(not claim('ammo_arrow_regular',1).ok,'capacity cannot exceed40')
-reset();assert(spend(1).ok);assert(claim('ammo_arrow_regular',1,where(51)).value.recovered==0)
-assert(claim('ammo_arrow_regular',1,where(0,1)).value.recovered==0)
-clock=1181;assert(claim('ammo_arrow_regular',1).value.recovered==0)
-reset();assert(spend(1).ok);failUpdate=true;assert(not claim('ammo_arrow_regular',1).ok)
-assert(db.allowances['regular-arrow-quantity-allowance-v1/jane:0'].remaining==1 and db.ledgers.john.revision==0,'SQL failure rolls back allowance and ledger')
-reset();failUpdate=true;assert(not spend(1).ok);assert(next(db.allowances)==nil and db.ledgers.jane.pools.ammo_arrow_regular==40,'debit and allowance creation roll back together')
-reset();assert(spend(1).ok);enabled=false;assert(not claim('ammo_arrow_regular',1).ok)
-reset();assert(spend(1).ok);authority=false;assert(not claim('ammo_arrow_regular',1).ok)
-reset();assert(spend(1).ok);assert(not claim('ammo_arrow_regular',1,nil,99).ok)
-print('PASS regular-arrow SQL composition: atomic paid debits, distinct type namespaces, bounded batches/partial credit, once-only claims, expiry/distance/bucket, capacity, authority, stale revisions and rollback')
+reset();assert(spend(capacity).ok);r=claim(ammoId,capacity);assert(r.ok and r.value.recovered==capacity)
+assert(not claim(ammoId,1).ok,'capacity cannot exceed40')
+reset();assert(spend(1).ok);assert(claim(ammoId,1,where(51)).value.recovered==0)
+assert(claim(ammoId,1,where(0,1)).value.recovered==0)
+clock=1181;assert(claim(ammoId,1).value.recovered==0)
+reset();assert(spend(1).ok);failUpdate=true;assert(not claim(ammoId,1).ok)
+assert(db.allowances[namespace..'/jane:0'].remaining==1 and db.ledgers.john.revision==0,'SQL failure rolls back allowance and ledger')
+reset();failUpdate=true;assert(not spend(1).ok);assert(next(db.allowances)==nil and db.ledgers.jane.pools[ammoId]==capacity,'debit and allowance creation roll back together')
+reset();assert(spend(1).ok);enabled=false;assert(not claim(ammoId,1).ok)
+reset();assert(spend(1).ok);authority=false;assert(not claim(ammoId,1).ok)
+reset();assert(spend(1).ok);assert(not claim(ammoId,1,nil,99).ok)
+print('PASS '..ammoId..' SQL composition: atomic paid debits, distinct type namespaces, bounded batches/partial credit, once-only claims, expiry/distance/bucket, capacity, authority, stale revisions and rollback')

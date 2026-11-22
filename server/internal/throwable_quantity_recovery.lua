@@ -40,12 +40,18 @@ local function record(tx,context,spec,previous,observed,current,ammoId,cap,names
   lifetime=5
  end
  local id=context.characterId..':'..spec.expectedRevision
+ -- Poison knives become Regular in the game. Keep a distinct source receipt
+ -- while sharing the Regular recovery namespace: one paid debit, one credit.
+ if ammoId=='ammo_throwing_knives_poison' then id=id..':poison' end
  local rows=tx.query('SELECT result_json FROM inventory_grant_receipts WHERE source_resource=? AND grant_id=? FOR UPDATE',{namespace,id})
  if type(rows)~='table' or #rows~=0 then return denied() end
  local now=os.time()
  local value={version=1,kind=kind,remaining=units,units=units,
   bucket=where.bucket,position=copy(where.position),createdAt=now,expiresAt=now+lifetime,
   expiryTest=lifetime==5 or nil}
+ if ammoId=='ammo_throwing_knives_poison' then
+  value.sourceAmmunitionId=ammoId;value.recoveredAmmunitionId='ammo_throwing_knives_regular'
+ end
  if where.distanceTestOffset==100 then
   value.position.x=value.position.x+100;value.distanceTest=true
  end
@@ -62,10 +68,12 @@ function Q.Record(tx,context,spec,previous,observed,current)
  for _,profile in ipairs({
   {'ammo_tomahawk_regular',3,'tomahawk-quantity-allowance-v1','tomahawk_quantity_allowance','feather_throwable_quantities'},
   {'ammo_arrow_regular',40,'regular-arrow-quantity-allowance-v1','regular_arrow_quantity_allowance','feather_regular_arrows'},
+  {'ammo_throwing_knives_regular',8,'regular-knife-quantity-allowance-v1','regular_knife_quantity_allowance','feather_throwing_knife_quantities'},
+  {'ammo_throwing_knives_poison',8,'regular-knife-quantity-allowance-v1','regular_knife_quantity_allowance','feather_poison_knives'},
  }) do
   local id,cap,ns,kind,flag=table.unpack(profile)
   if type(previous[id])=='number' and type(observed[id])=='number' and previous[id]>observed[id] then
-   if id=='ammo_arrow_regular' and (type(GetConvar)~='function' or GetConvar(flag,'0')~='1') then return denied() end
+   if id~='ammo_tomahawk_regular' and (type(GetConvar)~='function' or GetConvar(flag,'0')~='1') then return denied() end
    local result=record(tx,context,spec,previous,observed,current,id,cap,ns,kind)
    if not result.ok then return result end
    total=total+result.value.units
@@ -78,10 +86,22 @@ function Q.Claim(tx,context,spec,current)
  local plan=spec.nativePickupPlan
  local ammoId=type(plan)=='table' and plan.ammunitionId or 'ammo_tomahawk_regular'
  local cap,kind=3,'tomahawk_quantity_allowance'
+ local recoverable=true
  local namespace=namespace
  if ammoId=='ammo_arrow_regular' then
   if type(GetConvar)~='function' or GetConvar('feather_regular_arrows','0')~='1' then return denied() end
   cap,kind,namespace=40,'regular_arrow_quantity_allowance','regular-arrow-quantity-allowance-v1'
+ elseif ammoId=='ammo_throwing_knives_regular' then
+  if type(GetConvar)~='function' or GetConvar('feather_throwing_knife_quantities','0')~='1' then return denied() end
+  cap,kind,namespace=8,'regular_knife_quantity_allowance','regular-knife-quantity-allowance-v1'
+ elseif ammoId=='ammo_throwing_knives_poison' or ammoId=='ammo_arrow_small_game'
+  or ammoId=='ammo_arrow_poison' or ammoId=='ammo_arrow_fire' or ammoId=='ammo_arrow_dynamite' then
+  local flag=ammoId=='ammo_throwing_knives_poison' and 'feather_poison_knives' or 'feather_special_arrows'
+  if type(GetConvar)~='function' or GetConvar(flag,'0')~='1' then return denied() end
+  -- No confirmed return-type evidence for specialty arrows or Poison-to-Poison
+  -- knives. An unfunded native increase is compensated, never saved.
+  cap=ammoId=='ammo_arrow_small_game' and 40 or 8;recoverable=false
+  namespace='unconfirmed-special-recovery-v1:'..ammoId;kind='unconfirmed_special_recovery'
  elseif ammoId~='ammo_tomahawk_regular' then return denied() end
  if type(plan)~='table' or plan.version~=2 or plan.kind~='quantity_pickup_ledger_plan' or not location(plan.location)
   or spec.limits[ammoId]~=cap or not int(spec.expectedRevision,0,9007199254740990)
@@ -97,7 +117,7 @@ function Q.Claim(tx,context,spec,current)
  -- Deterministic nearby row lock serializes competing claims. Each paid
  -- allowance is consumed once; proximity is deliberately NOT object identity.
  local recovered=0
- for _=1,cap do
+ for _=1,recoverable and cap or 0 do
   if recovered==requested then break end
   local rows=tx.query([[SELECT grant_id,result_json FROM inventory_grant_receipts
   WHERE source_resource=? AND JSON_EXTRACT(result_json,'$.bucket')=?

@@ -204,8 +204,11 @@ function A.ApplyObservation(tx,context,spec,authority)
         return spent
     end
     local arrows=type(GetConvar)=='function' and GetConvar('feather_regular_arrows','0')=='1'
+    local knives=type(GetConvar)=='function' and GetConvar('feather_throwing_knife_quantities','0')=='1'
     if spec.finalWear==nil and (quantities and consumed.ammo_tomahawk_regular and consumed.ammo_tomahawk_regular>0
-        or arrows and consumed.ammo_arrow_regular and consumed.ammo_arrow_regular>0) then
+        or arrows and consumed.ammo_arrow_regular and consumed.ammo_arrow_regular>0
+        or knives and consumed.ammo_throwing_knives_regular and consumed.ammo_throwing_knives_regular>0
+        or knives and GetConvar('feather_poison_knives','0')=='1' and consumed.ammo_throwing_knives_poison and consumed.ammo_throwing_knives_poison>0) then
         if not ThrowableQuantityRecovery then return err(Result.Codes.DENIED,'Quantity recovery unavailable.') end
         local recorded=ThrowableQuantityRecovery.Record(tx,context,spec,previous,observed,authority)
         if not recorded.ok then return recorded end
@@ -447,6 +450,15 @@ local function snapshot(context,limits,invokingResource,withEquipment)
         end
         if withEquipment and Config.CharacterAmmunitionEnabled==true and limits.ammo_tomahawk_regular==3
             and type(GetConvar)=='function' and GetConvar('feather_throwable_quantities','0')=='1' then
+            if GetConvar('feather_throwing_knife_quantities','0')=='1' and limits.ammo_throwing_knives_regular==8 then
+                local legacyKnives=tx.query([[SELECT ce.slot FROM character_equipment ce
+                    INNER JOIN inventory_items ii ON ii.id=ce.inventory_items_id
+                    WHERE ce.character_id=? AND JSON_UNQUOTE(JSON_EXTRACT(ii.metadata,'$.weaponDefinitionId'))='throwable_throwing_knives'
+                    LIMIT 1 FOR UPDATE]],{safeContext.characterId})
+                if type(legacyKnives)~='table' or #legacyKnives>0 then
+                    return err(Result.Codes.CONFLICT,'Store legacy equipped Throwing Knives before enabling quantity mode.')
+                end
+            end
             -- No implicit conversion of legacy carried identity-bearing units.
             local legacy=tx.query([[SELECT ii.id FROM inventory_items ii
                 INNER JOIN inventory_character_collections c ON c.inventory_id=ii.inventory_id
