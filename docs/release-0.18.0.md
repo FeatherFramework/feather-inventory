@@ -29,5 +29,7 @@ No live competing-collector contention or specialty-arrow recovery is claimed.
 
 Both fxmanifest.lua and web/package.json are0.18.0. The existing release workflow
 must verify/build the tagged source and attach the verified archive/checksum.
-After user pushes, update paired workflow pins to exact new implementation heads
-and require fresh green checks; existing pins still select the prior release work.
+Pushed implementation heads are verified: Inventory
+f589667aa92fb3d545444ed9897f18a678f0dbba and Weapons
+4c95245506bfbe4d4580f537b88eb391c7ed27f5. Local workflow follow-ups select these
+exact paired sources; user commit/push and fresh green CI remain required.

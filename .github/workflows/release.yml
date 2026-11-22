@@ -71,9 +71,9 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
-          # Paired Weapons PR #50: immutable regular-arrow implementation.
+          # Immutable Weapons 0.26.0 knife/specialty ammunition implementation.
           repository: JusCampin/feather-weapons
-          ref: e3d60a0cb0b5ab22d81d4ee740fc7f6025791ed9
+          ref: 4c95245506bfbe4d4580f537b88eb391c7ed27f5
           path: feather-weapons
           persist-credentials: false
       - uses: pnpm/action-setup@v4
